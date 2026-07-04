@@ -8,8 +8,12 @@ const whitelist = [
   "http://localhost:8100",
   "http://localhost:8080",
   "http://localhost:5173",
+  "https://localhost:5173",
   "http://localhost:5174",
   "http://localhost:8101",
+  "https://testing-storybrand-frontend.bakano.ec",
+  "https://boloncity-tienda.netlify.app",
+  "https://boloncity.com",
 ];
 
 const corsOptions: cors.CorsOptions = {

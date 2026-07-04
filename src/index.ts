@@ -1,12 +1,14 @@
-import dotenv from "dotenv";
+import "dotenv/config";
 import { dbConnect } from "./config/mongo";
 import { createApp } from "./app";
+import { env } from "./config/env";
+import { startScheduler } from "./services/scheduler.service";
 
-const port = process.env.PORT || 8100;
+const port = env.PORT;
 
 async function main() {
-  dotenv.config();
   await dbConnect();
+  startScheduler();
 
   const { app, server } = createApp();
 
