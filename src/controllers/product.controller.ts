@@ -84,18 +84,22 @@ export async function createProduct(req: Request, res: Response) {
 }
 
 export async function updateProduct(req: Request, res: Response) {
-  const imagePayload = parseJsonArray<{ url: string; publicId: string }>(req.body.images, []);
   const branchPrices = parseJsonArray<{ branch: string; price: number }>(req.body.branchPrices, []);
+  const updateData: Record<string, unknown> = {
+    ...req.body,
+    slug: req.body.slug || slugify(req.body.name),
+    categories: parseCategoryIds(req.body.categories),
+    branches: parseCategoryIds(req.body.branches),
+    branchPrices,
+  };
+
+  if (req.body.images !== undefined) {
+    updateData.images = parseJsonArray<{ url: string; publicId: string }>(req.body.images, []);
+  }
+
   const product = await Product.findByIdAndUpdate(
     req.params.id,
-    {
-      ...req.body,
-      slug: req.body.slug || slugify(req.body.name),
-      categories: parseCategoryIds(req.body.categories),
-      branches: parseCategoryIds(req.body.branches),
-      branchPrices,
-      ...(imagePayload ? { images: imagePayload } : {}),
-    },
+    updateData,
     { new: true }
   );
 

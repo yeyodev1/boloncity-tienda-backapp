@@ -31,5 +31,5 @@ export async function verifyPassword(plain: string, hashed: string) {
 }
 
 export function signUserToken(payload: { userId: string; email: string; accountType: string; branches?: string[]; allBranches?: boolean }) {
-  return jwt.sign(payload, env.JWT_SECRET, { expiresIn: "30d" });
+  return jwt.sign(payload, env.JWT_SECRET, { expiresIn: "120d" });
 }
