@@ -39,6 +39,22 @@ export async function createUser(req: Request, res: Response) {
   res.status(201).json(safeUser);
 }
 
+export async function deleteUser(req: AuthRequest, res: Response) {
+  if (req.params.id === req.user?.userId) {
+    res.status(403).json({ message: "Cannot delete yourself" });
+    return;
+  }
+
+  const user = await User.findByIdAndDelete(req.params.id);
+
+  if (!user) {
+    res.status(404).json({ message: "User not found" });
+    return;
+  }
+
+  res.json({ message: "User deleted" });
+}
+
 export async function updateUser(req: Request, res: Response) {
   const user = await User.findByIdAndUpdate(
     req.params.id,
