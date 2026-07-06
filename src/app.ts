@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import routerApi from "./routes";
+import { dbConnect } from "./config/mongo";
 import { globalErrorHandler } from "./middlewares/globalErrorHandler.middleware";
 
 const whitelist = [
@@ -14,6 +15,7 @@ const whitelist = [
   "https://testing-storybrand-frontend.bakano.ec",
   "https://boloncity-tienda.netlify.app",
   "https://boloncity.com",
+  "https://boloncity-tienda-backapp.vercel.app",
 ];
 
 const corsOptions: cors.CorsOptions = {
@@ -32,6 +34,15 @@ export function createApp() {
 
   app.use(cors(corsOptions));
   app.use(express.json({ limit: "50mb" }));
+
+  app.use(async (_req, res, next) => {
+    try {
+      await dbConnect();
+      next();
+    } catch {
+      res.status(503).json({ message: "Database connection failed" });
+    }
+  });
 
   app.get("/", (_req, res) => {
     res.send("Server is alive");

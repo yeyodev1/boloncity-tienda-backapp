@@ -2,21 +2,20 @@ import "dotenv/config";
 import { dbConnect } from "./config/mongo";
 import { createApp } from "./app";
 import { env } from "./config/env";
-import { startScheduler } from "./services/scheduler.service";
 
-const port = env.PORT;
+const { app, server } = createApp();
 
-async function main() {
-  await dbConnect();
-  startScheduler();
+server.timeout = 10 * 60 * 1000;
 
-  const { app, server } = createApp();
-
-  server.timeout = 10 * 60 * 1000;
-
-  server.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+if (!process.env.VERCEL) {
+  import("./services/scheduler.service").then(({ startScheduler }) => {
+    dbConnect().then(() => {
+      startScheduler();
+      server.listen(env.PORT, () => {
+        console.log(`Server running on port ${env.PORT}`);
+      });
+    });
   });
 }
 
-main();
+export default app;
