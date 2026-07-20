@@ -2,18 +2,16 @@ const fs = require('fs');
 const path = require('path');
 const cloudinary = require('cloudinary').v2;
 const sharp = require('sharp');
+require('dotenv').config();
 
-cloudinary.config({ 
-  cloud_name: 'dv9t4acbc', 
-  api_key: '984615272394725', 
-  api_secret: 'WCMWxLjKEzcmwunt6yOlkaBChks' 
-});
+cloudinary.config({ secure: true });
 
-const imageDir = '/Users/diegoreyes/Downloads/boloncity-octubre';
+const imageDir = process.env.BOLONCITY_IMAGE_DIR;
 const outputFile = path.join(__dirname, 'images.json');
 
 async function uploadImages() {
   try {
+    if (!imageDir) throw new Error('BOLONCITY_IMAGE_DIR is required');
     const files = fs.readdirSync(imageDir).filter(f => f.endsWith('.jpg') || f.endsWith('.png'));
     console.log(`Found ${files.length} images to upload.`);
     

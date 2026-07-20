@@ -1,0 +1,1752 @@
+[
+  {
+    "code": "1",
+    "product": "BOLON QUESO VERDE",
+    "status": "skipped-existing",
+    "source": "Bolón de Queso",
+    "score": 1
+  },
+  {
+    "code": "2",
+    "product": "BISTEC DE CARNE",
+    "status": "unmatched",
+    "suggestion": "Jugo de Bistec",
+    "score": 0.45
+  },
+  {
+    "code": "4",
+    "product": "CANOA VERDE",
+    "status": "skipped-existing",
+    "source": "Canoa",
+    "score": 1
+  },
+  {
+    "code": "5",
+    "product": "BOLON DE CHICHARRON VERDE",
+    "status": "skipped-existing",
+    "source": "Bolón de Chicharrón",
+    "score": 1
+  },
+  {
+    "code": "6",
+    "product": "BOLON MIXTO VERDE",
+    "status": "skipped-existing",
+    "source": "Bolón Mixto",
+    "score": 1
+  },
+  {
+    "code": "7",
+    "product": "PORCION DE CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Porción de chicharrón",
+    "score": 1
+  },
+  {
+    "code": "8",
+    "product": "QUESO EXTRA",
+    "status": "unmatched",
+    "suggestion": "Bolón de Queso",
+    "score": 0.45
+  },
+  {
+    "code": "9",
+    "product": "PORCION DE LONGANIZA",
+    "status": "skipped-existing",
+    "source": "Porción de longaniza",
+    "score": 1
+  },
+  {
+    "code": "10",
+    "product": "TORTILLA DE VERDE QUESO",
+    "status": "skipped-existing",
+    "source": "Tortilla de Verde con Queso",
+    "score": 1
+  },
+  {
+    "code": "11",
+    "product": "HUMITA",
+    "status": "skipped-existing",
+    "source": "Humita",
+    "score": 1
+  },
+  {
+    "code": "12",
+    "product": "EMPANADA HARINA DE QUESO",
+    "status": "skipped-existing",
+    "source": "Empanada de harina Queso",
+    "score": 1
+  },
+  {
+    "code": "13",
+    "product": "CORVICHE",
+    "status": "skipped-existing",
+    "source": "CORVICHE",
+    "score": 1
+  },
+  {
+    "code": "14",
+    "product": "REVOLTILLO DE HUEVO SOLO",
+    "status": "unmatched",
+    "suggestion": "Revoltillo de Huevo",
+    "score": 0.667
+  },
+  {
+    "code": "21",
+    "product": "CALENTADITO SENCILLO LOMO",
+    "status": "unmatched",
+    "suggestion": "Calentadito Sencillo",
+    "score": 0.667
+  },
+  {
+    "code": "22",
+    "product": "CALENTADITO COMPLETO",
+    "status": "skipped-existing",
+    "source": "Calentadito Completo",
+    "score": 1
+  },
+  {
+    "code": "23",
+    "product": "TOSTADA DE QUESO",
+    "status": "skipped-existing",
+    "source": "Tostada de Queso",
+    "score": 1
+  },
+  {
+    "code": "24",
+    "product": "TOSTADA MIXTA",
+    "status": "skipped-existing",
+    "source": "Tostada Mixta",
+    "score": 1
+  },
+  {
+    "code": "25",
+    "product": "HUEVO FRITO",
+    "status": "unmatched",
+    "suggestion": "Porción de huevo Frito",
+    "score": 0.667
+  },
+  {
+    "code": "26",
+    "product": "PORCION DE SALPRIETA",
+    "status": "skipped-existing",
+    "source": "Porción de salprieta",
+    "score": 1
+  },
+  {
+    "code": "27",
+    "product": "JUGO DE BISTEC",
+    "status": "skipped-existing",
+    "source": "Jugo de Bistec",
+    "score": 1
+  },
+  {
+    "code": "28",
+    "product": "TIGRILLO QUESO VERDE",
+    "status": "skipped-existing",
+    "source": "Tigrillo de Queso",
+    "score": 1
+  },
+  {
+    "code": "29",
+    "product": "TIGRILLO CHICHARRON VERDE",
+    "status": "skipped-existing",
+    "source": "Tigrillo de Chicharrón",
+    "score": 1
+  },
+  {
+    "code": "30",
+    "product": "TIGRILLO MIXTO VERDE",
+    "status": "skipped-existing",
+    "source": "Tigrillo Mixto",
+    "score": 1
+  },
+  {
+    "code": "35",
+    "product": "TAZA DE LECHE ENTERA",
+    "status": "unmatched",
+    "suggestion": "Leche",
+    "score": 0.333
+  },
+  {
+    "code": "37",
+    "product": "BOLON DE LONGANIZA VERDE",
+    "status": "skipped-existing",
+    "source": "Bolón de Longaniza",
+    "score": 1
+  },
+  {
+    "code": "39",
+    "product": "BOLON MADURO QUESO",
+    "status": "skipped-existing",
+    "source": "Bolón de Queso",
+    "score": 1
+  },
+  {
+    "code": "40",
+    "product": "BOLON MADURO CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Bolón de Chicharrón",
+    "score": 1
+  },
+  {
+    "code": "41",
+    "product": "BOLON MADURO MIXTO",
+    "status": "skipped-existing",
+    "source": "Bolón Mixto",
+    "score": 1
+  },
+  {
+    "code": "42",
+    "product": "PATACONES CON QUESO",
+    "status": "skipped-existing",
+    "source": "Patacones con queso",
+    "score": 1
+  },
+  {
+    "code": "43",
+    "product": "EMPANADA HARINA JAMON Y QUESO",
+    "status": "skipped-existing",
+    "source": "Empanada de harina Mixta queso y jamón",
+    "score": 0.833
+  },
+  {
+    "code": "44",
+    "product": "MADURO CON QUESO",
+    "status": "unmatched",
+    "suggestion": "Bolón de Queso",
+    "score": 0.5
+  },
+  {
+    "code": "45",
+    "product": "EXTRA TOCINO",
+    "status": "unmatched",
+    "suggestion": "Porción de tocino",
+    "score": 0.45
+  },
+  {
+    "code": "47",
+    "product": "PORCION DE LOMO",
+    "status": "skipped-existing",
+    "source": "Porción de lomo",
+    "score": 1
+  },
+  {
+    "code": "48",
+    "product": "PORCION DE POLLO",
+    "status": "skipped-existing",
+    "source": "Porción de pollo",
+    "score": 1
+  },
+  {
+    "code": "49",
+    "product": "HUEVO COPA x2",
+    "status": "skipped-existing",
+    "source": "Huevos a la copa (x2)",
+    "score": 1
+  },
+  {
+    "code": "50",
+    "product": "HUEVO DURO x2",
+    "status": "unmatched",
+    "suggestion": "Huevos Duros (x2)",
+    "score": 0.45
+  },
+  {
+    "code": "51",
+    "product": "ENVASE GRANDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "52",
+    "product": "ENVASE MEDIANO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "53",
+    "product": "BISTEC DE HIGADO",
+    "status": "unmatched",
+    "suggestion": "Jugo de Bistec",
+    "score": 0.45
+  },
+  {
+    "code": "58",
+    "product": "BOLON PINTON DE QUESO",
+    "status": "skipped-existing",
+    "source": "Bolón de Queso",
+    "score": 1
+  },
+  {
+    "code": "64",
+    "product": "BOLON PINTON CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Bolón de Chicharrón",
+    "score": 1
+  },
+  {
+    "code": "1006",
+    "product": "BOLON PINTON MIXTO",
+    "status": "skipped-existing",
+    "source": "Bolón Mixto",
+    "score": 1
+  },
+  {
+    "code": "2006",
+    "product": "AGRANDAR BOLON DE QUESO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "2025",
+    "product": "DESAYUNO AMERICANO PANES TOSTADOS REVOLTILLO TOCINO CAFE JUGO",
+    "status": "unmatched",
+    "suggestion": "Desayuno Americano",
+    "score": 0.25
+  },
+  {
+    "code": "2026",
+    "product": "BISTEC CARNE+ARROZ BLANCO",
+    "status": "unmatched",
+    "suggestion": "Arroz blanco",
+    "score": 0.5
+  },
+  {
+    "code": "2036",
+    "product": "TORTILLA DE HUEVO",
+    "status": "skipped-existing",
+    "source": "Tortilla de huevo",
+    "score": 1
+  },
+  {
+    "code": "2058",
+    "product": "FUZE TEA",
+    "status": "skipped-existing",
+    "source": "Fuze tea",
+    "score": 1
+  },
+  {
+    "code": "2076",
+    "product": "PAN TOSTADO SOLO",
+    "status": "unmatched",
+    "suggestion": "Pan Tostado",
+    "score": 0.667
+  },
+  {
+    "code": "2085",
+    "product": "MEDIO BISTEC CARNE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "2089",
+    "product": "EMPANADA DE VERDE (CARNE)",
+    "status": "skipped-existing",
+    "source": "Empanada de verde de carne",
+    "score": 1
+  },
+  {
+    "code": "2090",
+    "product": "EMPANADA DE VERDE (POLLO)",
+    "status": "skipped-existing",
+    "source": "Empanada de verde de pollo",
+    "score": 1
+  },
+  {
+    "code": "2091",
+    "product": "EMPANADA DE VERDE (QUESO)",
+    "status": "skipped-existing",
+    "source": "Empanada de verde de queso",
+    "score": 1
+  },
+  {
+    "code": "2097",
+    "product": "BOLON GUAYACO VERDE",
+    "status": "skipped-existing",
+    "source": "Bolón Guayaco",
+    "score": 1
+  },
+  {
+    "code": "2100",
+    "product": "SALSA DE QUESO 70 cc",
+    "status": "unmatched",
+    "suggestion": "Salsa de queso",
+    "score": 0.5
+  },
+  {
+    "code": "2113",
+    "product": "EMPANADA HARINA DE JAMON",
+    "status": "skipped-existing",
+    "source": "Empanada de Harina con Jamón",
+    "score": 1
+  },
+  {
+    "code": "2114",
+    "product": "PORCION DE AJI",
+    "status": "unmatched",
+    "suggestion": "Porción de Jamón",
+    "score": 0.45
+  },
+  {
+    "code": "2115",
+    "product": "SALSA DE CEBOLLA FUNDA",
+    "status": "unmatched",
+    "suggestion": "Salsa de queso",
+    "score": 0.308
+  },
+  {
+    "code": "2116",
+    "product": "CUBIERTOS",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "2117",
+    "product": "SERVILLETAS",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "2125",
+    "product": "TORTILLA DE VERDE CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Tortilla de verde con chicharrón",
+    "score": 1
+  },
+  {
+    "code": "2130",
+    "product": "PATACONES SOLOS",
+    "status": "skipped-existing",
+    "source": "Patacones Solos",
+    "score": 1
+  },
+  {
+    "code": "BEB-00001",
+    "product": "SPRITE",
+    "status": "skipped-existing",
+    "source": "Sprite",
+    "score": 1
+  },
+  {
+    "code": "BEB-00002",
+    "product": "COCA COLA ORIGINAL",
+    "status": "skipped-existing",
+    "source": "Coca Cola Original",
+    "score": 1
+  },
+  {
+    "code": "BEB-00003",
+    "product": "COCA COLA ZERO",
+    "status": "skipped-existing",
+    "source": "Coca Cola zero",
+    "score": 1
+  },
+  {
+    "code": "4302",
+    "product": "VAINILLA SYRUP",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "4303",
+    "product": "AMARETO SYRUP",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "4304",
+    "product": "CARAMELO SYRUP",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "4305",
+    "product": "ALMENDRA SYRUP",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "4344",
+    "product": "ESPRESSO SENCILLO",
+    "status": "unmatched",
+    "suggestion": "Calentadito Sencillo",
+    "score": 0.45
+  },
+  {
+    "code": "4345",
+    "product": "ESPRESSO DOBLE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "4346",
+    "product": "CAFE AMERICANO MAQUINA",
+    "status": "skipped-existing",
+    "source": "Cafe Americano de Maquina",
+    "score": 1
+  },
+  {
+    "code": "4348",
+    "product": "CAFE AMERICANO PASADO",
+    "status": "skipped-existing",
+    "source": "Café Americano Pasado",
+    "score": 1
+  },
+  {
+    "code": "4349",
+    "product": "CAFE CON LECHE",
+    "status": "skipped-existing",
+    "source": "Cafe con leche",
+    "score": 1
+  },
+  {
+    "code": "4351",
+    "product": "CAPUCCINO",
+    "status": "skipped-existing",
+    "source": "Capuccino",
+    "score": 1
+  },
+  {
+    "code": "4358",
+    "product": "CORTADITO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "4359",
+    "product": "CORTADO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "4361",
+    "product": "CHOCOLATE CALIENTE",
+    "status": "skipped-existing",
+    "source": "Chocolate caliente",
+    "score": 1
+  },
+  {
+    "code": "4362",
+    "product": "MACCHIATO LATTE DE CHOCOLATE",
+    "status": "skipped-existing",
+    "source": "Macchiato latte de chocolate",
+    "score": 1
+  },
+  {
+    "code": "4363",
+    "product": "MOCACCINO",
+    "status": "skipped-existing",
+    "source": "Mocaccino ",
+    "score": 1
+  },
+  {
+    "code": "4392",
+    "product": "FIORA",
+    "status": "skipped-existing",
+    "source": "Fiora",
+    "score": 1
+  },
+  {
+    "code": "4396",
+    "product": "BOLON PINTON LONGANIZA",
+    "status": "skipped-existing",
+    "source": "Bolón de Longaniza",
+    "score": 1
+  },
+  {
+    "code": "4397",
+    "product": "BOLON MADURO LONGANIZA",
+    "status": "skipped-existing",
+    "source": "Bolón de Longaniza",
+    "score": 1
+  },
+  {
+    "code": "4398",
+    "product": "BOLON MADURO GUAYACO",
+    "status": "skipped-existing",
+    "source": "Bolón Guayaco",
+    "score": 1
+  },
+  {
+    "code": "4399",
+    "product": "BOLON PINTON GUAYACO",
+    "status": "skipped-existing",
+    "source": "Bolón Guayaco",
+    "score": 1
+  },
+  {
+    "code": "5002",
+    "product": "TIGRILLO PINTON QUESO",
+    "status": "skipped-existing",
+    "source": "Tigrillo de Queso",
+    "score": 1
+  },
+  {
+    "code": "5003",
+    "product": "TIGRILLO MADURO QUESO",
+    "status": "skipped-existing",
+    "source": "Tigrillo de Queso",
+    "score": 1
+  },
+  {
+    "code": "5004",
+    "product": "TIGRILLO MADURO CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Tigrillo de Chicharrón",
+    "score": 1
+  },
+  {
+    "code": "5005",
+    "product": "TIGRILLO PINTON CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Tigrillo de Chicharrón",
+    "score": 1
+  },
+  {
+    "code": "5006",
+    "product": "TIGRILLO MADURO MIXTO",
+    "status": "skipped-existing",
+    "source": "Tigrillo Mixto",
+    "score": 1
+  },
+  {
+    "code": "5007",
+    "product": "TIGRILLO PINTON MIXTO",
+    "status": "skipped-existing",
+    "source": "Tigrillo Mixto",
+    "score": 1
+  },
+  {
+    "code": "5009",
+    "product": "TORTILLA PINTON DE QUESO",
+    "status": "skipped-existing",
+    "source": "Tortilla de Verde con Queso",
+    "score": 1
+  },
+  {
+    "code": "5010",
+    "product": "TORTILLA DE PINTON CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Tortilla de verde con chicharrón",
+    "score": 1
+  },
+  {
+    "code": "5012",
+    "product": "CANOA PINTON",
+    "status": "skipped-existing",
+    "source": "Canoa",
+    "score": 1
+  },
+  {
+    "code": "5013",
+    "product": "CANOA MADURO",
+    "status": "skipped-existing",
+    "source": "Canoa",
+    "score": 1
+  },
+  {
+    "code": "5019",
+    "product": "MEDIO BISTEC DE HIGADO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5021",
+    "product": "REVOLTILLO DE HUEVO CON QUESO",
+    "status": "unmatched",
+    "suggestion": "Revoltillo de Huevo",
+    "score": 0.667
+  },
+  {
+    "code": "5022",
+    "product": "REVOLTILLO DE HUEVO CON JAMON Y QUESO",
+    "status": "unmatched",
+    "suggestion": "Empanada de harina Mixta queso y jamón",
+    "score": 0.462
+  },
+  {
+    "code": "5023",
+    "product": "REVOLTILLO DE HUEVO CON JAMON",
+    "status": "unmatched",
+    "suggestion": "Revoltillo de Huevo",
+    "score": 0.667
+  },
+  {
+    "code": "0121",
+    "product": "AGUA DASANI BOLONCITY POR UNIDAD",
+    "status": "unmatched",
+    "suggestion": "Agua Boloncity",
+    "score": 0.667
+  },
+  {
+    "code": "5057",
+    "product": "TORTA DE VERDE GRANDE MIXTA",
+    "status": "unmatched",
+    "suggestion": "Torta de Bolón",
+    "score": 0.308
+  },
+  {
+    "code": "5058",
+    "product": "TORTA DE MADURO GRANDE MIXTA",
+    "status": "unmatched",
+    "suggestion": "Torta de Bolón",
+    "score": 0.308
+  },
+  {
+    "code": "5059",
+    "product": "TORTA PINTON GRANDE MIXTA",
+    "status": "unmatched",
+    "suggestion": "Torta de Bolón",
+    "score": 0.308
+  },
+  {
+    "code": "5087",
+    "product": "TORTILLA DE VERDE MIXTA",
+    "status": "unmatched",
+    "suggestion": "Tortilla de Verde con Queso",
+    "score": 0.45
+  },
+  {
+    "code": "5089",
+    "product": "TORTILLA PINTON MIXTA",
+    "status": "unmatched",
+    "suggestion": "Tortilla de Verde con Queso",
+    "score": 0.45
+  },
+  {
+    "code": "5090",
+    "product": "CALENTADITO SENCILLO POLLO",
+    "status": "unmatched",
+    "suggestion": "Calentadito Sencillo",
+    "score": 0.667
+  },
+  {
+    "code": "5091",
+    "product": "EXTRA SALSA DE MANI 70CC",
+    "status": "unmatched",
+    "suggestion": "Salsa de queso",
+    "score": 0.235
+  },
+  {
+    "code": "5092",
+    "product": "BISTEC DE HIGADO+ARROZ BLANCO",
+    "status": "unmatched",
+    "suggestion": "Arroz blanco",
+    "score": 0.5
+  },
+  {
+    "code": "5093",
+    "product": "AGRANDAR BOLON DE QUESO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5094",
+    "product": "AGRANDAR BOLON DE QUESO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5095",
+    "product": "AGRANDAR BOLON DE CHICHARRON VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5096",
+    "product": "AGRANDAR BOLON DE CHICHARRON MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5097",
+    "product": "AGRANDAR BOLON DE CHICHARRON PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5098",
+    "product": "AGRANDAR BOLON MIXTO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5099",
+    "product": "AGRANDAR BOLON MIXTO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5100",
+    "product": "AGRANDAR BOLON MIXTO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "PJ02",
+    "product": "PORCION DE JAMON",
+    "status": "skipped-existing",
+    "source": "Porción de Jamón",
+    "score": 1
+  },
+  {
+    "code": "ARBL002",
+    "product": "PORCION ARROZ BLANCO",
+    "status": "unmatched",
+    "suggestion": "Arroz blanco",
+    "score": 0.667
+  },
+  {
+    "code": "PMOR001",
+    "product": "PORCION DE MORO",
+    "status": "skipped-existing",
+    "source": "Porción de Moro",
+    "score": 1
+  },
+  {
+    "code": "PRC001",
+    "product": "PROMO CRISPY",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "5103",
+    "product": "4.99 APPS BOLON DE QUESO VERDE +CAFE",
+    "status": "unmatched",
+    "suggestion": "Bolón de queso+café americano $4.99",
+    "score": 0.798
+  },
+  {
+    "code": "5104",
+    "product": "4.99 APPS BOLON DE QUESO PINTON +CAFE",
+    "status": "unmatched",
+    "suggestion": "Bolón de queso+café americano $4.99",
+    "score": 0.798
+  },
+  {
+    "code": "5105",
+    "product": "4.99 APPS BOLON DE QUESO MADURO+CAFE",
+    "status": "unmatched",
+    "suggestion": "Bolón de queso+café americano $4.99",
+    "score": 0.798
+  },
+  {
+    "code": "CHCA01",
+    "product": "CHOCOLATE FRIO",
+    "status": "skipped-existing",
+    "source": "Chocolate frio",
+    "score": 1
+  },
+  {
+    "code": "PROMO1",
+    "product": "COMBO ENERGETICO",
+    "status": "skipped-existing",
+    "source": "COMBO ENERGETICO",
+    "score": 1
+  },
+  {
+    "code": "HV001",
+    "product": "SHAKSHUKA HUEVOS TURCOS",
+    "status": "unmatched",
+    "suggestion": "Shakshuka ",
+    "score": 0.333
+  },
+  {
+    "code": "TMV001",
+    "product": "TORTA MEDIANA DE VERDE MIXTA",
+    "status": "unmatched",
+    "suggestion": "Torta mediana de bolón ",
+    "score": 0.617
+  },
+  {
+    "code": "TMM001",
+    "product": "TORTA MEDIANA DE MADURO MIXTA",
+    "status": "unmatched",
+    "suggestion": "Torta mediana de bolón ",
+    "score": 0.617
+  },
+  {
+    "code": "TMP001",
+    "product": "TORTA MEDIANA DE PINTON MIXTA",
+    "status": "unmatched",
+    "suggestion": "Torta mediana de bolón ",
+    "score": 0.617
+  },
+  {
+    "code": "CHC001",
+    "product": "COLONCHE DE CAMARON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "PCA001",
+    "product": "PICADA BOLONCITY",
+    "status": "unmatched",
+    "suggestion": "Agua Boloncity",
+    "score": 0.45
+  },
+  {
+    "code": "MKS001",
+    "product": "MILKSHAKE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MSKO001",
+    "product": "MILKSHAKE OREO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "BAT001",
+    "product": "BATIDO DE MORA",
+    "status": "unmatched",
+    "suggestion": "Jugo de Mora",
+    "score": 0.45
+  },
+  {
+    "code": "BATF001",
+    "product": "BATIDO DE FRUTILLA",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "TGG001",
+    "product": "TIGRILLO GUAYACO CRUNCH VERDE",
+    "status": "skipped-existing",
+    "source": "Tigrillo Guayaco Crunch",
+    "score": 1
+  },
+  {
+    "code": "TCQ001",
+    "product": "TIGRILLO CRUNCH VERDE QUESO",
+    "status": "skipped-existing",
+    "source": "Tigrillo crunch con  queso ",
+    "score": 1
+  },
+  {
+    "code": "TCCV001",
+    "product": "TIGRILLO CRUNCH VERDE CHICHARRON",
+    "status": "skipped-existing",
+    "source": "Tigrillo crunch con chicharrón",
+    "score": 1
+  },
+  {
+    "code": "TCVM001",
+    "product": "TIGRILLO CRUNCH VERDE MIXTO",
+    "status": "unmatched",
+    "suggestion": "Tigrillo Mixto",
+    "score": 0.667
+  },
+  {
+    "code": "TCCV002",
+    "product": "TIGRILLO CRUNCH VERDE CAMARON",
+    "status": "unmatched",
+    "suggestion": "Tigrillo Guayaco Crunch",
+    "score": 0.617
+  },
+  {
+    "code": "LA001",
+    "product": "LECHE DE ALMENDRAS TAZA",
+    "status": "unmatched",
+    "suggestion": "Leche",
+    "score": 0.333
+  },
+  {
+    "code": "DP45100748399S",
+    "product": "CONTENEDOR DARNEL PARA INDECISO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "AFO001",
+    "product": "AFFOGATO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "BMC001",
+    "product": "BOLON MIXTO CONGELADO POR CAJA",
+    "status": "unmatched",
+    "suggestion": "NEW BOLON MIXTO CONGELADO",
+    "score": 0.705
+  },
+  {
+    "code": "BQC001",
+    "product": "BOLON QUESO CONGELADO POR CAJA",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0.75
+  },
+  {
+    "code": "TMC001",
+    "product": "TIGRILLO MIXTO CONGELADO POR CAJA",
+    "status": "unmatched",
+    "suggestion": "Tigrillo mixto congelado ",
+    "score": 0.75
+  },
+  {
+    "code": "THCQ001",
+    "product": "TORTILLA DE HUEVO CON QUESO",
+    "status": "unmatched",
+    "suggestion": "Tortilla de Verde con Queso",
+    "score": 0.667
+  },
+  {
+    "code": "THQJ002",
+    "product": "TORTILLA DE HUEVO QUESO Y JAMON",
+    "status": "unmatched",
+    "suggestion": "Tortilla de verde mixta (Queso y chicharrón)",
+    "score": 0.549
+  },
+  {
+    "code": "TY001",
+    "product": "TORTILLA DE YUCA CON QUESO",
+    "status": "skipped-existing",
+    "source": "TORTILLA DE YUCA CON QUESO ",
+    "score": 1
+  },
+  {
+    "code": "TSJ001",
+    "product": "TOSTADA DE JAMON",
+    "status": "unmatched",
+    "suggestion": "Porción de Jamón",
+    "score": 0.45
+  },
+  {
+    "code": "BCQ001",
+    "product": "BOLON CRUNCH VERDE QUESO",
+    "status": "unmatched",
+    "suggestion": "Bolón de Queso",
+    "score": 0.667
+  },
+  {
+    "code": "BCM001",
+    "product": "BOLON CRUNCH VERDE MIXTO",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto",
+    "score": 0.667
+  },
+  {
+    "code": "DES002",
+    "product": "DESAYUNO AMERICANO PANES TOSTADOS REVOLTILLO JAMON CAFE JUGO",
+    "status": "unmatched",
+    "suggestion": "Desayuno Americano",
+    "score": 0.25
+  },
+  {
+    "code": "LCD001",
+    "product": "LECHE DESLACTOSADA TAZA",
+    "status": "unmatched",
+    "suggestion": "Leche",
+    "score": 0.333
+  },
+  {
+    "code": "LCHDS001",
+    "product": "LECHE DESCREMADA TAZA",
+    "status": "unmatched",
+    "suggestion": "Leche",
+    "score": 0.333
+  },
+  {
+    "code": "LCS002",
+    "product": "LECHE SEMIDESCREMADA TAZA",
+    "status": "unmatched",
+    "suggestion": "Leche",
+    "score": 0.333
+  },
+  {
+    "code": "ARMZ001",
+    "product": "AGUA AROMATICA MANZANILLA",
+    "status": "unmatched",
+    "suggestion": "Agua Aromatica",
+    "score": 0.667
+  },
+  {
+    "code": "ARMZM002",
+    "product": "AGUA AROMATICA MANZANILLA CON MIEL",
+    "status": "unmatched",
+    "suggestion": "Agua Aromatica",
+    "score": 0.5
+  },
+  {
+    "code": "ARHL001",
+    "product": "AGUA AROMATICA HIERBA LUISA",
+    "status": "unmatched",
+    "suggestion": "Agua Aromatica",
+    "score": 0.5
+  },
+  {
+    "code": "HFC001",
+    "product": "HUEVO FRITO COMBO",
+    "status": "unmatched",
+    "suggestion": "COMBO EL INDECISO",
+    "score": 0.308
+  },
+  {
+    "code": "MCBE001",
+    "product": "MEDIO BISTEC DE CARNE ENERGETICO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBHE002",
+    "product": "MEDIO BISTEC HIGADO ENERGETICO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBMV001",
+    "product": "MINI BOLON MIXTO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBMM001",
+    "product": "MINI BOLON MIXTO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBMP001",
+    "product": "MINI BOLON MIXTO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTMV",
+    "product": "MINI TIGRILLO MIXTO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTMM001",
+    "product": "MINI TIGRILLO MIXTO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTMP001",
+    "product": "MINI TIGRILLO MIXTO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MCV001",
+    "product": "MINI CANOA VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MCM001",
+    "product": "MINI CANOA MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MCP001",
+    "product": "MINI CANOA PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBC001",
+    "product": "MINI BISTEC DE CARNE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBH001",
+    "product": "MINI BISTEC DE HIGADO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "IDC001",
+    "product": "COMBO INDECISO",
+    "status": "skipped-existing",
+    "source": "COMBO EL INDECISO",
+    "score": 1
+  },
+  {
+    "code": "MBGV001",
+    "product": "MINI BOLON GUAYACO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBLV001",
+    "product": "MINI BOLON LONGANIZA VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBCV001",
+    "product": "MINI BOLON CHICHARRON VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBGM001",
+    "product": "MINI BOLON GUAYACO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBGP001",
+    "product": "MINI BOLON GUAYACO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBLM001",
+    "product": "MINI BOLON LONGANIZA MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBLP001",
+    "product": "MINI BOLON LONGANIZA PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBCM001",
+    "product": "MINI BOLON CHICHARRON MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBCP001",
+    "product": "MINI BOLON CHICHARRON PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "QT001",
+    "product": "COMBO QUIERO TODO 4 MINI BOLONES",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "CBMC001",
+    "product": "5.99 APPS COMBO BOLON MIXTO VERDE+CAFE AMERICANO",
+    "status": "unmatched",
+    "suggestion": "Combo Tortilla de verde + café americano ",
+    "score": 0.362
+  },
+  {
+    "code": "CBMM001",
+    "product": "5.99 APPS COMBO BOLON MIXTO MADURO+CAFE AMERICANO",
+    "status": "unmatched",
+    "suggestion": "Combo Tortilla de verde + café americano ",
+    "score": 0.362
+  },
+  {
+    "code": "CBMP001",
+    "product": "5.99 APPS COMBO BOLON MIXTO PINTON + CAFE AMERICANO",
+    "status": "unmatched",
+    "suggestion": "Combo Tortilla de verde + café americano ",
+    "score": 0.362
+  },
+  {
+    "code": "CMB799",
+    "product": "COMBO $7.99: 2 EMPANADAS HARINA MIXTAS+2 CAFE AMERICANO+1 SALSA DE QUESO 70 CC",
+    "status": "unmatched",
+    "suggestion": "Combo Tortilla de verde + café americano ",
+    "score": 0.2
+  },
+  {
+    "code": "BMXP001",
+    "product": "2X1 BOLON MIXTO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto",
+    "score": 0.667
+  },
+  {
+    "code": "BMM001",
+    "product": "2X1 BOLON MADURO MIXTO",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto",
+    "score": 0.667
+  },
+  {
+    "code": "BMP001",
+    "product": "2X1 BOLON MIXTO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto",
+    "score": 0.667
+  },
+  {
+    "code": "CBQ001",
+    "product": "COMBO 3.99 MEDIO BOLON QUESO+CAFE AMERICANO+HUEVO FRITO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBQV001",
+    "product": "MEDIO BOLON QUESO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBQM001",
+    "product": "MEDIO BOLON QUESO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBPQ001",
+    "product": "MEDIO BOLON QUESO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBQCV001",
+    "product": "MEDIO BOLON QUESO VERDE CRUNCH",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTQV",
+    "product": "MEDIO TIGRILLO QUESO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTQM001",
+    "product": "MEDIO TIGRILLO QUESO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTQP001",
+    "product": "MEDIO TIGRILLO QUESO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTQVC001",
+    "product": "MEDIO TIGRILLO CRUNCH VERDE QUESO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "CTG001",
+    "product": "COMBO $4.50 MEDIO TIGRILLO QUESO+HUEVO FRITO+CAFE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "ESP001",
+    "product": "SALPRIETA PORCION",
+    "status": "skipped-existing",
+    "source": "Porción de salprieta",
+    "score": 1
+  },
+  {
+    "code": "CBMBT001",
+    "product": "COMBO $7.50 1/2 BOLON QUESO+1/2 TIGRILLO+CAFE+JUGO+SALPRIETA+SALSA QUESO",
+    "status": "unmatched",
+    "suggestion": "Combo Tortilla de verde + café americano ",
+    "score": 0.136
+  },
+  {
+    "code": "MH001",
+    "product": "COMBO MEDIA HUMITA+CAFE AMERICANO",
+    "status": "unmatched",
+    "suggestion": "Combo Tortilla de verde + café americano ",
+    "score": 0.57
+  },
+  {
+    "code": "HM001",
+    "product": "MEDIA HUMITA",
+    "status": "unmatched",
+    "suggestion": "Humita",
+    "score": 0.5
+  },
+  {
+    "code": "TORTLMV001",
+    "product": "MINI TORTILLA DE VERDE SOLA $1.50",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "TORTLMM002",
+    "product": "MINI TORTILLA DE MADURO SOLA $1.50",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTMQC001",
+    "product": "MINI TORTILLA DE MADURO QUESO+CAFE AMERICANO $1.99",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MTVQC001",
+    "product": "MINI TORTILLA DE VERDE QUESO+CAFE AMERICANO $1.99",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MB001",
+    "product": "MEGA BOLON VERDE QUESO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBPQ002",
+    "product": "MEGA BOLON PINTON QUESO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBMQ001",
+    "product": "MEGA BOLON MADURO QUESO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBCV002",
+    "product": "MEGA BOLON VERDE CHICHARRON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBCP002",
+    "product": "MEGA BOLON PINTON CHICHARRON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBCMA001",
+    "product": "MEGA BOLON MADURO CHICHARRON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBVM001",
+    "product": "MEGA BOLON VERDE MIXTO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBPM001",
+    "product": "MEGA BOLON PINTON MIXTO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBMM002",
+    "product": "MEGA BOLON MADURO MIXTO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBGV002",
+    "product": "MEGA BOLON GUAYACO VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBGPV001",
+    "product": "MEGA BOLON GUAYACO PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "MBGM002",
+    "product": "MEGA BOLON GUAYACO MADURO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "BJMYA001",
+    "product": "JUGO MARACUYA BOTELLA",
+    "status": "unmatched",
+    "suggestion": "Jugo de Maracuyá",
+    "score": 0.667
+  },
+  {
+    "code": "BJNJA002",
+    "product": "JUGO NARANJA BOTELLA",
+    "status": "unmatched",
+    "suggestion": "Jugo Puro de Naranja",
+    "score": 0.617
+  },
+  {
+    "code": "BJMRA003",
+    "product": "JUGO MORA BOTELLA",
+    "status": "unmatched",
+    "suggestion": "Jugo de Mora",
+    "score": 0.667
+  },
+  {
+    "code": "BJPNJA006",
+    "product": "JUGO PURO NARANJA BOTELLA",
+    "status": "unmatched",
+    "suggestion": "Jugo Puro de Naranja",
+    "score": 0.75
+  },
+  {
+    "code": "CBUBER001",
+    "product": "TIGRILLO CHICHARRON+B QUESO+ 2 JUGOS $12.72 UBER",
+    "status": "unmatched",
+    "suggestion": "Tigrillo crunch con queso y chicharrón ",
+    "score": 0.315
+  },
+  {
+    "code": "CBCF001",
+    "product": "BOLON+CAFE+HUEVO+J BISTEC $5.75 LOCAL",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto+Café Americano $5.99",
+    "score": 0.344
+  },
+  {
+    "code": "CBUBER002",
+    "product": "BOLON+CAFE+HUEVO $7.99 UBER",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto+Café Americano $5.99",
+    "score": 0.45
+  },
+  {
+    "code": "CBUBER003",
+    "product": "TIGRILLO+CAFE+HUEVO $8.79 UBER",
+    "status": "unmatched",
+    "suggestion": "Tigrillo Mixto",
+    "score": 0.16
+  },
+  {
+    "code": "CBUBER004",
+    "product": "TIGRILLO+CAFE $6.99 UBER",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto+Café Americano $5.99",
+    "score": 0.3
+  },
+  {
+    "code": "CBUBER005",
+    "product": "BOLON GUAYACO+BOLON CHICHARRON+2 JUGOS $15.14 UBER",
+    "status": "unmatched",
+    "suggestion": "Bolón Guayaco",
+    "score": 0.231
+  },
+  {
+    "code": "CBEC001",
+    "product": "BOLON ESPECIAL+CAFE+HUEVO $6.99 LOCAL",
+    "status": "unmatched",
+    "suggestion": "Bolón Mixto+Café Americano $5.99",
+    "score": 0.39
+  },
+  {
+    "code": "CJREGALO001",
+    "product": "CAJA PARA REGALO BOLONCITY",
+    "status": "unmatched",
+    "suggestion": "Caja de regalo ",
+    "score": 0.5
+  },
+  {
+    "code": "BCORAZONCLA001",
+    "product": "BOLON CORAZON 12CM CLASICO",
+    "status": "unmatched",
+    "suggestion": "Torta de Bolón",
+    "score": 0.235
+  },
+  {
+    "code": "BCORAZONESP002",
+    "product": "BOLON CORAZON 12CM ESPECIALES",
+    "status": "unmatched",
+    "suggestion": "Torta de Bolón",
+    "score": 0.235
+  },
+  {
+    "code": "JALHZ002",
+    "product": "CREMA PISTACHO *KG*",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "JALHZ003",
+    "product": "MERMELADA DE FRESA * KG*",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "JALHZ004",
+    "product": "MANJAR DE LECHE KILOS",
+    "status": "unmatched",
+    "suggestion": "Leche",
+    "score": 0.333
+  },
+  {
+    "code": "6011",
+    "product": "LA BALA DE VERDE",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "6012",
+    "product": "LA BALA PINTON",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "ADI001",
+    "product": "TOPPINGS HELADOS ZOHUI",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "ADI002",
+    "product": "JALEA HELADOS ZOHUI",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "ADI003",
+    "product": "CONO HELADO ZOHUI",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "FRAPMJA001",
+    "product": "FRAPPE MANJAR",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "FRAPCHO002",
+    "product": "FRAPPE DE CHOCOLATE",
+    "status": "unmatched",
+    "suggestion": "Chocolate caliente",
+    "score": 0.45
+  },
+  {
+    "code": "FRAPCLAS003",
+    "product": "FRAPPE CLASICO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "ICELATTE001",
+    "product": "ICE LATTE",
+    "status": "unmatched",
+    "suggestion": "Macchiato latte de chocolate",
+    "score": 0.308
+  },
+  {
+    "code": "DESKID0001",
+    "product": "DESAYUNO KIDS TOSTADA DE QUESO+REVOLTILLO SOLO+JUGO PURO NARANJA +CAJA REGALO",
+    "status": "unmatched",
+    "suggestion": "Jugo Puro de Naranja",
+    "score": 0.273
+  },
+  {
+    "code": "DESKID0002",
+    "product": "MINI BOLON +HUEVO FRITO+JUGO PURO NARANJA+CAJA REGALO",
+    "status": "unmatched",
+    "suggestion": "Bolón queso congelado ",
+    "score": 0
+  },
+  {
+    "code": "CTGCLAS001",
+    "product": "$5.99 COMBO TIGRILLO CLASICO + CAFE AMERICANO +HUEVO FRITO",
+    "status": "unmatched",
+    "suggestion": "Combo Tortilla de verde + café americano ",
+    "score": 0.323
+  },
+  {
+    "code": "JPNKID001",
+    "product": "JUGO PURO NARANJA 250ML BOT",
+    "status": "unmatched",
+    "suggestion": "Jugo Puro de Naranja",
+    "score": 0.6
+  }
+]

@@ -19,14 +19,14 @@ export function isCloudinaryConfigured() {
   return cloudinaryConfigured;
 }
 
-export async function uploadToCloudinary(fileBuffer: Buffer, folder: string) {
+export async function uploadToCloudinary(fileBuffer: Buffer, folder: string, publicId?: string) {
   if (!cloudinaryConfigured) {
     throw new Error("Cloudinary is not configured");
   }
 
   return new Promise<{ secure_url: string; public_id: string }>((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { folder, resource_type: "image" },
+      { folder, public_id: publicId, overwrite: true, resource_type: "image" },
       (error, result) => {
         if (error || !result) {
           reject(error || new Error("Cloudinary upload failed"));

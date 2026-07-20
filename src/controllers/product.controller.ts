@@ -24,8 +24,12 @@ function parseJsonArray<T>(value: unknown, fallback: T[] = []) {
   return fallback;
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 export async function listProducts(req: Request, res: Response) {
-  const { category, q, available } = req.query;
+  const { category, q, available, paginate } = req.query;
   const filter: Record<string, unknown> = {};
   const queryParts: Array<Record<string, unknown>> = [];
 
@@ -34,8 +38,9 @@ export async function listProducts(req: Request, res: Response) {
     if (categoryDoc) filter.categories = (categoryDoc as any)._id;
   }
   if (typeof q === "string" && q.trim()) {
+    const safeQuery = new RegExp(escapeRegExp(q.trim()), "i");
     queryParts.push({
-      $or: [{ name: new RegExp(q, "i") }, { code: new RegExp(q, "i") }, { description: new RegExp(q, "i") }],
+      $or: [{ name: safeQuery }, { code: safeQuery }, { description: safeQuery }],
     });
   }
   if (available === "true") filter.isAvailable = true;
@@ -50,8 +55,31 @@ export async function listProducts(req: Request, res: Response) {
     filter.$and = queryParts;
   }
 
-  const products = await Product.find(filter).populate("categories").populate("branches").sort({ sortOrder: 1, createdAt: -1 });
-  res.json(products);
+  const query = Product.find(filter).populate("categories").populate("branches").sort({ sortOrder: 1, createdAt: -1 });
+
+  if (paginate === "true") {
+    const requestedPage = Number(req.query.page);
+    const requestedLimit = Number(req.query.limit);
+    const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+    const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 50) : 10;
+    const total = await Product.countDocuments(filter);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const safePage = Math.min(page, totalPages);
+    const products = await query.skip((safePage - 1) * limit).limit(limit);
+
+    res.json({
+      data: products,
+      pagination: {
+        page: safePage,
+        limit,
+        total,
+        totalPages,
+      },
+    });
+    return;
+  }
+
+  res.json(await query);
 }
 
 export async function getProductBySlug(req: Request, res: Response) {
@@ -160,8 +188,17 @@ export async function uploadProductImage(req: Request, res: Response) {
     return;
   }
 
+  const replacingPrimary = req.query.replace === "true";
+  const previousImages = replacingPrimary ? [...product.images] : [];
   const result = await uploadToCloudinary(file.buffer, `boloncity/products/${product.slug}`);
-  product.images.push({ url: result.secure_url, publicId: result.public_id });
+  const uploadedImage = { url: result.secure_url, publicId: result.public_id };
+
+  product.images = replacingPrimary ? [uploadedImage] : [...product.images, uploadedImage];
   await product.save();
+
+  if (replacingPrimary) {
+    await Promise.all(previousImages.map((image: { publicId: string }) => deleteFromCloudinary(image.publicId)));
+  }
+
   res.status(201).json(product);
 }
