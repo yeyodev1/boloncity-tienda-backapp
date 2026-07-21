@@ -28,6 +28,23 @@ export interface IOrderAudit {
   timestamp: Date;
 }
 
+export interface IPickerData {
+  bookingId: string;
+  bookingNumericId: number;
+  statusText: string;
+  smrURL: string;
+  bookingDetailUrl: string;
+  createdAt?: Date;
+}
+
+export interface IBillingData {
+  docType: string;
+  name: string;
+  docNumber: string;
+  email: string;
+  address: string;
+}
+
 export interface IOrder {
   orderNumber: string;
   user?: Types.ObjectId | null;
@@ -36,8 +53,16 @@ export interface IOrder {
   subtotal: number;
   tax: number;
   total: number;
+  deliveryType: "delivery" | "pickup";
+  deliveryCost: number;
+  deliveryDistance: number;
+  deliveryAddress: string;
+  deliveryGoogleMapsUrl: string;
+  deliveryCoordinates?: { lat: number; lng: number } | null;
   status: "pending" | "paid" | "preparing" | "ready" | "delivered" | "cancelled";
   payphone: IPayphoneData;
+  picker?: IPickerData;
+  billing?: IBillingData;
   pointsEarned: number;
   pointsRedeemed: number;
   customerEmail: string;
@@ -82,6 +107,30 @@ const orderSchema = new Schema<IOrder>(
       cardBrand: { type: String, default: "" },
       lastDigits: { type: String, default: "" },
       confirmedAt: { type: Date, default: null },
+    },
+    deliveryType: { type: String, enum: ["delivery", "pickup"], default: "delivery" },
+    deliveryCost: { type: Number, default: 0 },
+    deliveryDistance: { type: Number, default: 0 },
+    deliveryAddress: { type: String, default: "" },
+    deliveryGoogleMapsUrl: { type: String, default: "" },
+    deliveryCoordinates: {
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+    },
+    picker: {
+      bookingId: { type: String, default: "" },
+      bookingNumericId: { type: Number, default: null },
+      statusText: { type: String, default: "" },
+      smrURL: { type: String, default: "" },
+      bookingDetailUrl: { type: String, default: "" },
+      createdAt: { type: Date, default: null },
+    },
+    billing: {
+      docType: { type: String, default: "" },
+      name: { type: String, default: "" },
+      docNumber: { type: String, default: "" },
+      email: { type: String, default: "" },
+      address: { type: String, default: "" },
     },
     pointsEarned: { type: Number, default: 0 },
     pointsRedeemed: { type: Number, default: 0 },

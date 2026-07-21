@@ -5,6 +5,8 @@ import branchRouter from "./branch.routes";
 import orderRouter from "./order.routes";
 import productRouter from "./product.routes";
 import userRouter from "./user.routes";
+import settingsRouter from "./settings.routes";
+import deliveryRouter from "./delivery.routes";
 
 function routerApi(app: Application) {
   const router = express.Router();
@@ -14,6 +16,8 @@ function routerApi(app: Application) {
   router.use("/products", productRouter);
   router.use("/orders", orderRouter);
   router.use("/users", userRouter);
+  router.use("/settings", settingsRouter);
+  router.use("/delivery", deliveryRouter);
   app.use("/api", router);
 }
 

@@ -7,7 +7,7 @@ export async function confirmPayphoneTransaction(id: number, clientTxId: string)
   }
 
   const response = await axios.post(
-    "https://paymentbox.payphonetodoesposible.com/api/confirm",
+    "https://pay.payphonetodoesposible.com/api/button/V2/Confirm",
     {
       id,
       clientTxId,

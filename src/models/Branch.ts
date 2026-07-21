@@ -15,6 +15,7 @@ export interface IBranch {
     lat: number
     lng: number
   } | null
+  pickerApiKey?: string
   isActive: boolean
   createdAt?: Date
   updatedAt?: Date
@@ -35,6 +36,7 @@ const branchSchema = new Schema<IBranch>(
       lat: { type: Number, default: null },
       lng: { type: Number, default: null },
     },
+    pickerApiKey: { type: String, default: '' },
     isActive: { type: Boolean, default: true },
   },
   { timestamps: true }
