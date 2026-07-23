@@ -20,6 +20,8 @@ export interface IUser {
   points: number;
   pointsHistory: IPointsHistory[];
   isActive: boolean;
+  resetPasswordToken?: string | null;
+  resetPasswordExpires?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -47,6 +49,8 @@ const userSchema = new Schema<IUser>(
     points: { type: Number, default: 0 },
     pointsHistory: { type: [pointsHistorySchema], default: [] },
     isActive: { type: Boolean, default: true },
+    resetPasswordToken: { type: String, default: null },
+    resetPasswordExpires: { type: Date, default: null },
   },
   { timestamps: true }
 );

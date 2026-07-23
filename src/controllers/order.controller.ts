@@ -1,3 +1,4 @@
+import axios from "axios";
 import { Request, Response } from "express";
 import { Order } from "../models/Order";
 import { Counter } from "../models/Counter";
@@ -273,6 +274,7 @@ export async function confirmOrder(req: Request, res: Response) {
             smrURL: pickerResult.smrURL,
             bookingDetailUrl: pickerResult.bookingDetailUrl,
             createdAt: new Date(),
+            currentStatus: pickerResult.currentStatus || "",
           };
           pushAudit(order, {
             action: "note_added",
@@ -503,4 +505,141 @@ export async function addOrderNote(req: AuthRequest, res: Response) {
   await order.save();
 
   res.json(order);
+}
+
+export async function getMyOrders(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ message: "No autenticado" });
+    return;
+  }
+
+  const orders = await Order.find({ user: userId })
+    .sort({ createdAt: -1 })
+    .populate("branch")
+    .populate("items.product");
+
+  res.json(orders);
+}
+
+export async function getMyOrderById(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ message: "No autenticado" });
+    return;
+  }
+
+  const order = await Order.findOne({ _id: req.params.id, user: userId })
+    .populate("branch")
+    .populate("items.product");
+
+  if (!order) {
+    res.status(404).json({ message: "Orden no encontrada" });
+    return;
+  }
+
+  res.json(order);
+}
+
+export async function retryPickerBooking(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ message: "No autenticado" });
+    return;
+  }
+
+  const order = await Order.findById(req.params.id).populate("branch");
+  if (!order) {
+    res.status(404).json({ message: "Orden no encontrada" });
+    return;
+  }
+
+  if (String(order.user) !== userId) {
+    res.status(403).json({ message: "No tienes permiso para modificar esta orden" });
+    return;
+  }
+
+  if (order.deliveryType !== "delivery") {
+    res.status(400).json({ message: "Esta orden no es de tipo delivery" });
+    return;
+  }
+
+  if (order.picker?.bookingId) {
+    res.status(400).json({ message: "Esta orden ya tiene un delivery asignado" });
+    return;
+  }
+
+  const branch = order.branch ? await Branch.findById(order.branch) : null;
+  const branchKey = branch?.pickerApiKey || (branch ? getPickerBranchKey(branch.name) : "");
+
+  if (!branchKey || !order.deliveryCoordinates?.lat || !order.deliveryCoordinates?.lng) {
+    res.status(400).json({ message: "No hay coordenadas de entrega o llave de sucursal para crear el delivery" });
+    return;
+  }
+
+  const nameParts = (order.customerName || "").split(" ");
+  const firstName = nameParts[0] || order.customerName || "";
+  const lastName = nameParts.slice(1).join(" ") || "Cliente";
+
+  try {
+    const pickerResult = await createPickerBooking({
+      branchKey,
+      latitude: order.deliveryCoordinates.lat,
+      longitude: order.deliveryCoordinates.lng,
+      address: order.deliveryAddress || "Sin dirección",
+      reference: order.deliveryGoogleMapsUrl || "",
+      customerName: firstName,
+      customerLastName: lastName,
+      customerEmail: order.customerEmail,
+      customerPhone: order.customerPhone || "",
+      customerCountryCode: "593",
+      orderAmount: centsToDollars(order.total),
+      externalBookingId: order.orderNumber,
+      notes: order.notes || "",
+    });
+
+    order.picker = {
+      bookingId: pickerResult._id,
+      bookingNumericId: pickerResult.bookingNumericId,
+      statusText: pickerResult.statusText,
+      smrURL: pickerResult.smrURL,
+      bookingDetailUrl: pickerResult.bookingDetailUrl,
+      createdAt: new Date(),
+      currentStatus: pickerResult.currentStatus || "",
+    };
+
+    pushAudit(order, {
+      action: "note_added",
+      performedBy: req.user?.userId || null,
+      performedByEmail: req.user?.email || "",
+      details: `Delivery solicitado por el cliente — Picker booking #${pickerResult.bookingNumericId} creado`,
+    });
+
+    await order.save();
+    res.json({ success: true, order, picker: pickerResult });
+  } catch (pickerErr) {
+    console.error("Retry Picker booking failed:", pickerErr);
+    let errorMsg = "Error desconocido al crear el delivery";
+
+    if (axios.isAxiosError(pickerErr) && pickerErr.response) {
+      const pickerData = pickerErr.response.data;
+      errorMsg = pickerData?.message || pickerData?.error || `Picker API error: ${pickerErr.response.status}`;
+      console.error("Picker API response data:", JSON.stringify(pickerData, null, 2));
+    } else if (pickerErr instanceof Error) {
+      errorMsg = pickerErr.message;
+    }
+
+    pushAudit(order, {
+      action: "note_added",
+      performedBy: req.user?.userId || null,
+      performedByEmail: req.user?.email || "",
+      details: `Intento de delivery falló: ${errorMsg}`,
+    });
+    await order.save();
+
+    res.status(502).json({
+      message: "No pudimos crear el delivery. " + errorMsg,
+      error: errorMsg,
+    });
+  }
 }

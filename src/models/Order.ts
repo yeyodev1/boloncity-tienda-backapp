@@ -35,6 +35,12 @@ export interface IPickerData {
   smrURL: string;
   bookingDetailUrl: string;
   createdAt?: Date;
+  currentStatus?: string;
+  driverName?: string;
+  driverPhone?: string;
+  driverVehicle?: string;
+  driverPhoto?: string;
+  validationCode?: string;
 }
 
 export interface IBillingData {
@@ -124,6 +130,12 @@ const orderSchema = new Schema<IOrder>(
       smrURL: { type: String, default: "" },
       bookingDetailUrl: { type: String, default: "" },
       createdAt: { type: Date, default: null },
+      currentStatus: { type: String, default: "" },
+      driverName: { type: String, default: "" },
+      driverPhone: { type: String, default: "" },
+      driverVehicle: { type: String, default: "" },
+      driverPhoto: { type: String, default: "" },
+      validationCode: { type: String, default: "" },
     },
     billing: {
       docType: { type: String, default: "" },

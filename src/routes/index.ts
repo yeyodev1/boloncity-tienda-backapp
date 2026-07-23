@@ -7,6 +7,7 @@ import productRouter from "./product.routes";
 import userRouter from "./user.routes";
 import settingsRouter from "./settings.routes";
 import deliveryRouter from "./delivery.routes";
+import webhookRouter from "./webhook.routes";
 
 function routerApi(app: Application) {
   const router = express.Router();
@@ -18,6 +19,7 @@ function routerApi(app: Application) {
   router.use("/users", userRouter);
   router.use("/settings", settingsRouter);
   router.use("/delivery", deliveryRouter);
+  router.use("/webhooks", webhookRouter);
   app.use("/api", router);
 }
 

@@ -127,7 +127,7 @@ export async function createPickerBooking(
     carName: "BIKE",
   };
 
-  if (input.notes) body.bookingNotes = input.notes;
+  if (input.notes && input.notes.trim().length >= 3) body.bookingNotes = input.notes.trim();
 
   const response = await axios.post(
     `${PICKER_API}/createBooking`,

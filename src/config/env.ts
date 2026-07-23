@@ -39,7 +39,7 @@ export const env = {
   CLOUDINARY_API_SECRET: optional("CLOUDINARY_API_SECRET", ""),
   SLACK_ERROR_WEBHOOK: optional("SLACK_ERROR_WEBHOOK", ""),
   FRONTEND_URLS: {
-    local: "https://localhost:5173",
+    local: "http://localhost:5173",
     tunnel: "https://testing-storybrand-frontend.bakano.ec",
     develop: "https://boloncity-tienda.netlify.app",
     production: "https://boloncity.com",
