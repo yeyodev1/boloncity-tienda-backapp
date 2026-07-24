@@ -41,6 +41,7 @@ export interface IPickerData {
   driverVehicle?: string;
   driverPhoto?: string;
   validationCode?: string;
+  proofOfDelivery?: string;
 }
 
 export interface IBillingData {
@@ -136,6 +137,7 @@ const orderSchema = new Schema<IOrder>(
       driverVehicle: { type: String, default: "" },
       driverPhoto: { type: String, default: "" },
       validationCode: { type: String, default: "" },
+      proofOfDelivery: { type: String, default: "" },
     },
     billing: {
       docType: { type: String, default: "" },

@@ -14,6 +14,7 @@ import { Branch } from "../models/Branch";
 import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl } from "../utils/parseMapsUrl";
 import { AuthRequest } from "../types/AuthRequest";
+import { subscribeToOrder } from "../services/orderEvents.service";
 
 function centsToDollars(value: number) {
   return value / 100;
@@ -187,6 +188,19 @@ export async function createOrder(req: Request, res: Response) {
 
 export async function confirmOrder(req: Request, res: Response) {
   const { id, clientTxId } = req.body as { id: number; clientTxId: string };
+
+  const order = await Order.findOne({ "payphone.clientTransactionId": clientTxId }).populate("user").populate("branch");
+
+  if (!order) {
+    res.status(404).json({ message: "Order not found" });
+    return;
+  }
+
+  if (order.payphone?.confirmedAt) {
+    res.json({ order });
+    return;
+  }
+
   let payphoneResult;
 
   try {
@@ -195,13 +209,6 @@ export async function confirmOrder(req: Request, res: Response) {
     res.status(503).json({
       message: error instanceof Error ? error.message : "PayPhone is not configured",
     });
-    return;
-  }
-
-  const order = await Order.findOne({ "payphone.clientTransactionId": clientTxId }).populate("user").populate("branch");
-
-  if (!order) {
-    res.status(404).json({ message: "Order not found" });
     return;
   }
 
@@ -539,6 +546,53 @@ export async function getMyOrderById(req: AuthRequest, res: Response) {
   }
 
   res.json(order);
+}
+
+export async function streamMyOrder(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+  if (!userId) {
+    res.status(401).json({ message: "No autenticado" });
+    return;
+  }
+
+  const order = await Order.findOne({ _id: req.params.id, user: userId });
+  if (!order) {
+    res.status(404).json({ message: "Orden no encontrada" });
+    return;
+  }
+
+  res.status(200);
+  res.set({
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "Content-Type": "text/event-stream",
+  });
+  res.flushHeaders();
+
+  let latestUpdate = order.updatedAt?.getTime() || 0;
+  const sendOrder = (updatedOrder: typeof order) => {
+    latestUpdate = updatedOrder.updatedAt?.getTime() || Date.now();
+    res.write(`event: order\ndata: ${JSON.stringify(updatedOrder)}\n\n`);
+  };
+
+  const unsubscribe = subscribeToOrder(String(order._id), (updatedOrder) => {
+    sendOrder(updatedOrder as typeof order);
+  });
+  const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 25000);
+  // Covers webhook and SSE requests handled by different serverless instances.
+  const databaseCheck = setInterval(() => {
+    void Order.findById(order._id).then((updatedOrder) => {
+      if (updatedOrder && (updatedOrder.updatedAt?.getTime() || 0) > latestUpdate) {
+        sendOrder(updatedOrder as typeof order);
+      }
+    });
+  }, 2000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    clearInterval(databaseCheck);
+    unsubscribe();
+  });
 }
 
 export async function retryPickerBooking(req: AuthRequest, res: Response) {

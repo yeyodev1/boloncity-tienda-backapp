@@ -22,13 +22,11 @@ async function registerWebhook(branchName: string, apiKey: string) {
   }
 
   const events = ["DRIVER_ASSIGNED", "UPDATE_BOOKING_STATUS"];
-  const url = `${WEBHOOK_BASE_URL}/api/webhooks/picker`;
-
   for (const event of events) {
     try {
       const res = await axios.post(
         `${PICKER_API}/webhooks`,
-        { type: event, url },
+        { type: event, url: `${WEBHOOK_BASE_URL}/api/webhooks/picker/${event}` },
         {
           headers: {
             "Content-Type": "application/json",

@@ -14,6 +14,8 @@ export interface IUser {
   name?: string;
   phone?: string;
   documentId?: string;
+  photo?: string;
+  photoPublicId?: string;
   accountType: "customer" | "branch_admin" | "admin";
   branches: Schema.Types.ObjectId[];
   allBranches: boolean;
@@ -43,6 +45,8 @@ const userSchema = new Schema<IUser>(
     name: { type: String, default: "" },
     phone: { type: String, default: "" },
     documentId: { type: String, default: "" },
+    photo: { type: String, default: "" },
+    photoPublicId: { type: String, default: "" },
     accountType: { type: String, enum: ["customer", "branch_admin", "admin"], default: "customer" },
     branches: [{ type: Schema.Types.ObjectId, ref: "Branch" }],
     allBranches: { type: Boolean, default: false },

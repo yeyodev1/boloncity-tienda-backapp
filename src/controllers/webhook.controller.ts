@@ -3,6 +3,7 @@ import { Order } from "../models/Order";
 import { sendEmail } from "../services/resend.service";
 import { getFrontendUrl } from "../config/env";
 import { getOrderStatusEmailHtml } from "../services/email-templates";
+import { publishOrderUpdate } from "../services/orderEvents.service";
 
 const PICKER_STATUS_ORDER_MAP: Record<string, string> = {
   ON_HOLD: "paid",
@@ -39,7 +40,8 @@ const PICKER_STATUS_LABELS: Record<string, string> = {
 };
 
 async function handleUpdateBookingStatus(payload: any) {
-  const { bookingId, bookingNumericId, currentStatus, statusText, validationCode, cancelReason } = payload;
+  const bookingId = payload.bookingID || payload.bookingId || "";
+  const { bookingNumericId, currentStatus, statusText, validationCode, cancelReason, proofOfDelivery } = payload;
 
   const order = await Order.findOne({
     $or: [
@@ -60,8 +62,9 @@ async function handleUpdateBookingStatus(payload: any) {
   }
 
   const oldStatus = order.picker.currentStatus || "";
-  const newStatus = currentStatus || "";
-  const newStatusText = statusText || PICKER_STATUS_LABELS[newStatus] || "";
+  // Picker sends the readable status code in statusText; currentStatus is numeric.
+  const newStatus = typeof statusText === "string" ? statusText : String(currentStatus || "");
+  const newStatusText = PICKER_STATUS_LABELS[newStatus] || statusText || "";
 
   order.picker.currentStatus = newStatus;
   order.picker.statusText = newStatusText;
@@ -69,6 +72,7 @@ async function handleUpdateBookingStatus(payload: any) {
   if (validationCode) {
     order.picker.validationCode = String(validationCode);
   }
+  if (proofOfDelivery) order.picker.proofOfDelivery = String(proofOfDelivery);
 
   const mappedOrderStatus = PICKER_STATUS_ORDER_MAP[newStatus];
   const isNewDeliveryStatus = newStatus && newStatus !== oldStatus;
@@ -82,20 +86,24 @@ async function handleUpdateBookingStatus(payload: any) {
     }
   }
 
-  pushAudit(order, {
-    action: "status_change",
-    details: `Picker delivery: ${PICKER_STATUS_LABELS[oldStatus] || oldStatus} → ${newStatusText}`,
-    fromValue: oldStatus,
-    toValue: newStatus,
-  });
+  if (isNewDeliveryStatus) {
+    pushAudit(order, {
+      action: "status_change",
+      details: `Picker delivery: ${PICKER_STATUS_LABELS[oldStatus] || oldStatus} → ${newStatusText}${cancelReason ? ` (${cancelReason})` : ""}`,
+      fromValue: oldStatus,
+      toValue: newStatus,
+    });
+  }
 
   await order.save();
+  publishOrderUpdate(order);
 
-  sendStatusEmail(order, newStatus, newStatusText).catch(() => {});
+  if (isNewDeliveryStatus) sendStatusEmail(order, newStatus, newStatusText).catch(() => {});
 }
 
 async function handleDriverAssigned(payload: any) {
-  const { bookingId, bookingNumericId, driver } = payload;
+  const bookingId = payload.bookingID || payload.bookingId || "";
+  const { bookingNumericId, driver } = payload;
 
   const order = await Order.findOne({
     $or: [
@@ -111,30 +119,36 @@ async function handleDriverAssigned(payload: any) {
 
   if (!order.picker) return;
 
+  const driverName = payload.driverName || driver?.name || driver?.driverName || "";
+  const driverPhone = payload.driverMobile || driver?.phone || driver?.driverPhone || "";
+  const driverVehicle = payload.deliveryProvider || driver?.vehicle || driver?.driverVehicle || "";
+  const driverPhoto = payload.driverImage?.original || payload.driverImage?.thumbnail || driver?.photo || driver?.driverPhoto || "";
+  const isNewAssignment = order.picker.driverName !== driverName || order.picker.driverPhone !== driverPhone || order.picker.driverVehicle !== driverVehicle || order.picker.currentStatus !== "ACCEPTED";
+
   order.picker.currentStatus = "ACCEPTED";
   order.picker.statusText = "Delivery asignado";
-
-  if (driver) {
-    order.picker.driverName = driver.name || driver.driverName || "";
-    order.picker.driverPhone = driver.phone || driver.driverPhone || "";
-    order.picker.driverVehicle = driver.vehicle || driver.driverVehicle || "";
-    order.picker.driverPhoto = driver.photo || driver.driverPhoto || "";
-  }
+  order.picker.driverName = driverName;
+  order.picker.driverPhone = driverPhone;
+  order.picker.driverVehicle = driverVehicle;
+  order.picker.driverPhoto = driverPhoto;
 
   if (order.status !== "cancelled") {
     order.status = "preparing";
   }
 
-  pushAudit(order, {
-    action: "status_change",
-    details: `Delivery asignado: ${order.picker.driverName || "Conductor"} — ${order.picker.driverVehicle || ""}`,
-    fromValue: "READY_FOR_PICKUP",
-    toValue: "ACCEPTED",
-  });
+  if (isNewAssignment) {
+    pushAudit(order, {
+      action: "status_change",
+      details: `Delivery asignado: ${order.picker.driverName || "Conductor"} - ${order.picker.driverVehicle || ""}`,
+      fromValue: "READY_FOR_PICKUP",
+      toValue: "ACCEPTED",
+    });
+  }
 
   await order.save();
+  publishOrderUpdate(order);
 
-  sendStatusEmail(order, "ACCEPTED", "Delivery asignado", order.picker.driverName).catch(() => {});
+  if (isNewAssignment) sendStatusEmail(order, "ACCEPTED", "Delivery asignado", order.picker.driverName).catch(() => {});
 }
 
 function pushAudit(order: any, entry: Record<string, unknown>) {
@@ -166,7 +180,7 @@ async function sendStatusEmail(order: any, status: string, statusText: string, d
 export async function handlePickerWebhook(req: Request, res: Response) {
   try {
     const { type, eventType, ...payload } = req.body;
-    const event = type || eventType || "";
+    const event = req.params.event || type || eventType || "";
 
     console.log(`[Picker Webhook] Received event: ${event}`, JSON.stringify(payload).slice(0, 500));
 

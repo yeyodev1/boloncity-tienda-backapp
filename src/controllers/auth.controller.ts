@@ -1,3 +1,4 @@
+import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { Request, Response } from "express";
 import { User } from "../models/User";
@@ -5,6 +6,7 @@ import { signUserToken, verifyPassword } from "../services/auth.service";
 import { sendEmail } from "../services/resend.service";
 import { AuthRequest } from "../types/AuthRequest";
 import { getFrontendUrl } from "../config/env";
+import { deleteFromCloudinary, isCloudinaryConfigured, uploadToCloudinary } from "../services/cloudinary.service";
 
 function loginButtonHtml(frontendUrl: string) {
   return `
@@ -60,6 +62,60 @@ export async function me(req: AuthRequest, res: Response) {
   }
 
   res.json(user);
+}
+
+export async function updateProfile(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+  const allowed = ["name", "phone", "photo", "photoPublicId", "documentId", "email"];
+  const updates: Record<string, string> = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) updates[key] = req.body[key];
+  }
+
+  if (updates.email) {
+    updates.email = updates.email.toLowerCase().trim();
+    const existing = await User.findOne({ email: updates.email, _id: { $ne: userId } });
+    if (existing) {
+      res.status(409).json({ message: "Este correo ya está registrado por otro usuario" });
+      return;
+    }
+  }
+
+  const user = await User.findByIdAndUpdate(userId, updates, { new: true })
+    .select("-password")
+    .populate("branches");
+  if (!user) {
+    res.status(404).json({ message: "User not found" });
+    return;
+  }
+  res.json(user);
+}
+
+export async function changePassword(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+  const { currentPassword, newPassword } = req.body as { currentPassword: string; newPassword: string };
+
+  if (!currentPassword || !newPassword) {
+    res.status(400).json({ message: "Contraseña actual y nueva son requeridas" });
+    return;
+  }
+
+  const user = await User.findById(userId).select("+password");
+  if (!user) {
+    res.status(404).json({ message: "User not found" });
+    return;
+  }
+
+  const ok = await verifyPassword(currentPassword, user.password);
+  if (!ok) {
+    res.status(400).json({ message: "La contraseña actual no es correcta" });
+    return;
+  }
+
+  user.password = newPassword;
+  await user.save();
+
+  res.json({ message: "Contraseña actualizada exitosamente" });
 }
 
 export async function forgotPassword(req: Request, res: Response) {
@@ -144,4 +200,62 @@ export async function resetPassword(req: Request, res: Response) {
   await sendEmail(user.email, "Tu contraseña ha sido actualizada — Boloncity", html).catch(() => {});
 
   res.json({ message: "Contraseña actualizada exitosamente. Ahora puedes iniciar sesión con tu nueva contraseña." });
+}
+
+export async function uploadProfilePhoto(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+  const file = req.file;
+
+  if (!file) {
+    res.status(400).json({ message: "No se envió ninguna imagen" });
+    return;
+  }
+
+  if (!isCloudinaryConfigured()) {
+    res.status(503).json({ message: "Cloudinary no está configurado" });
+    return;
+  }
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+
+    if (user.photoPublicId) {
+      await deleteFromCloudinary(user.photoPublicId).catch(() => {});
+    }
+
+    const result = await uploadToCloudinary(file.buffer, "boloncity/profiles", `profile-${userId}`);
+    await User.findByIdAndUpdate(userId, { photo: result.secure_url, photoPublicId: result.public_id });
+
+    res.json({ photo: result.secure_url, photoPublicId: result.public_id });
+  } catch {
+    res.status(500).json({ message: "Error al subir la imagen" });
+  }
+}
+
+export async function deleteProfilePhoto(req: AuthRequest, res: Response) {
+  const userId = req.user?.userId;
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+
+    if (user.photoPublicId) {
+      await deleteFromCloudinary(user.photoPublicId);
+    }
+
+    user.photo = "";
+    user.photoPublicId = "";
+    await user.save();
+
+    res.json({ message: "Foto eliminada" });
+  } catch {
+    res.status(500).json({ message: "Error al eliminar la imagen" });
+  }
 }
