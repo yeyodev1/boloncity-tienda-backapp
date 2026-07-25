@@ -7,7 +7,7 @@ import { Setting } from "../models/Setting";
 import { confirmPayphoneTransaction } from "../services/payphone.service";
 import { createAutoUser } from "../services/auth.service";
 import { sendEmail } from "../services/resend.service";
-import { createPickerBooking, getPickerBranchKey } from "../services/pickerexpress.service";
+import { createPickerBooking, startSearch } from "../services/pickerexpress.service";
 import { User } from "../models/User";
 import { calculatePoints } from "../services/points.service";
 import { Branch } from "../models/Branch";
@@ -15,6 +15,7 @@ import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl } from "../utils/parseMapsUrl";
 import { AuthRequest } from "../types/AuthRequest";
 import { subscribeToOrder } from "../services/orderEvents.service";
+import { validateScheduledTime } from "../services/branchOperational.service";
 
 function centsToDollars(value: number) {
   return value / 100;
@@ -34,11 +35,11 @@ function pushAudit(order: any, entry: Record<string, unknown>) {
 
 async function resolveBranch(input: { branchId?: string; lat?: number; lng?: number }) {
   if (input.branchId) {
-    return Branch.findById(input.branchId);
+    return Branch.findById(input.branchId).select("+pickerStore.storeApiKey");
   }
 
   if (typeof input.lat === "number" && typeof input.lng === "number") {
-    const branches = await Branch.find({ isActive: true });
+    const branches = await Branch.find({ isActive: true }).select("+pickerStore.storeApiKey");
     const scored = branches
       .filter((branch) => branch.coordinates?.lat != null && branch.coordinates?.lng != null)
       .map((branch) => ({
@@ -62,7 +63,7 @@ async function getDeliveryPricePerKm() {
 }
 
 export async function createOrder(req: Request, res: Response) {
-  const { items, customerEmail, customerName, customerPhone, notes, deliveryAddress, deliveryGoogleMapsUrl, deliveryType, deliveryCost: deliveryCostDollars, billingDocType, billingName, billingDocNumber, billingEmail, billingAddress } = req.body as {
+  const { items, customerEmail, customerName, customerPhone, notes, deliveryAddress, deliveryGoogleMapsUrl, deliveryType, deliveryCost: deliveryCostDollars, paymentMethod = "card", billingDocType, billingName, billingDocNumber, billingEmail, billingAddress, scheduledFor: scheduledForInput } = req.body as {
     items: Array<{ productId: string; quantity: number }>;
     customerEmail: string;
     customerName?: string;
@@ -72,12 +73,19 @@ export async function createOrder(req: Request, res: Response) {
     deliveryGoogleMapsUrl?: string;
     deliveryType?: "delivery" | "pickup";
     deliveryCost?: number;
+    paymentMethod?: "card" | "cash";
     billingDocType?: string;
     billingName?: string;
     billingDocNumber?: string;
     billingEmail?: string;
     billingAddress?: string;
+    scheduledFor?: string;
   };
+
+  if (paymentMethod !== "card" && paymentMethod !== "cash") {
+    res.status(400).json({ message: "Método de pago inválido" });
+    return;
+  }
 
   const branch = await resolveBranch({
     branchId: req.body.branchId,
@@ -88,6 +96,20 @@ export async function createOrder(req: Request, res: Response) {
   if (!branch) {
     res.status(400).json({ message: "No se encontró una sucursal cercana o seleccionada. Selecciona una sucursal e intenta de nuevo." });
     return;
+  }
+
+  let scheduledFor: Date | undefined;
+  if (scheduledForInput !== undefined && scheduledForInput !== null && scheduledForInput !== "") {
+    scheduledFor = new Date(scheduledForInput);
+    if (Number.isNaN(scheduledFor.getTime()) || scheduledFor <= new Date()) {
+      res.status(400).json({ message: "scheduledFor must be a future valid date" });
+      return;
+    }
+    const scheduledValidation = validateScheduledTime(branch, scheduledFor);
+    if (!scheduledValidation.valid) {
+      res.status(400).json({ message: scheduledValidation.message || "La sucursal no atiende en el horario seleccionado" });
+      return;
+    }
   }
 
   const isDelivery = deliveryType !== "pickup";
@@ -134,9 +156,10 @@ export async function createOrder(req: Request, res: Response) {
         price: branchPrice?.price ?? product.price,
         quantity: item.quantity,
         image: product.images[0]?.url || "",
+        pointsValue: product.pointsValue || 0,
       };
     })
-    .filter(Boolean) as Array<{ product: any; name: string; price: number; quantity: number; image: string }>;
+  .filter(Boolean) as Array<{ product: any; name: string; price: number; quantity: number; image: string; pointsValue: number }>;
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const tax = 0;
@@ -155,12 +178,14 @@ export async function createOrder(req: Request, res: Response) {
     subtotal: dollarsToCents(subtotal),
     tax: dollarsToCents(tax),
     total: dollarsToCents(total),
+    paymentMethod,
     deliveryType: isDelivery ? "delivery" : "pickup",
     deliveryCost: deliveryCostCents,
     deliveryDistance,
     deliveryAddress: deliveryAddress || "",
     deliveryGoogleMapsUrl: deliveryGoogleMapsUrl || "",
     deliveryCoordinates: deliveryCoords,
+    scheduledFor,
     status: "pending",
     customerEmail,
     customerName: customerName || "",
@@ -182,6 +207,49 @@ export async function createOrder(req: Request, res: Response) {
     toValue: order.status,
   });
   await order.save();
+
+  if ((paymentMethod === "cash" || Boolean(scheduledFor)) && isDelivery) {
+    try {
+      const branchKey = branch.pickerStore?.storeApiKey || "";
+      if (!branchKey || !deliveryCoords) throw new Error("No hay llave de Picker o coordenadas de entrega");
+      const nameParts = (order.customerName || "").split(" ");
+      const pickerResult = await createPickerBooking({
+        branchKey,
+        latitude: deliveryCoords.lat,
+        longitude: deliveryCoords.lng,
+        address: order.deliveryAddress || "Sin dirección",
+        reference: order.deliveryGoogleMapsUrl || "",
+        customerName: nameParts[0] || order.customerName || "",
+        customerLastName: nameParts.slice(1).join(" ") || "Cliente",
+        customerEmail: order.customerEmail,
+        customerPhone: order.customerPhone || "",
+        customerCountryCode: "593",
+        orderAmount: centsToDollars(order.subtotal),
+        businessDeliveryFee: centsToDollars(order.deliveryCost),
+        paymentMethod: paymentMethod === "cash" ? "CASH" : "CARD",
+        externalBookingId: order.orderNumber,
+        notes: order.notes || "",
+        ...(scheduledFor ? { cookTime: scheduledFor.getTime() - Date.now() } : {}),
+      });
+      order.picker = {
+        bookingId: pickerResult._id,
+        bookingNumericId: pickerResult.bookingNumericId,
+        statusText: scheduledFor ? "Esperando preparación" : pickerResult.statusText,
+        smrURL: pickerResult.smrURL,
+        bookingDetailUrl: pickerResult.bookingDetailUrl,
+        createdAt: new Date(),
+        currentStatus: scheduledFor ? "ON_HOLD" : String(pickerResult.currentStatus || ""),
+        deliveryFee: pickerResult.deliveryFee || 0,
+        ...(scheduledFor ? { searchState: "on_hold" as const } : {}),
+      };
+      pushAudit(order, { action: "note_added", details: scheduledFor ? `Picker booking #${pickerResult.bookingNumericId} creado en espera para ${scheduledFor.toISOString()}` : `Picker booking #${pickerResult.bookingNumericId} creado para cobro en efectivo` });
+      await order.save();
+    } catch (pickerErr) {
+      console.error("Cash Picker booking failed:", pickerErr);
+      pushAudit(order, { action: "note_added", details: `Picker booking para efectivo falló: ${pickerErr instanceof Error ? pickerErr.message : "error"}` });
+      await order.save();
+    }
+  }
 
   res.status(201).json(order);
 }
@@ -240,7 +308,7 @@ export async function confirmOrder(req: Request, res: Response) {
       order.user = user._id;
     }
 
-    order.pointsEarned = calculatePoints(centsToDollars(order.total));
+    order.pointsEarned = calculatePoints(order.items);
     pushAudit(order, {
       action: "payment_confirmed",
       performedBy: null,
@@ -251,10 +319,10 @@ export async function confirmOrder(req: Request, res: Response) {
     });
     await order.save();
 
-    if (order.deliveryType === "delivery") {
+    if (order.deliveryType === "delivery" && !order.picker?.bookingId) {
       try {
-        const branch = order.branch ? await Branch.findById(order.branch) : null;
-        const branchKey = branch?.pickerApiKey || (branch ? getPickerBranchKey(branch.name) : "");
+        const branch = order.branch ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey") : null;
+        const branchKey = branch?.pickerStore?.storeApiKey || "";
         if (branchKey && order.deliveryCoordinates?.lat && order.deliveryCoordinates?.lng) {
           const nameParts = (order.customerName || "").split(" ");
           const firstName = nameParts[0] || order.customerName || "";
@@ -270,7 +338,9 @@ export async function confirmOrder(req: Request, res: Response) {
             customerEmail: order.customerEmail,
             customerPhone: order.customerPhone || "",
             customerCountryCode: "593",
-            orderAmount: centsToDollars(order.total),
+            orderAmount: centsToDollars(order.subtotal),
+            businessDeliveryFee: centsToDollars(order.deliveryCost),
+            paymentMethod: "CARD",
             externalBookingId: order.orderNumber,
             notes: order.notes || "",
           });
@@ -282,6 +352,7 @@ export async function confirmOrder(req: Request, res: Response) {
             bookingDetailUrl: pickerResult.bookingDetailUrl,
             createdAt: new Date(),
             currentStatus: pickerResult.currentStatus || "",
+            deliveryFee: pickerResult.deliveryFee || 0,
           };
           pushAudit(order, {
             action: "note_added",
@@ -413,7 +484,37 @@ export async function confirmOrder(req: Request, res: Response) {
 }
 
 export async function listOrders(req: AuthRequest, res: Response) {
-  const orders = await Order.find(req.branchFilter || {}).sort({ createdAt: -1 }).populate("user").populate("items.product").populate("branch");
+  const { period = "today", date, from, to, status, limit = "100" } = req.query as Record<string, string | undefined>;
+  const query: Record<string, unknown> = { ...(req.branchFilter || {}) };
+
+  if (from && to) {
+    const start = new Date(`${from}T00:00:00-05:00`);
+    const end = new Date(`${to}T00:00:00-05:00`);
+    end.setDate(end.getDate() + 1);
+    query.createdAt = { $gte: start, $lt: end };
+  } else if (period !== "all") {
+    const dateParts = new Intl.DateTimeFormat("en", {
+      timeZone: "America/Guayaquil",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const part = (type: string) => dateParts.find((item) => item.type === type)?.value || "";
+    const dateValue = date || `${part("year")}-${part("month")}-${part("day")}`;
+    const start = new Date(`${dateValue}T00:00:00-05:00`);
+    const end = new Date(`${dateValue}T00:00:00-05:00`);
+    end.setDate(end.getDate() + 1);
+    query.createdAt = { $gte: start, $lt: end };
+  }
+
+  if (status && status !== "all") query.status = status;
+
+  const cappedLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
+  const orders = await Order.find(query)
+    .sort({ createdAt: -1 })
+    .limit(cappedLimit)
+    .populate("branch", "name")
+    .lean();
   res.json(orders);
 }
 
@@ -431,6 +532,49 @@ export async function getOrderByNumber(req: Request, res: Response) {
   }
 
   res.json(order);
+}
+
+export async function streamOrderByNumber(req: Request, res: Response) {
+  const email = typeof req.query.email === "string" ? req.query.email.trim().toLowerCase() : "";
+  if (!email) {
+    res.status(400).json({ message: "Email is required" });
+    return;
+  }
+
+  const order = await Order.findOne({ orderNumber: req.params.orderNumber, customerEmail: email });
+  if (!order) {
+    res.status(404).json({ message: "Order not found" });
+    return;
+  }
+
+  res.status(200);
+  res.set({
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "Content-Type": "text/event-stream",
+  });
+  res.flushHeaders();
+
+  let latestUpdate = order.updatedAt?.getTime() || 0;
+  const sendOrder = (updatedOrder: typeof order) => {
+    latestUpdate = updatedOrder.updatedAt?.getTime() || Date.now();
+    res.write(`event: order\ndata: ${JSON.stringify(updatedOrder)}\n\n`);
+  };
+  const unsubscribe = subscribeToOrder(String(order._id), (updatedOrder) => sendOrder(updatedOrder as typeof order));
+  const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 25000);
+  const databaseCheck = setInterval(() => {
+    void Order.findById(order._id).then((updatedOrder) => {
+      if (updatedOrder && (updatedOrder.updatedAt?.getTime() || 0) > latestUpdate) {
+        sendOrder(updatedOrder as typeof order);
+      }
+    });
+  }, 2000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    clearInterval(databaseCheck);
+    unsubscribe();
+  });
 }
 
 export async function getOrdersByEmail(req: Request, res: Response) {
@@ -623,8 +767,8 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
     return;
   }
 
-  const branch = order.branch ? await Branch.findById(order.branch) : null;
-  const branchKey = branch?.pickerApiKey || (branch ? getPickerBranchKey(branch.name) : "");
+  const branch = order.branch ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey") : null;
+  const branchKey = branch?.pickerStore?.storeApiKey || "";
 
   if (!branchKey || !order.deliveryCoordinates?.lat || !order.deliveryCoordinates?.lng) {
     res.status(400).json({ message: "No hay coordenadas de entrega o llave de sucursal para crear el delivery" });
@@ -647,7 +791,9 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
       customerEmail: order.customerEmail,
       customerPhone: order.customerPhone || "",
       customerCountryCode: "593",
-      orderAmount: centsToDollars(order.total),
+      orderAmount: centsToDollars(order.subtotal),
+      businessDeliveryFee: centsToDollars(order.deliveryCost),
+      paymentMethod: order.paymentMethod === "cash" ? "CASH" : "CARD",
       externalBookingId: order.orderNumber,
       notes: order.notes || "",
     });
@@ -660,6 +806,7 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
       bookingDetailUrl: pickerResult.bookingDetailUrl,
       createdAt: new Date(),
       currentStatus: pickerResult.currentStatus || "",
+      deliveryFee: pickerResult.deliveryFee || 0,
     };
 
     pushAudit(order, {
@@ -695,5 +842,70 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
       message: "No pudimos crear el delivery. " + errorMsg,
       error: errorMsg,
     });
+  }
+}
+
+export async function startScheduledPickerSearch(req: AuthRequest, res: Response) {
+  const order = await Order.findOne({ _id: req.params.id, ...(req.branchFilter || {}) });
+  if (!order) {
+    res.status(404).json({ message: "Orden no encontrada" });
+    return;
+  }
+
+  if (!order.scheduledFor || order.deliveryType !== "delivery") {
+    res.status(400).json({ message: "Esta orden no es un delivery programado" });
+    return;
+  }
+  if (!order.picker?.bookingId) {
+    res.status(400).json({ message: "La orden programada no tiene una reserva de Picker" });
+    return;
+  }
+  if (!(["on_hold", "failed"] as const).includes(order.picker.searchState || "on_hold") || order.picker.currentStatus !== "ON_HOLD") {
+    res.status(409).json({ message: "La búsqueda de driver solo puede iniciarse para una reserva Picker en espera" });
+    return;
+  }
+
+  const branch = order.branch
+    ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey")
+    : null;
+  const branchKey = branch?.pickerStore?.storeApiKey || "";
+  if (!branchKey) {
+    res.status(400).json({ message: "La sucursal no tiene una llave de Picker configurada" });
+    return;
+  }
+
+  try {
+    const pickerResult = await startSearch(order.picker.bookingId, branchKey);
+    order.picker.searchState = "started";
+    order.picker.searchStartedAt = new Date();
+    order.picker.searchResult = pickerResult;
+    order.picker.searchError = "";
+    order.picker.currentStatus = typeof pickerResult.statusText === "string" ? pickerResult.statusText : "READY_FOR_PICKUP";
+    order.picker.statusText = "Buscando delivery";
+    pushAudit(order, {
+      action: "status_change",
+      performedBy: req.user?.userId || null,
+      performedByEmail: req.user?.email || "",
+      fromValue: "ON_HOLD",
+      toValue: order.picker.currentStatus,
+      details: "Búsqueda de driver iniciada manualmente para la reserva programada de Picker",
+    });
+    await order.save();
+    res.json({ success: true, order, picker: pickerResult });
+  } catch (error) {
+    const message = axios.isAxiosError(error)
+      ? error.response?.data?.message || error.response?.data?.error || `Picker API error: ${error.response?.status || "unavailable"}`
+      : error instanceof Error ? error.message : "Error desconocido";
+    order.picker.searchState = "failed";
+    order.picker.searchError = String(message);
+    pushAudit(order, {
+      action: "note_added",
+      performedBy: req.user?.userId || null,
+      performedByEmail: req.user?.email || "",
+      details: `No se pudo iniciar la búsqueda de driver: ${message}`,
+    });
+    await order.save();
+    console.error("Picker start search failed:", message);
+    res.status(502).json({ message: `No se pudo iniciar la búsqueda de driver: ${message}` });
   }
 }

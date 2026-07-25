@@ -6,6 +6,7 @@ export interface IOrderItem {
   price: number;
   quantity: number;
   image?: string;
+  pointsValue: number;
 }
 
 export interface IPayphoneData {
@@ -42,6 +43,11 @@ export interface IPickerData {
   driverPhoto?: string;
   validationCode?: string;
   proofOfDelivery?: string;
+  deliveryFee?: number;
+  searchState?: "on_hold" | "started" | "failed";
+  searchStartedAt?: Date;
+  searchResult?: Record<string, unknown>;
+  searchError?: string;
 }
 
 export interface IBillingData {
@@ -60,12 +66,14 @@ export interface IOrder {
   subtotal: number;
   tax: number;
   total: number;
+  paymentMethod: "card" | "cash";
   deliveryType: "delivery" | "pickup";
   deliveryCost: number;
   deliveryDistance: number;
   deliveryAddress: string;
   deliveryGoogleMapsUrl: string;
   deliveryCoordinates?: { lat: number; lng: number } | null;
+  scheduledFor?: Date;
   status: "pending" | "paid" | "preparing" | "ready" | "delivered" | "cancelled";
   payphone: IPayphoneData;
   picker?: IPickerData;
@@ -88,6 +96,7 @@ const orderItemSchema = new Schema<IOrderItem>(
     price: { type: Number, required: true },
     quantity: { type: Number, required: true },
     image: { type: String, default: "" },
+    pointsValue: { type: Number, default: 0 },
   },
   { _id: false }
 );
@@ -101,6 +110,7 @@ const orderSchema = new Schema<IOrder>(
     subtotal: { type: Number, required: true },
     tax: { type: Number, default: 0 },
     total: { type: Number, required: true },
+    paymentMethod: { type: String, enum: ["card", "cash"], default: "card" },
     status: {
       type: String,
       enum: ["pending", "paid", "preparing", "ready", "delivered", "cancelled"],
@@ -124,6 +134,7 @@ const orderSchema = new Schema<IOrder>(
       lat: { type: Number, default: null },
       lng: { type: Number, default: null },
     },
+    scheduledFor: { type: Date, default: null },
     picker: {
       bookingId: { type: String, default: "" },
       bookingNumericId: { type: Number, default: null },
@@ -138,6 +149,11 @@ const orderSchema = new Schema<IOrder>(
       driverPhoto: { type: String, default: "" },
       validationCode: { type: String, default: "" },
       proofOfDelivery: { type: String, default: "" },
+      deliveryFee: { type: Number, default: 0 },
+      searchState: { type: String, enum: ["on_hold", "started", "failed"], default: null },
+      searchStartedAt: { type: Date, default: null },
+      searchResult: { type: Schema.Types.Mixed, default: null },
+      searchError: { type: String, default: "" },
     },
     billing: {
       docType: { type: String, default: "" },
@@ -166,5 +182,8 @@ const orderSchema = new Schema<IOrder>(
   },
   { timestamps: true }
 );
+
+orderSchema.index({ branch: 1, createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
 
 export const Order = mongoose.models.Order || mongoose.model<IOrder>("Order", orderSchema);

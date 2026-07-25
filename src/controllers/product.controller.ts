@@ -28,8 +28,18 @@ function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function parseBoolean(value: unknown, fallback = false) {
+  if (value === undefined) return fallback;
+  return value === true || value === "true";
+}
+
+function parseInternalCode(value: unknown) {
+  if (typeof value !== "string") return undefined;
+  return value.trim() || undefined;
+}
+
 export async function listProducts(req: Request, res: Response) {
-  const { category, q, available, paginate } = req.query;
+  const { category, q, available, paginate, admin } = req.query;
   const filter: Record<string, unknown> = {};
   const queryParts: Array<Record<string, unknown>> = [];
 
@@ -45,8 +55,13 @@ export async function listProducts(req: Request, res: Response) {
   }
   if (available === "true") filter.isAvailable = true;
   const branchFilter = (req as Request & { branchFilter?: Record<string, unknown> }).branchFilter;
-  if (branchFilter?.branch) {
-    queryParts.push({ $or: [{ branches: { $size: 0 } }, { branches: branchFilter.branch }] });
+  if (branchFilter?.branch && admin !== "true") {
+    queryParts.push({
+      $or: [
+        { branches: { $size: 0 }, unavailableBranches: { $ne: branchFilter.branch } },
+        { branches: branchFilter.branch },
+      ],
+    });
   }
 
   if (queryParts.length === 1) {
@@ -55,7 +70,7 @@ export async function listProducts(req: Request, res: Response) {
     filter.$and = queryParts;
   }
 
-  const query = Product.find(filter).populate("categories").populate("branches").sort({ sortOrder: 1, createdAt: -1 });
+  const query = Product.find(filter).populate("categories").populate("branches").populate("unavailableBranches").sort({ isBestSeller: -1, sortOrder: 1, createdAt: -1 });
 
   if (paginate === "true") {
     const requestedPage = Number(req.query.page);
@@ -86,8 +101,8 @@ export async function getProductBySlug(req: Request, res: Response) {
   const branchFilter = (req as Request & { branchFilter?: Record<string, unknown> }).branchFilter;
   const product = await Product.findOne({
     slug: req.params.slug,
-    ...(branchFilter?.branch ? { $or: [{ branches: { $size: 0 } }, { branches: branchFilter.branch }] } : {}),
-  }).populate("categories").populate("branches");
+    ...(branchFilter?.branch ? { $or: [{ branches: { $size: 0 }, unavailableBranches: { $ne: branchFilter.branch } }, { branches: branchFilter.branch }] } : {}),
+  }).populate("categories").populate("branches").populate("unavailableBranches");
   if (!product) {
     res.status(404).json({ message: "Product not found" });
     return;
@@ -101,10 +116,16 @@ export async function createProduct(req: Request, res: Response) {
   const branchPrices = parseJsonArray<{ branch: string; price: number }>(req.body.branchPrices, []);
   const product = await Product.create({
     ...req.body,
+    code: parseInternalCode(req.body.code),
+    hasIva: false,
+    ivaRate: 0,
     slug: req.body.slug || slugify(req.body.name),
     categories: parseCategoryIds(req.body.categories),
     branches: parseCategoryIds(req.body.branches),
+    unavailableBranches: parseCategoryIds(req.body.unavailableBranches),
     branchPrices,
+    sellWithoutStock: parseBoolean(req.body.sellWithoutStock, true),
+    stock: parseBoolean(req.body.sellWithoutStock, true) ? 0 : Number(req.body.stock || 0),
     images: imagePayload,
   });
 
@@ -115,10 +136,16 @@ export async function updateProduct(req: Request, res: Response) {
   const branchPrices = parseJsonArray<{ branch: string; price: number }>(req.body.branchPrices, []);
   const updateData: Record<string, unknown> = {
     ...req.body,
+    code: parseInternalCode(req.body.code),
+    hasIva: false,
+    ivaRate: 0,
     slug: req.body.slug || slugify(req.body.name),
     categories: parseCategoryIds(req.body.categories),
     branches: parseCategoryIds(req.body.branches),
+    unavailableBranches: parseCategoryIds(req.body.unavailableBranches),
     branchPrices,
+    sellWithoutStock: parseBoolean(req.body.sellWithoutStock, false),
+    stock: parseBoolean(req.body.sellWithoutStock, false) ? 0 : Number(req.body.stock || 0),
   };
 
   if (req.body.images !== undefined) {

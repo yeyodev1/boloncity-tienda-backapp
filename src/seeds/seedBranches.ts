@@ -61,22 +61,10 @@ const branches = [
   },
 ];
 
-const pickerEnvKeys: Record<string, string> = {
-  "Boloncity Garzota": "PICKER_KEY_GARZOTA",
-  "Boloncity Centro": "PICKER_KEY_CENTRO",
-  "Boloncity Kennedy": "PICKER_KEY_KENNEDY",
-  "Boloncity Urdesa": "PICKER_KEY_URDESA",
-  "Boloncity Vía a la Costa": "PICKER_KEY_VIA_COSTA",
-  "Boloncity La Joya": "PICKER_KEY_LA_JOYA",
-  "Boloncity Avalon Plaza": "PICKER_KEY_AVALON",
-  "Boloncity República": "PICKER_KEY_REPUBLICA",
-};
-
 async function main() {
   await dbConnect();
 
   for (const data of branches) {
-    const pickerApiKey = process.env[pickerEnvKeys[data.name]!] || "";
     await Branch.findOneAndUpdate(
       { slug: data.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") },
       {
@@ -85,7 +73,6 @@ async function main() {
         city: data.city,
         coordinates: data.coordinates,
         phone: data.phone,
-        pickerApiKey,
         isActive: true,
       },
       { upsert: true, new: true }

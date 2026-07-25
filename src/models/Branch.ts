@@ -15,11 +15,49 @@ export interface IBranch {
     lat: number
     lng: number
   } | null
-  pickerApiKey?: string
+  timezone: string
+  openingHours: IBranchOpeningHours[]
+  pickerStore?: IPickerStore
   isActive: boolean
+  isArchived: boolean
   createdAt?: Date
   updatedAt?: Date
 }
+
+export type BranchWeekday = 'sunday' | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday'
+
+export interface IBranchOpeningHours {
+  day: BranchWeekday
+  opensAt: string
+  closesAt: string
+  isOpen: boolean
+}
+
+export interface IPickerStore {
+  storeApiKey?: string
+  token?: string
+  storeId?: string
+  createdAt?: Date
+  createdBy?: string
+  creationStatus?: string
+}
+
+const branchWeekdays: BranchWeekday[] = [
+  'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
+]
+
+const defaultOpeningHours = (): IBranchOpeningHours[] =>
+  branchWeekdays.map((day) => ({ day, opensAt: '07:00', closesAt: '13:00', isOpen: true }))
+
+const openingHoursSchema = new Schema<IBranchOpeningHours>(
+  {
+    day: { type: String, required: true, enum: ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] },
+    opensAt: { type: String, required: true },
+    closesAt: { type: String, required: true },
+    isOpen: { type: Boolean, default: true },
+  },
+  { _id: false }
+)
 
 const branchSchema = new Schema<IBranch>(
   {
@@ -36,8 +74,21 @@ const branchSchema = new Schema<IBranch>(
       lat: { type: Number, default: null },
       lng: { type: Number, default: null },
     },
-    pickerApiKey: { type: String, default: '' },
+    timezone: { type: String, default: 'America/Guayaquil' },
+    openingHours: {
+      type: [openingHoursSchema],
+      default: defaultOpeningHours,
+    },
+    pickerStore: {
+      storeApiKey: { type: String, default: '', select: false },
+      token: { type: String, default: '', select: false },
+      storeId: { type: String, default: '' },
+      createdAt: { type: Date },
+      createdBy: { type: String, default: '' },
+      creationStatus: { type: String, default: '' },
+    },
     isActive: { type: Boolean, default: true },
+    isArchived: { type: Boolean, default: false },
   },
   { timestamps: true }
 )

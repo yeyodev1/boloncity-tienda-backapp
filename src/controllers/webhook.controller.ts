@@ -66,6 +66,8 @@ async function handleUpdateBookingStatus(payload: any) {
   const newStatus = typeof statusText === "string" ? statusText : String(currentStatus || "");
   const newStatusText = PICKER_STATUS_LABELS[newStatus] || statusText || "";
 
+  console.log(`[Picker Webhook] UPDATE_BOOKING_STATUS order=${order.orderNumber} booking=${bookingId} ${oldStatus || "none"} -> ${newStatus}`);
+
   order.picker.currentStatus = newStatus;
   order.picker.statusText = newStatusText;
 
@@ -97,6 +99,7 @@ async function handleUpdateBookingStatus(payload: any) {
 
   await order.save();
   publishOrderUpdate(order);
+  console.log(`[Picker Webhook] UPDATE_BOOKING_STATUS processed order=${order.orderNumber} status=${newStatus}`);
 
   if (isNewDeliveryStatus) sendStatusEmail(order, newStatus, newStatusText).catch(() => {});
 }
@@ -125,6 +128,8 @@ async function handleDriverAssigned(payload: any) {
   const driverPhoto = payload.driverImage?.original || payload.driverImage?.thumbnail || driver?.photo || driver?.driverPhoto || "";
   const isNewAssignment = order.picker.driverName !== driverName || order.picker.driverPhone !== driverPhone || order.picker.driverVehicle !== driverVehicle || order.picker.currentStatus !== "ACCEPTED";
 
+  console.log(`[Picker Webhook] DRIVER_ASSIGNED order=${order.orderNumber} booking=${bookingId} driver=${driverName || "unknown"} provider=${driverVehicle || "unknown"}`);
+
   order.picker.currentStatus = "ACCEPTED";
   order.picker.statusText = "Delivery asignado";
   order.picker.driverName = driverName;
@@ -147,6 +152,7 @@ async function handleDriverAssigned(payload: any) {
 
   await order.save();
   publishOrderUpdate(order);
+  console.log(`[Picker Webhook] DRIVER_ASSIGNED processed order=${order.orderNumber} driver=${order.picker.driverName || "unknown"}`);
 
   if (isNewAssignment) sendStatusEmail(order, "ACCEPTED", "Delivery asignado", order.picker.driverName).catch(() => {});
 }
@@ -182,7 +188,7 @@ export async function handlePickerWebhook(req: Request, res: Response) {
     const { type, eventType, ...payload } = req.body;
     const event = req.params.event || type || eventType || "";
 
-    console.log(`[Picker Webhook] Received event: ${event}`, JSON.stringify(payload).slice(0, 500));
+    console.log(`[Picker Webhook] Received event=${event || "unknown"} path=${req.path} payload=${JSON.stringify(payload).slice(0, 500)}`);
 
     if (event === "UPDATE_BOOKING_STATUS") {
       await handleUpdateBookingStatus(payload);

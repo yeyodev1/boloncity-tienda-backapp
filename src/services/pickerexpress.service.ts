@@ -2,7 +2,6 @@ import axios from "axios";
 import { env } from "../config/env";
 
 const PICKER_API = "https://dev-api.pickerexpress.com/api";
-const COOKTIME_MS = 10 * 60 * 1000;
 
 export interface PreCheckoutInput {
   branchKey: string;
@@ -29,8 +28,11 @@ export interface CreateBookingInput {
   customerPhone: string;
   customerCountryCode: string;
   orderAmount: number;
+  businessDeliveryFee: number;
+  paymentMethod: "CARD" | "CASH";
   externalBookingId: string;
   notes?: string;
+  cookTime?: number;
 }
 
 export interface PickerBookingResponse {
@@ -43,6 +45,24 @@ export interface PickerBookingResponse {
   deliveryFee: number;
 }
 
+export type StartSearchResponse = Record<string, unknown>;
+
+export interface CreatePickerStoreInput {
+  addressReference: string;
+  email: string;
+  mobile: string;
+  countryCode: string;
+  companyName: string;
+  longitude: number;
+  latitude: number;
+  fullAddress: string;
+}
+
+export interface CreatePickerStoreResponse {
+  token: string;
+  storeId?: string;
+}
+
 function parsePhone(phone: string): { code: string; number: string } {
   const cleaned = phone.replace(/\s+/g, "").replace(/^\+/, "");
   const match = cleaned.match(/^(\d{1,3})(\d+)$/);
@@ -50,6 +70,37 @@ function parsePhone(phone: string): { code: string; number: string } {
     return { code: match[1], number: match[2].replace(/^0+/, "") };
   }
   return { code: "593", number: cleaned.replace(/^0+/, "") };
+}
+
+export async function createPickerStore(
+  input: CreatePickerStoreInput
+): Promise<CreatePickerStoreResponse> {
+  try {
+    const response = await axios.post(`${PICKER_API}/createStore`, input, {
+      headers: {
+        Authorization: `Bearer ${env.PICKER_MASTER_KEY}`,
+        "Content-Type": "application/json",
+      },
+    });
+    const data = response.data?.data || response.data;
+    const token = typeof data?.token === "string" ? data.token.trim() : "";
+
+    if (!token) {
+      throw new Error("Picker createStore response did not include a token");
+    }
+
+    const storeId = typeof data?._id === "string"
+      ? data._id
+      : typeof data?.storeId === "string"
+        ? data.storeId
+        : undefined;
+    return { token, storeId };
+  } catch (error) {
+    if (error instanceof Error && error.message === "Picker createStore response did not include a token") {
+      throw error;
+    }
+    throw new Error("Picker store creation failed");
+  }
 }
 
 async function tryPreCheckout(
@@ -61,7 +112,7 @@ async function tryPreCheckout(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   headers[headerName] = headerName === "Authorization" ? `Bearer ${apiKey}` : apiKey;
 
-  console.error(`[pickerexpress/preCheckout] Intentando con header "${headerName}" = ${apiKey.slice(0, 8)}...`);
+  console.error(`[pickerexpress/preCheckout] Intentando con header "${headerName}"`);
 
   return await axios.post(url, body, { headers });
 }
@@ -78,8 +129,6 @@ export async function preCheckout(
   const strategies = [
     { key: input.branchKey, header: "x-api-key" },
     { key: input.branchKey, header: "Authorization" },
-    { key: env.PICKER_MASTER_KEY, header: "x-api-key" },
-    { key: env.PICKER_MASTER_KEY, header: "Authorization" },
   ];
 
   for (const s of strategies) {
@@ -108,6 +157,7 @@ export async function createPickerBooking(
   input: CreateBookingInput
 ): Promise<PickerBookingResponse> {
   const phone = parsePhone(input.customerPhone);
+  const orderAmount = Math.round((input.orderAmount + Number.EPSILON) * 100) / 100;
 
   const body: Record<string, unknown> = {
     latitude: input.latitude,
@@ -119,15 +169,20 @@ export async function createPickerBooking(
     customerEmail: input.customerEmail,
     customerCountryCode: `+${phone.code}`,
     customerMobile: phone.number,
-    paymentMethod: "CARD",
-    orderAmount: Math.round(input.orderAmount),
+    paymentMethod: input.paymentMethod,
+    orderAmount,
+    businessDeliveryFee: Math.round((input.businessDeliveryFee + Number.EPSILON) * 100) / 100,
     externalBookingId: input.externalBookingId,
-    cookTime: COOKTIME_MS,
     sendTrackingLink: true,
     carName: "BIKE",
   };
 
   if (input.notes && input.notes.trim().length >= 3) body.bookingNotes = input.notes.trim();
+  if (typeof input.cookTime === "number" && Number.isFinite(input.cookTime) && input.cookTime >= 0) {
+    body.cookTime = Math.round(input.cookTime);
+  }
+
+  console.log(`[Picker] Creating booking order=${input.externalBookingId} amount=${orderAmount.toFixed(2)} address="${input.address}"`);
 
   const response = await axios.post(
     `${PICKER_API}/createBooking`,
@@ -144,33 +199,17 @@ export async function createPickerBooking(
   return data;
 }
 
-export function getPickerBranchKey(branchName: string): string {
-  const normalized = branchName
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-
-  const map: Record<string, string> = {
-    garzota: env.PICKER_KEYS.garzota,
-    centro: env.PICKER_KEYS.centro,
-    kennedy: env.PICKER_KEYS.kennedy,
-    urdesa: env.PICKER_KEYS.urdesa,
-    "via a la costa": env.PICKER_KEYS.viaCosta,
-    "via costa": env.PICKER_KEYS.viaCosta,
-    "la joya": env.PICKER_KEYS.laJoya,
-    joya: env.PICKER_KEYS.laJoya,
-    avalon: env.PICKER_KEYS.avalon,
-    "avalon plaza": env.PICKER_KEYS.avalon,
-    republica: env.PICKER_KEYS.republica,
-  };
-
-  for (const [key, value] of Object.entries(map)) {
-    if (normalized.includes(key) && value) {
-      return value;
+export async function startSearch(bookingId: string, branchApiKey: string): Promise<StartSearchResponse> {
+  const response = await axios.post(
+    `${PICKER_API}/startSearch`,
+    { bookingID: bookingId },
+    {
+      headers: {
+        Authorization: `Bearer ${branchApiKey}`,
+        "Content-Type": "application/json",
+      },
     }
-  }
+  );
 
-  return "";
+  return response.data?.data || response.data || {};
 }

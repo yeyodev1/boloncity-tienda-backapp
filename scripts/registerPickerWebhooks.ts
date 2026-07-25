@@ -1,19 +1,10 @@
 import "dotenv/config";
 import axios from "axios";
+import { dbConnect } from "../src/config/db";
+import { Branch } from "../src/models/Branch";
 
 const PICKER_API = "https://dev-api.pickerexpress.com/api";
 const WEBHOOK_BASE_URL = process.env.WEBHOOK_BASE_URL || "https://testing-storybrand-backapp.bakano.ec";
-
-const BRANCH_KEYS: Record<string, string> = {
-  garzota: process.env.PICKER_KEY_GARZOTA || "",
-  centro: process.env.PICKER_KEY_CENTRO || "",
-  kennedy: process.env.PICKER_KEY_KENNEDY || "",
-  urdesa: process.env.PICKER_KEY_URDESA || "",
-  viaCosta: process.env.PICKER_KEY_VIA_COSTA || "",
-  laJoya: process.env.PICKER_KEY_LA_JOYA || "",
-  avalon: process.env.PICKER_KEY_AVALON || "",
-  republica: process.env.PICKER_KEY_REPUBLICA || "",
-};
 
 async function registerWebhook(branchName: string, apiKey: string) {
   if (!apiKey) {
@@ -45,10 +36,12 @@ async function registerWebhook(branchName: string, apiKey: string) {
 
 async function main() {
   console.log(`Registering Picker webhooks → ${WEBHOOK_BASE_URL}/api/webhooks/picker\n`);
+  await dbConnect();
+  const branches = await Branch.find({ isActive: true }).select("+pickerStore.storeApiKey");
 
-  for (const [name, key] of Object.entries(BRANCH_KEYS)) {
-    console.log(`Branch: ${name}`);
-    await registerWebhook(name, key);
+  for (const branch of branches) {
+    console.log(`Branch: ${branch.name}`);
+    await registerWebhook(branch.name, branch.pickerStore?.storeApiKey || "");
   }
 
   console.log("\nDone.");

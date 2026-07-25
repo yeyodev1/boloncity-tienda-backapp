@@ -2,7 +2,8 @@ import { Request, Response } from "express";
 import axios from "axios";
 import { Branch } from "../models/Branch";
 import { Setting } from "../models/Setting";
-import { preCheckout, getPickerBranchKey } from "../services/pickerexpress.service";
+import { preCheckout } from "../services/pickerexpress.service";
+import { toPublicBranch } from "../services/branchOperational.service";
 
 function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371;
@@ -21,7 +22,7 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
     return;
   }
 
-  const branches = await Branch.find({ isActive: true });
+  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true } }).select("+pickerStore.storeApiKey");
   const scored = branches
     .filter((b) => b.coordinates?.lat != null && b.coordinates?.lng != null)
     .map((b) => ({
@@ -40,7 +41,7 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
 
   let deliveryFee: number;
 
-  const branchKey = nearest.branch.pickerApiKey || getPickerBranchKey(nearest.branch.name);
+  const branchKey = nearest.branch.pickerStore?.storeApiKey || "";
   if (branchKey) {
     try {
       const pickerResult = await preCheckout({ branchKey, latitude: lat, longitude: lng });
@@ -57,7 +58,7 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
   }
 
   res.json({
-    branch: nearest.branch,
+    branch: toPublicBranch(nearest.branch),
     distance: roundedDistance,
     deliveryFee,
   });
