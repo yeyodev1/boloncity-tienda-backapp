@@ -74,7 +74,7 @@ export interface IOrder {
   deliveryGoogleMapsUrl: string;
   deliveryCoordinates?: { lat: number; lng: number } | null;
   scheduledFor?: Date;
-  status: "pending" | "paid" | "preparing" | "ready" | "delivered" | "cancelled";
+  status: "pending" | "paid" | "preparing" | "awaiting_pickup" | "ready" | "delivered" | "cancelled";
   payphone: IPayphoneData;
   picker?: IPickerData;
   billing?: IBillingData;
@@ -113,7 +113,7 @@ const orderSchema = new Schema<IOrder>(
     paymentMethod: { type: String, enum: ["card", "cash"], default: "card" },
     status: {
       type: String,
-      enum: ["pending", "paid", "preparing", "ready", "delivered", "cancelled"],
+      enum: ["pending", "paid", "preparing", "awaiting_pickup", "ready", "delivered", "cancelled"],
       default: "pending",
     },
     payphone: {

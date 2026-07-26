@@ -14,8 +14,10 @@ import { Branch } from "../models/Branch";
 import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl } from "../utils/parseMapsUrl";
 import { AuthRequest } from "../types/AuthRequest";
-import { subscribeToOrder } from "../services/orderEvents.service";
+import { publishOrderUpdate, subscribeToOrder } from "../services/orderEvents.service";
 import { validateScheduledTime } from "../services/branchOperational.service";
+import { getFrontendUrl } from "../config/env";
+import { getOrderStatusEmailHtml } from "../services/email-templates";
 
 function centsToDollars(value: number) {
   return value / 100;
@@ -618,6 +620,11 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
     return;
   }
 
+  if (order.deliveryType === "delivery" && req.body.status === "delivered") {
+    res.status(400).json({ message: "Un delivery solo se marca como entregado cuando Picker confirma la entrega." });
+    return;
+  }
+
   const note = typeof req.body.note === "string" ? req.body.note.trim() : "";
   const previousStatus = order.status;
   order.status = req.body.status;
@@ -630,6 +637,29 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
     details: note ? `Cambio de estado manual: ${note}` : `Cambio de estado manual`,
   });
   await order.save();
+  publishOrderUpdate(order);
+
+  if (previousStatus !== order.status) {
+    const statusText: Record<string, string> = {
+      pending: "Pedido recibido",
+      paid: "Pago confirmado",
+      preparing: "Tu pedido está en preparación",
+      awaiting_pickup: "Tu pedido espera recolección",
+      ready: "Tu pedido ya va en entrega",
+      delivered: "Pedido entregado",
+      cancelled: "Pedido cancelado",
+    };
+    const html = getOrderStatusEmailHtml({
+      orderNumber: order.orderNumber,
+      customerName: order.customerName || "Cliente",
+      status: order.status,
+      statusText: statusText[order.status] || "Actualización de tu pedido",
+      detailUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
+      items: order.items || [],
+      total: order.total,
+    });
+    void sendEmail(order.customerEmail, `Tu pedido ${order.orderNumber} — ${statusText[order.status] || "Actualización"}`, html).catch(() => {});
+  }
 
   res.json(order);
 }
