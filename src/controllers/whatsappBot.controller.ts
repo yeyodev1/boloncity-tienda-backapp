@@ -277,6 +277,9 @@ export async function whatsappBotBrain(req: Request, res: Response) {
   });
 }
 
+// BuilderBot flows that previously called /assistant receive the same AI-driven response.
+export const whatsappBotAssistant = whatsappBotBrain;
+
 export async function whatsappBotLocation(req: Request, res: Response) {
   const phone = normalizePhone(req.body.phone);
   if (!phone) return res.status(400).json({ message: "phone is required" });
