@@ -10,6 +10,8 @@ export interface IWhatsAppSession {
     deliveryAddress?: string;
     deliveryGoogleMapsUrl?: string;
     deliveryCoordinates?: { lat: number; lng: number };
+    deliveryFee?: number;
+    deliveryDistance?: number;
     branch?: Types.ObjectId;
     paymentMethod?: "card" | "cash";
     billingPreference?: "final_consumer" | "invoice";
@@ -17,7 +19,7 @@ export interface IWhatsAppSession {
     billingDocNumber?: string;
     billingEmail?: string;
     billingAddress?: string;
-    items?: Array<{ product: Types.ObjectId; quantity: number }>;
+    items?: Array<{ product?: Types.ObjectId; productId?: string; name?: string; quantity: number }>;
   };
   lastMessageHash?: string;
   lastMessageAt?: Date;
@@ -40,6 +42,8 @@ const sessionSchema = new Schema<IWhatsAppSession>(
       deliveryAddress: String,
       deliveryGoogleMapsUrl: String,
       deliveryCoordinates: { lat: Number, lng: Number },
+      deliveryFee: Number,
+      deliveryDistance: Number,
       branch: { type: Schema.Types.ObjectId, ref: "Branch" },
       paymentMethod: { type: String, enum: ["card", "cash"] },
       billingPreference: { type: String, enum: ["final_consumer", "invoice"] },
@@ -49,6 +53,8 @@ const sessionSchema = new Schema<IWhatsAppSession>(
       billingAddress: String,
       items: [{
         product: { type: Schema.Types.ObjectId, ref: "Product" },
+        productId: String,
+        name: String,
         quantity: Number,
       }],
     },

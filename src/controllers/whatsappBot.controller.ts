@@ -128,12 +128,11 @@ function collectMissing(data: any, invoiceRequired = false) {
 }
 
 async function requiresInvoice(data: any) {
-  if (!data.branch || !Array.isArray(data.items) || !data.items.length) return false;
-  const items = await resolveBotItems(data.items, String(data.branch));
-  return items.reduce((total: number, item: any) => total + item.price * item.quantity, 0) > 50;
+  const quote = await getSessionQuote(data);
+  return (quote?.total || 0) > 50;
 }
 
-async function callGemini(message: string, history: string, branchId?: string) {
+async function callGemini(message: string, history: string, branchId?: string, cartContext: unknown = []) {
   if (!env.GEMINI_API_KEY) return null;
   const catalog = await buildCatalog(branchId);
   const prompt = `Eres el asistente de ventas de Boloncity. Responde solo JSON válido con reply, data e intent. data puede contener customerName, customerEmail, deliveryAddress, paymentMethod (card|cash), billingPreference (final_consumer|invoice), billingName, billingDocNumber, billingEmail, billingAddress, items [{productId,quantity}].
@@ -145,6 +144,8 @@ FLUJO OBLIGATORIO:
 4. Boloncity acepta exclusivamente tarjeta mediante PayPhone o efectivo al recibir. Nunca ofrezcas ni aceptes transferencias.
 5. Pregunta siempre si desea consumidor final o factura. Si el pedido supera $50, los datos de factura son obligatorios: nombre, cédula/RUC, correo y dirección de facturación.
 6. Cuando estén todos los datos, muestra un resumen y pide confirmación explícita. Nunca digas que la orden ya fue creada.
+7. Si el cliente agrega, quita, cambia cantidad o cambia producto, data.items DEBE contener el carrito completo final, no solo el último cambio
+8. Si el cliente cambia ubicación, la sucursal y el delivery los recalcula el backend; confirma el cambio sin inventar costo
 
 ESTILO OBLIGATORIO PARA reply:
 - Conversación humana, cálida y breve, usando el nombre del cliente cuando ya exista sin repetirlo artificialmente
@@ -162,6 +163,9 @@ ESTILO OBLIGATORIO PARA reply:
 
 CATÁLOGO REAL:
 ${JSON.stringify(catalog)}
+
+CARRITO ACTUAL:
+${JSON.stringify(cartContext)}
 
 Mantén el historial y no inventes productos, precios, sucursales, pagos ni ubicaciones.
 
@@ -191,7 +195,14 @@ function mergeData(target: BotData, incoming: any) {
   const billingPreference = String(incoming.billingPreference || "").toLowerCase();
   if (/final|consumidor/.test(billingPreference)) target.billingPreference = "final_consumer";
   if (/factura|invoice/.test(billingPreference)) target.billingPreference = "invoice";
-  if (Array.isArray(incoming.items) && incoming.items.length) target.items = incoming.items;
+  if (Array.isArray(incoming.items) && incoming.items.length) {
+    target.items = incoming.items.map((item: any) => ({
+      product: item.product || undefined,
+      productId: item.productId || item.product || "",
+      name: item.name || item.productName || "",
+      quantity: Math.max(1, Math.min(Number(item.quantity || item.qty) || 1, 50)),
+    }));
+  }
 }
 
 function normalizeReply(value: unknown) {
@@ -251,7 +262,23 @@ async function setSessionLocation(session: any, coords: { lat: number; lng: numb
   session.data.deliveryCoordinates = coords;
   session.data.deliveryGoogleMapsUrl = mapsUrl || `https://www.google.com/maps/search/?api=1&query=${coords.lat},${coords.lng}`;
   session.data.branch = quote.branch._id;
+  session.data.deliveryFee = quote.deliveryFee;
+  session.data.deliveryDistance = Math.round(quote.distance * 10) / 10;
   return quote;
+}
+
+async function getSessionQuote(data: any) {
+  if (!data.branch || !Array.isArray(data.items) || !data.items.length) return null;
+  const items = await resolveBotItems(data.items, String(data.branch));
+  if (!items.length) return null;
+  const subtotal = items.reduce((total: number, item: any) => total + item.price * item.quantity, 0);
+  const deliveryFee = Number(data.deliveryFee) || 0;
+  return { items, subtotal, deliveryFee, total: subtotal + deliveryFee };
+}
+
+function formatOrderSummary(quote: NonNullable<Awaited<ReturnType<typeof getSessionQuote>>>) {
+  const items = quote.items.map((item: any) => `${item.quantity} x ${item.name} $${(item.price * item.quantity).toFixed(2)}`).join("\n");
+  return `Resumen de tu pedido\n\n${items}\n\nSubtotal $${quote.subtotal.toFixed(2)}\nDelivery $${quote.deliveryFee.toFixed(2)}\nTotal $${quote.total.toFixed(2)}\n\nEscribe confirmo para crear tu orden o dime qué deseas cambiar ☕`;
 }
 
 function isCheckoutConfirmation(message: string) {
@@ -329,11 +356,14 @@ export async function whatsappBotBrain(req: Request, res: Response) {
     res.json({ success: true, route: "catalog", targetEndpoint: "/api/orders/whatsapp-bot/brain", message: reply, missingData: ["nombre", "correo", "productos", "dirección", "método de pago"], readyToCheckout: false, data: session.data });
     return;
   }
-  const result = await callGemini(message, textHistory(session), String(session.data.branch || ""));
+  const result = await callGemini(message, textHistory(session), String(session.data.branch || ""), session.data.items || []);
   mergeData(session.data as BotData, result?.data);
   const invoiceRequired = await requiresInvoice(session.data);
   const missing = collectMissing(session.data, invoiceRequired);
-  const reply = normalizeReply(result?.reply);
+  const quote = await getSessionQuote(session.data);
+  const reply = missing.length === 0 && quote && !isCheckoutConfirmation(message)
+    ? formatOrderSummary(quote)
+    : normalizeReply(result?.reply);
   const lowerMessage = message.toLowerCase();
   const route = missing.length === 0 && isCheckoutConfirmation(message)
     ? "checkout"
@@ -348,6 +378,7 @@ export async function whatsappBotBrain(req: Request, res: Response) {
     message: reply,
     missingData: missing,
     invoiceRequired,
+    quote,
     readyToCheckout: missing.length === 0 && isCheckoutConfirmation(message),
     data: session.data,
   });
