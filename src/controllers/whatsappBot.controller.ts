@@ -144,6 +144,9 @@ ESTILO OBLIGATORIO PARA reply:
 - Conversación humana, cálida y breve, usando el nombre del cliente cuando ya exista sin repetirlo artificialmente
 - Usa el historial completo y nunca reinicies la conversación
 - No uses respuestas prefabricadas ni tono robótico
+- Boloncity es el nombre del negocio, NUNCA es el nombre del cliente. Nunca saludes al cliente como "Hola Boloncity" ni le atribuyas ese nombre
+- Si no conoces el nombre del cliente, no inventes uno ni uses el nombre del negocio como saludo
+- Cada reply debe ser una oración completa y clara, nunca una frase truncada o incompleta
 - No pongas emojis, signos de admiración, signos de interrogación ni puntuación al inicio
 - Usa máximo un emoji natural al final
 - Nunca termines reply con punto
@@ -188,14 +191,27 @@ function normalizeReply(value: unknown) {
   return reply;
 }
 
+function replyLooksIncomplete(reply: string) {
+  const text = reply.replace(/[\p{Extended_Pictographic}\s]+$/u, "").trim().toLowerCase();
+  return /\b(?:para|por|con|de|del|la|el|los|las|tu|tus|mi|que|y|o|a|en|un|una)$/i.test(text);
+}
+
 async function callNaturalReply(context: string, history: string) {
   if (!env.GEMINI_API_KEY) return "";
   try {
     const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
-      contents: [{ role: "user", parts: [{ text: `Redacta solo el mensaje final de WhatsApp para Boloncity usando este historial y contexto\n\nHistorial\n${history}\n\nContexto verificado\n${context}\n\nReglas: humano, cálido y breve; usa el nombre si existe; no reinicies; no uses emojis ni signos al inicio; usa máximo un emoji al final; no termines con punto; no inventes datos` }] }],
+      contents: [{ role: "user", parts: [{ text: `Redacta solo el mensaje final de WhatsApp para el cliente de Boloncity usando este historial y contexto\n\nHistorial\n${history}\n\nContexto verificado\n${context}\n\nReglas: Boloncity es el negocio, nunca el nombre del cliente; usa el nombre solo si está confirmado; humano, cálido, breve y completo; no reinicies; no uses emojis ni signos al inicio; usa máximo un emoji al final; no termines con punto; no inventes datos` }] }],
       generationConfig: { temperature: 0.35, maxOutputTokens: 350 },
     }, { timeout: 25000 });
-    return normalizeReply(response.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join(""));
+    let reply = normalizeReply(response.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join(""));
+    if (replyLooksIncomplete(reply)) {
+      const repair = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
+        contents: [{ role: "user", parts: [{ text: `La siguiente respuesta quedó incompleta: "${reply}". Reescríbela como una sola respuesta completa, humana y breve para el cliente de Boloncity usando este contexto: ${context}. No llames Boloncity al cliente, no uses puntuación al inicio, termina sin punto y con un emoji al final` }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 350 },
+      }, { timeout: 25000 });
+      reply = normalizeReply(repair.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join(""));
+    }
+    return reply;
   } catch (error) {
     console.error("[whatsapp-bot] Natural reply failed", error instanceof Error ? error.message : error);
     return "";
@@ -232,7 +248,7 @@ function needsHumanSupport(text: unknown) {
 
 export async function whatsappBotBrain(req: Request, res: Response) {
   const phone = normalizePhone(req.body.phone);
-  const message = String(req.body.rawMessage || req.body.message || "").trim();
+  const message = String(req.body.rawMessage || req.body.rawMess || req.body.body || req.body.message || "").trim();
   if (!phone || !message) return res.status(200).json({ success: false, route: "conversation", message: "", missingData: [], readyToCheckout: false });
   if (isTrackingRequest(message)) {
     const orderNumber = message.match(/\bORD-\d+\b/i)?.[0]?.toUpperCase() || "";
@@ -250,6 +266,10 @@ export async function whatsappBotBrain(req: Request, res: Response) {
     return;
   }
   const session = await WhatsAppSession.findOne({ phone }) || new WhatsAppSession({ phone, history: [], data: { deliveryType: "delivery" } });
+  const senderName = String(req.body.name || "").trim();
+  if (senderName && senderName.toLowerCase() !== "boloncity" && !session.data.customerName) {
+    session.data.customerName = senderName;
+  }
   const hadLocation = Boolean(session.data.deliveryCoordinates?.lat && session.data.deliveryCoordinates?.lng);
   appendHistory(session, "user", message);
   const providedLocation = req.body.location || req.body.metadata?.location;
@@ -304,7 +324,7 @@ export async function whatsappBotBrain(req: Request, res: Response) {
 
 // BuilderBot expects this legacy response envelope instead of the router payload.
 export async function whatsappBotAssistant(req: Request, res: Response) {
-  const rawMessage = String(req.body?.rawMessage || req.body?.message || latestHistoryMessage(req.body?.history) || "").trim();
+  const rawMessage = String(req.body?.rawMessage || req.body?.rawMess || req.body?.body || req.body?.message || latestHistoryMessage(req.body?.history) || "").trim();
   const forwarded = Object.create(req) as Request;
   forwarded.body = { ...req.body, rawMessage };
   let statusCode = 200;
