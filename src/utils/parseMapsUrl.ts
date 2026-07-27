@@ -8,6 +8,7 @@ export function parseMapsUrl(url?: string) {
     /[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/,
     /[?&]query=(-?\d+\.\d+),(-?\d+\.\d+)/,
     /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
+    /\/maps\/search\/(-?\d+\.\d+),\+?(-?\d+\.\d+)/,
   ]
 
   for (const pattern of patterns) {

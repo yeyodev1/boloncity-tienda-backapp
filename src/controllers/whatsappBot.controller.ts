@@ -103,6 +103,12 @@ async function buildCatalog(branchId?: string) {
     }));
 }
 
+function catalogFallback(products: Awaited<ReturnType<typeof buildCatalog>>) {
+  const recommendations = products.slice(0, 3);
+  if (!recommendations.length) return "En este momento no tenemos productos disponibles ☕";
+  return `Ya tenemos tu ubicación y calculamos el delivery\n\n${recommendations.map((product) => `${product.name} por $${product.price.toFixed(2)}`).join("\n")}\n\nIndícame cuál te gustaría pedir ☕`;
+}
+
 function collectMissing(data: any, invoiceRequired = false) {
   const missing: string[] = [];
   if (!data.customerName) missing.push("nombre");
@@ -312,8 +318,12 @@ export async function whatsappBotBrain(req: Request, res: Response) {
     return;
   }
   if (!hadLocation) {
-    const result = await callGemini("El cliente acaba de compartir su ubicación. Confirma que ya fue validada, presenta el catálogo real y pregunta qué productos desea", textHistory(session), String(session.data.branch || ""));
-    const reply = normalizeReply(result?.reply);
+    const products = await buildCatalog(String(session.data.branch || ""));
+    const generatedReply = await callNaturalReply(
+      `La ubicación del cliente ya fue validada y el delivery está calculado. Recomienda exactamente estos 2 o 3 productos reales sin listar más: ${JSON.stringify(products.slice(0, 3))}. Pregunta cuál desea pedir`,
+      textHistory(session)
+    );
+    const reply = /\$\d/.test(generatedReply) ? generatedReply : catalogFallback(products);
     appendHistory(session, "assistant", reply);
     await session.save();
     res.json({ success: true, route: "catalog", targetEndpoint: "/api/orders/whatsapp-bot/brain", message: reply, missingData: ["nombre", "correo", "productos", "dirección", "método de pago"], readyToCheckout: false, data: session.data });
