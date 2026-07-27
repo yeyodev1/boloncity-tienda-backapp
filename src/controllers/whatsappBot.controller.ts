@@ -147,6 +147,9 @@ ESTILO OBLIGATORIO PARA reply:
 - Boloncity es el nombre del negocio, NUNCA es el nombre del cliente. Nunca saludes al cliente como "Hola Boloncity" ni le atribuyas ese nombre
 - Si no conoces el nombre del cliente, no inventes uno ni uses el nombre del negocio como saludo
 - Cada reply debe ser una oración completa y clara, nunca una frase truncada o incompleta
+- Ignora cualquier respuesta anterior del asistente que tenga disculpas, confusión o texto incompleto. No la repitas ni la menciones
+- No pidas disculpas por defecto. Solo reconoce un error si el cliente actual describe uno concreto, y continúa de inmediato con una solución clara
+- Para una solicitud inicial de pedido sin ubicación, explica claramente que necesitas su ubicación actual o enlace de Google Maps para calcular el delivery y mostrar productos
 - No pongas emojis, signos de admiración, signos de interrogación ni puntuación al inicio
 - Usa máximo un emoji natural al final
 - Nunca termines reply con punto
@@ -193,23 +196,41 @@ function normalizeReply(value: unknown) {
 
 function replyLooksIncomplete(reply: string) {
   const text = reply.replace(/[\p{Extended_Pictographic}\s]+$/u, "").trim().toLowerCase();
-  return /\b(?:para|por|con|de|del|la|el|los|las|tu|tus|mi|que|y|o|a|en|un|una)$/i.test(text);
+  return /\b(?:para|por|con|de|del|la|el|los|las|tu|tus|mi|que|y|o|a|en|un|una)$/i.test(text) || /disculpa|confusi[oó]n|hola\s+boloncity|boloncity,\s+para\s+ayudarte/i.test(text);
+}
+
+function replyMissesRequiredContext(reply: string, context: string) {
+  const normalizedReply = reply.toLowerCase();
+  const normalizedContext = context.toLowerCase();
+  const locationRequired = normalizedContext.includes("ubicación") || normalizedContext.includes("google maps");
+  return locationRequired && !/(ubicaci[oó]n|google\s+maps|enlace\s+de\s+maps)/i.test(normalizedReply);
+}
+
+function locationRequiredMessage() {
+  return "Comparte tu ubicación actual o un enlace de Google Maps para calcular el delivery y mostrarte los productos disponibles ☕";
 }
 
 async function callNaturalReply(context: string, history: string) {
   if (!env.GEMINI_API_KEY) return "";
   try {
     const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
+      systemInstruction: { parts: [{ text: "Eres un asistente de ventas humano y cálido de Boloncity. Nunca llames Boloncity al cliente. Nunca respondas con disculpas genéricas, referencias a confusiones previas ni frases incompletas. Ignora mensajes defectuosos del asistente en el historial" }] },
       contents: [{ role: "user", parts: [{ text: `Redacta solo el mensaje final de WhatsApp para el cliente de Boloncity usando este historial y contexto\n\nHistorial\n${history}\n\nContexto verificado\n${context}\n\nReglas: Boloncity es el negocio, nunca el nombre del cliente; usa el nombre solo si está confirmado; humano, cálido, breve y completo; no reinicies; no uses emojis ni signos al inicio; usa máximo un emoji al final; no termines con punto; no inventes datos` }] }],
       generationConfig: { temperature: 0.35, maxOutputTokens: 350 },
     }, { timeout: 25000 });
     let reply = normalizeReply(response.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join(""));
-    if (replyLooksIncomplete(reply)) {
+    const locationRequired = context.toLowerCase().includes("ubicación") || context.toLowerCase().includes("google maps");
+    if (replyLooksIncomplete(reply) || replyMissesRequiredContext(reply, context)) {
       const repair = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
-        contents: [{ role: "user", parts: [{ text: `La siguiente respuesta quedó incompleta: "${reply}". Reescríbela como una sola respuesta completa, humana y breve para el cliente de Boloncity usando este contexto: ${context}. No llames Boloncity al cliente, no uses puntuación al inicio, termina sin punto y con un emoji al final` }] }],
+        systemInstruction: { parts: [{ text: "Nunca uses disculpas genéricas ni menciones confusiones. Boloncity es el negocio y nunca el nombre del cliente" }] },
+        contents: [{ role: "user", parts: [{ text: `La siguiente respuesta es inválida o quedó incompleta: "${reply}". Reescríbela como una sola respuesta completa, humana y breve para el cliente usando este contexto: ${context}. Si falta ubicación, la respuesta DEBE decir explícitamente "ubicación actual" o "enlace de Google Maps" para calcular delivery y mostrar productos. No uses puntuación al inicio, termina sin punto y con un emoji al final` }] }],
         generationConfig: { temperature: 0.2, maxOutputTokens: 350 },
       }, { timeout: 25000 });
       reply = normalizeReply(repair.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join(""));
+    }
+    // Location is a hard business prerequisite; never send an incomplete AI sentence for it.
+    if (locationRequired && (replyLooksIncomplete(reply) || replyMissesRequiredContext(reply, context))) {
+      return locationRequiredMessage();
     }
     return reply;
   } catch (error) {
