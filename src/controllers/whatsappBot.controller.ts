@@ -412,19 +412,39 @@ export async function whatsappBotLocation(req: Request, res: Response) {
   const phone = normalizePhone(req.body.phone);
   if (!phone) return res.status(200).json({ success: false, route: "conversation", message: "" });
   const session = await WhatsAppSession.findOne({ phone }) || new WhatsAppSession({ phone, history: [], data: { deliveryType: "delivery" } });
+  const senderName = String(req.body.name || "").trim();
+  if (senderName && senderName.toLowerCase() !== "boloncity" && !session.data.customerName) {
+    session.data.customerName = senderName;
+  }
   const mapsUrl = String(req.body.mapsUrl || "").trim();
   let coords = parseMapsUrl(mapsUrl);
   if (!coords && mapsUrl) coords = await resolveMapsCoordinates(mapsUrl, undefined, env.GOOGLE_MAPS_API_KEY);
   const lat = Number(req.body.latitude ?? req.body.lat);
-  const lng = Number(req.body.longitude ?? req.body.lng);
+  const lng = Number(req.body.longitude ?? req.body.longitud ?? req.body.lng);
   if (!coords && Number.isFinite(lat) && Number.isFinite(lng)) coords = { lat, lng };
   if (!coords) return res.status(200).json({ success: false, route: "conversation", message: "" });
   const quote = await setSessionLocation(session, coords, mapsUrl);
-  const result = await callGemini("El cliente acaba de compartir su ubicación. Confirma que ya fue validada, presenta el catálogo real y pregunta qué productos desea", textHistory(session), String(quote.branch._id));
-  const message = normalizeReply(result?.reply);
+  const history = `${textHistory(session)}\n${externalHistoryText(req.body.history)}`.trim().slice(-12000);
+  const products = await buildCatalog(String(quote.branch._id));
+  const generatedMessage = await callNaturalReply(
+    `El cliente compartió su ubicación actual. Ya asignamos la sucursal ${quote.branch.name} y calculamos delivery de $${quote.deliveryFee.toFixed(2)}. Recomienda exactamente estos 2 o 3 productos reales con precio: ${JSON.stringify(products.slice(0, 3))}. Pregunta cuál desea pedir`,
+    history
+  );
+  const message = /\$\d/.test(generatedMessage) ? generatedMessage : catalogFallback(products);
   appendHistory(session, "assistant", message);
   await session.save();
-  res.json({ success: true, route: "catalog", message, coordinates: coords, branch: { id: quote.branch._id, name: quote.branch.name }, deliveryFee: quote.deliveryFee, distance: Math.round(quote.distance * 10) / 10, products: await buildCatalog(String(quote.branch._id)) });
+  res.status(200).json({
+    success: true,
+    route: "catalog",
+    _intent: "catalog",
+    message,
+    missingData: ["nombre", "correo", "productos", "dirección", "método de pago", "preferencia de facturación"],
+    coordinates: coords,
+    branch: { id: quote.branch._id, name: quote.branch.name },
+    deliveryFee: quote.deliveryFee,
+    distance: Math.round(quote.distance * 10) / 10,
+    products: products.slice(0, 3),
+  });
 }
 
 async function createBotOrder(session: any) {
