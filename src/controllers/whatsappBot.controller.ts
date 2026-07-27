@@ -510,3 +510,26 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
   const message = await callNaturalReply(`Redacta una actualización clara usando únicamente estos datos verificados\n${facts}`, context);
   res.json({ success: true, route: "tracking", escalated, message, orderNumber: order.orderNumber, status: order.status, paymentMethod: order.paymentMethod, paymentVerified: order.status !== "pending" || order.paymentMethod === "cash", trackingLink, pickerStatus, createdAt: order.createdAt, scheduledFor: order.scheduledFor || null, total: order.total, items: order.items });
 }
+
+// Compatibility endpoint for existing BuilderBot flows that still call /search-order.
+export async function whatsappBotSearchOrder(req: Request, res: Response) {
+  let payload: any = null;
+  const capture = {
+    status() {
+      return this;
+    },
+    json(body: unknown) {
+      payload = body;
+      return this;
+    },
+  } as unknown as Response;
+
+  await whatsappBotTrackOrder(req, capture);
+  res.status(200).json({
+    success: payload?.success === true,
+    message: payload?.message || "",
+    _intent: "tracking",
+    missingData: payload?.missingData || [],
+    trackingLink: payload?.trackingLink || "",
+  });
+}
