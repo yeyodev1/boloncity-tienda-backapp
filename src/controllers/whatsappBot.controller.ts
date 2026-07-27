@@ -220,7 +220,7 @@ function needsHumanSupport(text: unknown) {
 export async function whatsappBotBrain(req: Request, res: Response) {
   const phone = normalizePhone(req.body.phone);
   const message = String(req.body.rawMessage || req.body.message || "").trim();
-  if (!phone || !message) return res.status(400).json({ message: "phone and rawMessage are required" });
+  if (!phone || !message) return res.status(200).json({ success: false, route: "conversation", message: "", missingData: [], readyToCheckout: false });
   if (isTrackingRequest(message)) {
     const orderNumber = message.match(/\bORD-\d+\b/i)?.[0]?.toUpperCase() || "";
     const email = extractEmail(`${message}\n${req.body.history || ""}`);
@@ -309,11 +309,11 @@ export async function whatsappBotAssistant(req: Request, res: Response) {
 
   await whatsappBotBrain(forwarded, capture);
   if (!payload) {
-    res.status(500).json({ success: false, message: "", _intent: "chat", missingData: [] });
+    res.status(200).json({ success: false, message: "", _intent: "chat", missingData: [] });
     return;
   }
 
-  res.status(statusCode).json({
+  res.status(200).json({
     success: payload.success !== false,
     message: payload.message || "",
     _intent: payload.route === "conversation" ? "chat" : payload.route || "chat",
@@ -323,7 +323,7 @@ export async function whatsappBotAssistant(req: Request, res: Response) {
 
 export async function whatsappBotLocation(req: Request, res: Response) {
   const phone = normalizePhone(req.body.phone);
-  if (!phone) return res.status(400).json({ message: "phone is required" });
+  if (!phone) return res.status(200).json({ success: false, route: "conversation", message: "" });
   const session = await WhatsAppSession.findOne({ phone }) || new WhatsAppSession({ phone, history: [], data: { deliveryType: "delivery" } });
   const mapsUrl = String(req.body.mapsUrl || "").trim();
   let coords = parseMapsUrl(mapsUrl);
@@ -331,7 +331,7 @@ export async function whatsappBotLocation(req: Request, res: Response) {
   const lat = Number(req.body.latitude ?? req.body.lat);
   const lng = Number(req.body.longitude ?? req.body.lng);
   if (!coords && Number.isFinite(lat) && Number.isFinite(lng)) coords = { lat, lng };
-  if (!coords) return res.status(400).json({ message: "Comparte una ubicación o enlace válido de Google Maps" });
+  if (!coords) return res.status(200).json({ success: false, route: "conversation", message: "" });
   const quote = await setSessionLocation(session, coords, mapsUrl);
   const result = await callGemini("El cliente acaba de compartir su ubicación. Confirma que ya fue validada, presenta el catálogo real y pregunta qué productos desea", textHistory(session), String(quote.branch._id));
   const message = normalizeReply(result?.reply);
@@ -405,15 +405,20 @@ async function createBotOrder(session: any) {
 }
 
 export async function whatsappBotCheckout(req: Request, res: Response) {
-  const phone = normalizePhone(req.body.phone);
-  if (!phone) return res.status(400).json({ message: "phone is required" });
-  const session = await WhatsAppSession.findOne({ phone });
-  if (!session) return res.status(404).json({ message: "No existe una conversación activa" });
-  mergeData(session.data as BotData, req.body.data);
-  const order = await createBotOrder(session);
-  await WhatsAppSession.deleteOne({ _id: session._id });
-  const paymentLink = order.paymentMethod === "card" ? `${getFrontendUrl()}/pago/${order.orderNumber}?email=${encodeURIComponent(order.customerEmail)}` : "";
-  res.status(201).json({ success: true, order, paymentLink, trackingLink: order.picker?.smrURL || "" });
+  try {
+    const phone = normalizePhone(req.body.phone);
+    if (!phone) return res.status(200).json({ success: false, message: "", missingData: ["teléfono"] });
+    const session = await WhatsAppSession.findOne({ phone });
+    if (!session) return res.status(200).json({ success: false, message: "", missingData: ["conversación activa"] });
+    mergeData(session.data as BotData, req.body.data);
+    const order = await createBotOrder(session);
+    await WhatsAppSession.deleteOne({ _id: session._id });
+    const paymentLink = order.paymentMethod === "card" ? `${getFrontendUrl()}/pago/${order.orderNumber}?email=${encodeURIComponent(order.customerEmail)}` : "";
+    res.status(200).json({ success: true, order, paymentLink, trackingLink: order.picker?.smrURL || "" });
+  } catch (error) {
+    console.error("[whatsapp-bot] Checkout failed", error instanceof Error ? error.message : error);
+    res.status(200).json({ success: false, message: "", missingData: [] });
+  }
 }
 
 export async function whatsappBotTrackOrder(req: Request, res: Response) {
@@ -423,7 +428,7 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
   const email = String(req.query.email || req.body?.email || extractEmail(history)).trim().toLowerCase();
   const context = `${req.body?.rawMessage || req.body?.message || ""}\n${history}`;
   const escalated = needsHumanSupport(context);
-  if (!phone && !email) return res.status(400).json({ message: "phone or email is required" });
+  if (!phone && !email) return res.status(200).json({ success: false, route: "tracking", message: "" });
   const query: Record<string, unknown> = { ...(orderNumber ? { orderNumber } : {}) };
   if (email) query.customerEmail = email;
   else query.customerPhone = phone;
@@ -437,7 +442,7 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
         : "No hay pedido encontrado. Pide el correo usado en la compra o el número de orden, sin inventar datos",
       context
     );
-    return res.status(escalated ? 200 : 404).json({ success: false, route: "tracking", escalated, message });
+    return res.status(200).json({ success: false, route: "tracking", escalated, message });
   }
   const statusLabels: Record<string, string> = {
     pending: "Pedido recibido",
