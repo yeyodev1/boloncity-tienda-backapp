@@ -19,6 +19,18 @@ function normalizePhone(value: unknown) {
   return String(value || "").replace(/[^0-9+]/g, "");
 }
 
+function latestHistoryMessage(history: unknown) {
+  if (Array.isArray(history)) {
+    for (let index = history.length - 1; index >= 0; index -= 1) {
+      const entry = history[index];
+      if (String(entry?.role || entry?.sender || "").toLowerCase() === "assistant") continue;
+      const content = entry?.content || entry?.text || entry?.message || "";
+      if (typeof content === "string" && content.trim()) return content.trim();
+    }
+  }
+  return "";
+}
+
 function appendHistory(session: any, role: "user" | "assistant", content: string) {
   if (!content.trim()) return;
   session.history = [...(session.history || []), { role, content: content.trim(), createdAt: new Date() }].slice(-30);
@@ -277,8 +289,37 @@ export async function whatsappBotBrain(req: Request, res: Response) {
   });
 }
 
-// BuilderBot flows that previously called /assistant receive the same AI-driven response.
-export const whatsappBotAssistant = whatsappBotBrain;
+// BuilderBot expects this legacy response envelope instead of the router payload.
+export async function whatsappBotAssistant(req: Request, res: Response) {
+  const rawMessage = String(req.body?.rawMessage || req.body?.message || latestHistoryMessage(req.body?.history) || "").trim();
+  const forwarded = Object.create(req) as Request;
+  forwarded.body = { ...req.body, rawMessage };
+  let statusCode = 200;
+  let payload: any = null;
+  const capture = {
+    status(code: number) {
+      statusCode = code;
+      return this;
+    },
+    json(body: unknown) {
+      payload = body;
+      return this;
+    },
+  } as unknown as Response;
+
+  await whatsappBotBrain(forwarded, capture);
+  if (!payload) {
+    res.status(500).json({ success: false, message: "", _intent: "chat", missingData: [] });
+    return;
+  }
+
+  res.status(statusCode).json({
+    success: payload.success !== false,
+    message: payload.message || "",
+    _intent: payload.route === "conversation" ? "chat" : payload.route || "chat",
+    missingData: payload.missingData || [],
+  });
+}
 
 export async function whatsappBotLocation(req: Request, res: Response) {
   const phone = normalizePhone(req.body.phone);
