@@ -1,0 +1,427 @@
+import axios from "axios";
+import { Request, Response } from "express";
+import { Types } from "mongoose";
+import { Branch } from "../models/Branch";
+import { Counter } from "../models/Counter";
+import { Order } from "../models/Order";
+import { Product } from "../models/Product";
+import { Setting } from "../models/Setting";
+import { WhatsAppSession } from "../models/WhatsAppSession";
+import { env, getFrontendUrl } from "../config/env";
+import { createPickerBooking, preCheckout } from "../services/pickerexpress.service";
+import { distanceKm } from "../utils/haversine";
+import { parseMapsUrl, resolveMapsCoordinates } from "../utils/parseMapsUrl";
+
+type PaymentMethod = "card" | "cash";
+type BotData = Record<string, unknown>;
+
+function normalizePhone(value: unknown) {
+  return String(value || "").replace(/[^0-9+]/g, "");
+}
+
+function appendHistory(session: any, role: "user" | "assistant", content: string) {
+  if (!content.trim()) return;
+  session.history = [...(session.history || []), { role, content: content.trim(), createdAt: new Date() }].slice(-30);
+}
+
+function textHistory(session: any) {
+  return (session.history || []).map((entry: any) => `${entry.role === "assistant" ? "Asistente" : "Cliente"}: ${entry.content}`).join("\n").slice(-12000);
+}
+
+async function findNearestBranch(lat: number, lng: number) {
+  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true } }).select("+pickerStore.storeApiKey");
+  return branches
+    .filter((branch) => branch.coordinates?.lat != null && branch.coordinates?.lng != null)
+    .map((branch) => ({ branch, distance: distanceKm({ lat, lng }, { lat: branch.coordinates!.lat, lng: branch.coordinates!.lng }) }))
+    .sort((a, b) => a.distance - b.distance)[0] || null;
+}
+
+async function quoteDelivery(lat: number, lng: number) {
+  const nearest = await findNearestBranch(lat, lng);
+  if (!nearest) throw new Error("No hay sucursales disponibles para delivery");
+  let deliveryFee = 0;
+  const branchKey = nearest.branch.pickerStore?.storeApiKey || "";
+  if (branchKey) {
+    try {
+      deliveryFee = (await preCheckout({ branchKey, latitude: lat, longitude: lng })).deliveryFee;
+    } catch {
+      const settings = await Setting.findOne();
+      deliveryFee = Math.round(nearest.distance * ((settings?.deliveryPricePerKm ?? 150) / 100) * 100) / 100;
+    }
+  }
+  return { ...nearest, deliveryFee };
+}
+
+async function resolveBotItems(rawItems: unknown, branchId: string) {
+  const requests = Array.isArray(rawItems) ? rawItems : [];
+  if (!requests.length) return [];
+  const products = await Product.find({ isAvailable: true });
+  return requests.map((raw: any) => {
+    const id = String(raw.productId || raw.product || "");
+    const name = String(raw.name || raw.productName || "").toLowerCase();
+    const product = (Types.ObjectId.isValid(id) ? products.find((item) => String(item._id) === id) : undefined) || products.find((item) => item.name.toLowerCase().includes(name) || name.includes(item.name.toLowerCase()));
+    if (!product) return null;
+    const price = product.branchPrices.find((item: any) => String(item.branch) === branchId)?.price ?? product.price;
+    return { product: product._id, name: product.name, price, quantity: Math.max(1, Math.min(Number(raw.quantity || raw.qty) || 1, 50)), image: product.images[0]?.url || "", pointsValue: product.pointsValue || 0 };
+  }).filter(Boolean);
+}
+
+async function buildCatalog(branchId?: string) {
+  const products = await Product.find({ isAvailable: true }).sort({ sortOrder: 1, name: 1 });
+  return products
+    .filter((product) => product.sellWithoutStock || product.stock > 0)
+    .map((product) => ({
+      productId: String(product._id),
+      name: product.name,
+      price: product.branchPrices.find((item: any) => String(item.branch) === branchId)?.price ?? product.price,
+      available: product.sellWithoutStock ? "disponible" : `${product.stock} disponibles`,
+    }));
+}
+
+function collectMissing(data: any, invoiceRequired = false) {
+  const missing: string[] = [];
+  if (!data.customerName) missing.push("nombre");
+  if (!data.customerEmail) missing.push("correo");
+  if (!data.items?.length) missing.push("productos");
+  if (!data.deliveryAddress) missing.push("dirección");
+  if (!data.deliveryCoordinates?.lat || !data.deliveryCoordinates?.lng) missing.push("ubicación o enlace de Google Maps");
+  if (!data.paymentMethod) missing.push("método de pago");
+  if (!data.billingPreference) missing.push("preferencia de facturación");
+  if (data.billingPreference === "invoice" || invoiceRequired) {
+    if (!data.billingName) missing.push("nombre de facturación");
+    if (!data.billingDocNumber) missing.push("cédula o RUC");
+    if (!data.billingEmail) missing.push("correo de facturación");
+    if (!data.billingAddress) missing.push("dirección de facturación");
+  }
+  return missing;
+}
+
+async function requiresInvoice(data: any) {
+  if (!data.branch || !Array.isArray(data.items) || !data.items.length) return false;
+  const items = await resolveBotItems(data.items, String(data.branch));
+  return items.reduce((total: number, item: any) => total + item.price * item.quantity, 0) > 50;
+}
+
+async function callGemini(message: string, history: string, branchId?: string) {
+  if (!env.GEMINI_API_KEY) return null;
+  const catalog = await buildCatalog(branchId);
+  const prompt = `Eres el asistente de ventas de Boloncity. Responde solo JSON válido con reply, data e intent. data puede contener customerName, customerEmail, deliveryAddress, paymentMethod (card|cash), billingPreference (final_consumer|invoice), billingName, billingDocNumber, billingEmail, billingAddress, items [{productId,quantity}].
+
+FLUJO OBLIGATORIO:
+1. La ubicación ya fue validada antes de llegar aquí. No la vuelvas a pedir salvo que el cliente quiera cambiarla.
+2. Muestra o recomienda únicamente productos del CATÁLOGO REAL.
+3. Recopila productos, nombre, correo, dirección, método de pago y preferencia de facturación.
+4. Boloncity acepta exclusivamente tarjeta mediante PayPhone o efectivo al recibir. Nunca ofrezcas ni aceptes transferencias.
+5. Pregunta siempre si desea consumidor final o factura. Si el pedido supera $50, los datos de factura son obligatorios: nombre, cédula/RUC, correo y dirección de facturación.
+6. Cuando estén todos los datos, muestra un resumen y pide confirmación explícita. Nunca digas que la orden ya fue creada.
+
+ESTILO OBLIGATORIO PARA reply:
+- Conversación humana, cálida y breve, usando el nombre del cliente cuando ya exista sin repetirlo artificialmente
+- Usa el historial completo y nunca reinicies la conversación
+- No uses respuestas prefabricadas ni tono robótico
+- No pongas emojis, signos de admiración, signos de interrogación ni puntuación al inicio
+- Usa máximo un emoji natural al final
+- Nunca termines reply con punto
+
+CATÁLOGO REAL:
+${JSON.stringify(catalog)}
+
+Mantén el historial y no inventes productos, precios, sucursales, pagos ni ubicaciones.
+
+Historial:
+${history}
+
+Último mensaje: ${message}`;
+  try {
+    const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 700 },
+    }, { timeout: 25000 });
+    const text = response.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join("") || "";
+    const match = text.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : null;
+  } catch (error) {
+    console.error("[whatsapp-bot] Gemini failed", error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+function mergeData(target: BotData, incoming: any) {
+  if (!incoming || typeof incoming !== "object") return;
+  for (const key of ["customerName", "customerEmail", "deliveryAddress", "paymentMethod", "billingName", "billingDocNumber", "billingEmail", "billingAddress"] as const) {
+    if (typeof incoming[key] === "string" && incoming[key].trim()) target[key] = incoming[key].trim();
+  }
+  const billingPreference = String(incoming.billingPreference || "").toLowerCase();
+  if (/final|consumidor/.test(billingPreference)) target.billingPreference = "final_consumer";
+  if (/factura|invoice/.test(billingPreference)) target.billingPreference = "invoice";
+  if (Array.isArray(incoming.items) && incoming.items.length) target.items = incoming.items;
+}
+
+function normalizeReply(value: unknown) {
+  let reply = String(value || "").trim().replace(/^[\s¡!¿?.,:;]+/, "").replace(/[.]+$/g, "").trim();
+  if (reply && !/[\p{Extended_Pictographic}]$/u.test(reply)) reply = `${reply} ☕`;
+  return reply;
+}
+
+async function callNaturalReply(context: string, history: string) {
+  if (!env.GEMINI_API_KEY) return "";
+  try {
+    const response = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`, {
+      contents: [{ role: "user", parts: [{ text: `Redacta solo el mensaje final de WhatsApp para Boloncity usando este historial y contexto\n\nHistorial\n${history}\n\nContexto verificado\n${context}\n\nReglas: humano, cálido y breve; usa el nombre si existe; no reinicies; no uses emojis ni signos al inicio; usa máximo un emoji al final; no termines con punto; no inventes datos` }] }],
+      generationConfig: { temperature: 0.35, maxOutputTokens: 350 },
+    }, { timeout: 25000 });
+    return normalizeReply(response.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join(""));
+  } catch (error) {
+    console.error("[whatsapp-bot] Natural reply failed", error instanceof Error ? error.message : error);
+    return "";
+  }
+}
+
+async function setSessionLocation(session: any, coords: { lat: number; lng: number }, mapsUrl = "") {
+  const quote = await quoteDelivery(coords.lat, coords.lng);
+  session.data.deliveryType = "delivery";
+  session.data.deliveryCoordinates = coords;
+  session.data.deliveryGoogleMapsUrl = mapsUrl || `https://www.google.com/maps/search/?api=1&query=${coords.lat},${coords.lng}`;
+  session.data.branch = quote.branch._id;
+  return quote;
+}
+
+function isCheckoutConfirmation(message: string) {
+  return /\b(confirmo|confirmar|sí\s+confirmo|si\s+confirmo|quiero\s+pagar|pagar\s+ahora|dale|listo|proceder)\b/i.test(message);
+}
+
+function isTrackingRequest(message: string) {
+  return /\b(mi\s+pedido|estado\s+(?:de\s+)?(?:mi\s+)?pedido|rastrear|seguimiento|tracking|d[oó]nde\s+(?:va|est[aá])\s+(?:mi\s+)?pedido|consultar\s+(?:mi\s+)?pedido|orden\s+ORD-)\b/i.test(message);
+}
+
+function extractEmail(text: unknown) {
+  return String(text || "").match(/[a-z0-9._+-]+@[a-z0-9-]+\.[a-z0-9.-]+/i)?.[0]?.toLowerCase() || "";
+}
+
+function needsHumanSupport(text: unknown) {
+  const normalized = String(text || "").toLowerCase();
+  const urgent = /urgente|desesperad|nadie\s+(?:me\s+)?responde|quiero\s+hablar\s+con|humano|asesor|soporte|reclamo|queja|estafa|p[eé]simo/.test(normalized);
+  const deliveryProblem = /no\s+(?:llega|ha\s+llegado)|demora|retras|horas|d[ií]as|cancelad/.test(normalized);
+  return urgent || deliveryProblem;
+}
+
+export async function whatsappBotBrain(req: Request, res: Response) {
+  const phone = normalizePhone(req.body.phone);
+  const message = String(req.body.rawMessage || req.body.message || "").trim();
+  if (!phone || !message) return res.status(400).json({ message: "phone and rawMessage are required" });
+  if (isTrackingRequest(message)) {
+    const orderNumber = message.match(/\bORD-\d+\b/i)?.[0]?.toUpperCase() || "";
+    const email = extractEmail(`${message}\n${req.body.history || ""}`);
+    const reply = await callNaturalReply("El cliente quiere consultar una orden. Indícale que revisarás el estado con los datos de su conversación", String(req.body.history || ""));
+    res.json({
+      success: true,
+      route: "tracking",
+      targetEndpoint: "/api/orders/whatsapp-bot/track",
+      message: reply,
+      orderNumber,
+      email,
+      readyToCheckout: false,
+    });
+    return;
+  }
+  const session = await WhatsAppSession.findOne({ phone }) || new WhatsAppSession({ phone, history: [], data: { deliveryType: "delivery" } });
+  const hadLocation = Boolean(session.data.deliveryCoordinates?.lat && session.data.deliveryCoordinates?.lng);
+  appendHistory(session, "user", message);
+  const providedLocation = req.body.location || req.body.metadata?.location;
+  const lat = Number(providedLocation?.latitude ?? providedLocation?.lat);
+  const lng = Number(providedLocation?.longitude ?? providedLocation?.lng);
+  if (Number.isFinite(lat) && Number.isFinite(lng)) await setSessionLocation(session, { lat, lng });
+  const mapsMatch = message.match(/https?:\/\/\S+/i);
+  if (mapsMatch) {
+    const coords = await resolveMapsCoordinates(mapsMatch[0], undefined, env.GOOGLE_MAPS_API_KEY);
+    if (coords) {
+      await setSessionLocation(session, coords, mapsMatch[0]);
+    }
+  }
+  if (!session.data.deliveryCoordinates?.lat || !session.data.deliveryCoordinates?.lng) {
+    const reply = await callNaturalReply("Aún no hay ubicación válida. Pide al cliente que comparta su ubicación actual o un enlace de Google Maps para calcular delivery y asignar sucursal antes de mostrar productos", textHistory(session));
+    appendHistory(session, "assistant", reply);
+    await session.save();
+    res.json({ success: true, route: "conversation", targetEndpoint: "/api/orders/whatsapp-bot/brain", message: reply, missingData: ["ubicación o enlace de Google Maps"], readyToCheckout: false, data: session.data });
+    return;
+  }
+  if (!hadLocation) {
+    const result = await callGemini("El cliente acaba de compartir su ubicación. Confirma que ya fue validada, presenta el catálogo real y pregunta qué productos desea", textHistory(session), String(session.data.branch || ""));
+    const reply = normalizeReply(result?.reply);
+    appendHistory(session, "assistant", reply);
+    await session.save();
+    res.json({ success: true, route: "catalog", targetEndpoint: "/api/orders/whatsapp-bot/brain", message: reply, missingData: ["nombre", "correo", "productos", "dirección", "método de pago"], readyToCheckout: false, data: session.data });
+    return;
+  }
+  const result = await callGemini(message, textHistory(session), String(session.data.branch || ""));
+  mergeData(session.data as BotData, result?.data);
+  const invoiceRequired = await requiresInvoice(session.data);
+  const missing = collectMissing(session.data, invoiceRequired);
+  const reply = normalizeReply(result?.reply);
+  const lowerMessage = message.toLowerCase();
+  const route = missing.length === 0 && isCheckoutConfirmation(message)
+    ? "checkout"
+    : /\b(cat[aá]logo|productos|men[uú]|qu[eé]\s+venden)\b/i.test(lowerMessage) ? "catalog"
+    : "conversation";
+  appendHistory(session, "assistant", reply);
+  await session.save();
+  res.json({
+    success: true,
+    route,
+    targetEndpoint: route === "checkout" ? "/api/orders/whatsapp-bot/checkout" : "/api/orders/whatsapp-bot/brain",
+    message: reply,
+    missingData: missing,
+    invoiceRequired,
+    readyToCheckout: missing.length === 0 && isCheckoutConfirmation(message),
+    data: session.data,
+  });
+}
+
+export async function whatsappBotLocation(req: Request, res: Response) {
+  const phone = normalizePhone(req.body.phone);
+  if (!phone) return res.status(400).json({ message: "phone is required" });
+  const session = await WhatsAppSession.findOne({ phone }) || new WhatsAppSession({ phone, history: [], data: { deliveryType: "delivery" } });
+  const mapsUrl = String(req.body.mapsUrl || "").trim();
+  let coords = parseMapsUrl(mapsUrl);
+  if (!coords && mapsUrl) coords = await resolveMapsCoordinates(mapsUrl, undefined, env.GOOGLE_MAPS_API_KEY);
+  const lat = Number(req.body.latitude ?? req.body.lat);
+  const lng = Number(req.body.longitude ?? req.body.lng);
+  if (!coords && Number.isFinite(lat) && Number.isFinite(lng)) coords = { lat, lng };
+  if (!coords) return res.status(400).json({ message: "Comparte una ubicación o enlace válido de Google Maps" });
+  const quote = await setSessionLocation(session, coords, mapsUrl);
+  const result = await callGemini("El cliente acaba de compartir su ubicación. Confirma que ya fue validada, presenta el catálogo real y pregunta qué productos desea", textHistory(session), String(quote.branch._id));
+  const message = normalizeReply(result?.reply);
+  appendHistory(session, "assistant", message);
+  await session.save();
+  res.json({ success: true, route: "catalog", message, coordinates: coords, branch: { id: quote.branch._id, name: quote.branch.name }, deliveryFee: quote.deliveryFee, distance: Math.round(quote.distance * 10) / 10, products: await buildCatalog(String(quote.branch._id)) });
+}
+
+async function createBotOrder(session: any) {
+  const data = session.data as any;
+  const invoiceRequired = await requiresInvoice(data);
+  const missing = collectMissing(data, invoiceRequired);
+  if (missing.length) throw new Error(`Faltan datos: ${missing.join(", ")}`);
+  let branch: any = null;
+  let deliveryFee = 0;
+  let distance = 0;
+  if (data.deliveryType === "delivery") {
+    const quote = await quoteDelivery(data.deliveryCoordinates.lat, data.deliveryCoordinates.lng);
+    branch = quote.branch;
+    deliveryFee = quote.deliveryFee;
+    distance = quote.distance;
+  } else if (data.branch) {
+    branch = await Branch.findById(data.branch).select("+pickerStore.storeApiKey");
+  }
+  if (!branch) throw new Error("No se pudo asignar una sucursal");
+  const items = await resolveBotItems(data.items, String(branch._id));
+  if (!items.length) throw new Error("No hay productos válidos disponibles");
+  const subtotal = items.reduce((sum: number, item: any) => sum + item.price * item.quantity, 0);
+  const counter = await Counter.findByIdAndUpdate({ _id: "orderNumber" }, { $inc: { seq: 1 } }, { new: true, upsert: true });
+  const order = await Order.create({
+    orderNumber: `ORD-${String(counter.seq).padStart(5, "0")}`,
+    items,
+    subtotal: Math.round(subtotal * 100),
+    tax: 0,
+    total: Math.round((subtotal + deliveryFee) * 100),
+    paymentMethod: data.paymentMethod as PaymentMethod,
+    deliveryType: data.deliveryType,
+    deliveryCost: Math.round(deliveryFee * 100),
+    deliveryDistance: distance,
+    deliveryAddress: data.deliveryAddress || "",
+    deliveryGoogleMapsUrl: data.deliveryGoogleMapsUrl || "",
+    deliveryCoordinates: data.deliveryCoordinates || null,
+    status: "pending",
+    customerEmail: data.customerEmail,
+    customerName: data.customerName,
+    customerPhone: session.phone,
+    branch: branch._id,
+    ...(data.billingPreference === "invoice" || invoiceRequired ? {
+      billing: {
+        docType: "invoice",
+        name: data.billingName,
+        docNumber: data.billingDocNumber,
+        email: data.billingEmail,
+        address: data.billingAddress,
+      },
+    } : {}),
+    source: "whatsapp",
+    audit: [{ action: "created", details: "Pedido creado desde WhatsApp", toValue: "pending", timestamp: new Date() }],
+    payphone: { clientTransactionId: `BOL-${Date.now()}` },
+  });
+  if (data.paymentMethod === "cash" && data.deliveryType === "delivery") {
+    const branchKey = branch.pickerStore?.storeApiKey || "";
+    if (!branchKey) throw new Error("La sucursal no tiene Picker configurado");
+    const [firstName, ...lastName] = String(order.customerName || "Cliente").split(" ");
+    const booking = await createPickerBooking({ branchKey, latitude: data.deliveryCoordinates.lat, longitude: data.deliveryCoordinates.lng, address: order.deliveryAddress, reference: order.deliveryGoogleMapsUrl, customerName: firstName, customerLastName: lastName.join(" ") || "Cliente", customerEmail: order.customerEmail, customerPhone: order.customerPhone || "", customerCountryCode: "593", orderAmount: subtotal, businessDeliveryFee: deliveryFee, paymentMethod: "CASH", externalBookingId: order.orderNumber });
+    order.picker = { bookingId: booking._id, bookingNumericId: booking.bookingNumericId, statusText: booking.statusText, smrURL: booking.smrURL, bookingDetailUrl: booking.bookingDetailUrl, createdAt: new Date(), currentStatus: String(booking.currentStatus || ""), deliveryFee: booking.deliveryFee || 0 };
+    order.audit.push({ action: "note_added", details: `Picker booking #${booking.bookingNumericId} creado para efectivo`, timestamp: new Date() });
+    await order.save();
+  }
+  return order;
+}
+
+export async function whatsappBotCheckout(req: Request, res: Response) {
+  const phone = normalizePhone(req.body.phone);
+  if (!phone) return res.status(400).json({ message: "phone is required" });
+  const session = await WhatsAppSession.findOne({ phone });
+  if (!session) return res.status(404).json({ message: "No existe una conversación activa" });
+  mergeData(session.data as BotData, req.body.data);
+  const order = await createBotOrder(session);
+  await WhatsAppSession.deleteOne({ _id: session._id });
+  const paymentLink = order.paymentMethod === "card" ? `${getFrontendUrl()}/pago/${order.orderNumber}?email=${encodeURIComponent(order.customerEmail)}` : "";
+  res.status(201).json({ success: true, order, paymentLink, trackingLink: order.picker?.smrURL || "" });
+}
+
+export async function whatsappBotTrackOrder(req: Request, res: Response) {
+  const orderNumber = String(req.query.orderNumber || req.body?.orderNumber || "").trim();
+  const phone = normalizePhone(req.query.phone || req.body?.phone);
+  const history = String(req.query.history || req.body?.history || "");
+  const email = String(req.query.email || req.body?.email || extractEmail(history)).trim().toLowerCase();
+  const context = `${req.body?.rawMessage || req.body?.message || ""}\n${history}`;
+  const escalated = needsHumanSupport(context);
+  if (!phone && !email) return res.status(400).json({ message: "phone or email is required" });
+  const query: Record<string, unknown> = { ...(orderNumber ? { orderNumber } : {}) };
+  if (email) query.customerEmail = email;
+  else query.customerPhone = phone;
+  const order = await Order.findOne(query)
+    .sort({ createdAt: -1 })
+    .populate("branch", "name");
+  if (!order) {
+    const message = await callNaturalReply(
+      escalated
+        ? "No hay pedido encontrado. El cliente parece urgente o necesita soporte. Indica que este número es exclusivo para ventas y lo atiende una IA, y que para que un asesor tome su caso rápido debe escribir al +593 99 315 7333"
+        : "No hay pedido encontrado. Pide el correo usado en la compra o el número de orden, sin inventar datos",
+      context
+    );
+    return res.status(escalated ? 200 : 404).json({ success: false, route: "tracking", escalated, message });
+  }
+  const statusLabels: Record<string, string> = {
+    pending: "Pedido recibido",
+    paid: "Pago confirmado",
+    preparing: "En preparación",
+    awaiting_pickup: "Listo para recoger",
+    ready: "En camino",
+    delivered: "Entregado",
+    cancelled: "Cancelado",
+  };
+  const paymentLabels: Record<PaymentMethod, string> = { card: "Tarjeta PayPhone", cash: "Efectivo" };
+  const date = (value?: Date) => value ? new Intl.DateTimeFormat("es-EC", { dateStyle: "medium", timeStyle: "short", timeZone: "America/Guayaquil" }).format(value) : "Por confirmar";
+  const total = (order.total / 100).toFixed(2);
+  const items = order.items.map((item: { quantity: number; name: string }) => `• ${item.quantity} x ${item.name}`).join("\n");
+  const trackingLink = order.picker?.smrURL || "";
+  const pickerStatus = order.picker?.statusText || "";
+  const facts = [
+    `Pedido: ${order.orderNumber}`,
+    `Estado: ${statusLabels[order.status] || order.status}${pickerStatus ? `, ${pickerStatus}` : ""}`,
+    `Sucursal: ${(order.branch as any)?.name || "Por confirmar"}`,
+    `Productos: ${items}`,
+    `Total: $${total}`,
+    `Pago: ${paymentLabels[order.paymentMethod as PaymentMethod] || order.paymentMethod}`,
+    `Creado: ${date(order.createdAt)}`,
+    order.scheduledFor ? `Programado: ${date(order.scheduledFor)}` : "",
+    trackingLink ? `Link de seguimiento Picker: ${trackingLink}` : "",
+    escalated ? "El cliente parece urgente o necesita soporte. Indica que este número es exclusivo para ventas y lo atiende una IA, y que para que un asesor tome su caso rápido debe escribir al +593 99 315 7333" : "",
+  ].filter(Boolean).join("\n");
+  const message = await callNaturalReply(`Redacta una actualización clara usando únicamente estos datos verificados\n${facts}`, context);
+  res.json({ success: true, route: "tracking", escalated, message, orderNumber: order.orderNumber, status: order.status, paymentMethod: order.paymentMethod, paymentVerified: order.status !== "pending" || order.paymentMethod === "cash", trackingLink, pickerStatus, createdAt: order.createdAt, scheduledFor: order.scheduledFor || null, total: order.total, items: order.items });
+}

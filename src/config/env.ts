@@ -24,6 +24,8 @@ export const env = {
   RESEND_FROM_EMAIL: optional("RESEND_FROM_EMAIL", "boloncity@bakano.ec"),
   PICKER_MASTER_KEY: optional("PICKER_MASTER_KEY", ""),
   GOOGLE_MAPS_API_KEY: optional("GOOGLE_MAPS_API_KEY", ""),
+  GEMINI_API_KEY: optional("GEMINI_API_KEY", ""),
+  GEMINI_MODEL: optional("GEMINI_MODEL", "gemini-2.5-flash"),
   CLOUDINARY_URL: optional("CLOUDINARY_URL", ""),
   CLOUDINARY_CLOUD_NAME: optional("CLOUDINARY_CLOUD_NAME", ""),
   CLOUDINARY_API_KEY: optional("CLOUDINARY_API_KEY", ""),

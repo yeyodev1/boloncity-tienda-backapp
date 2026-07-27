@@ -76,6 +76,7 @@ export interface IOrder {
   scheduledFor?: Date;
   status: "pending" | "paid" | "preparing" | "awaiting_pickup" | "ready" | "delivered" | "cancelled";
   payphone: IPayphoneData;
+  source: "web" | "whatsapp";
   picker?: IPickerData;
   billing?: IBillingData;
   pointsEarned: number;
@@ -125,6 +126,7 @@ const orderSchema = new Schema<IOrder>(
       lastDigits: { type: String, default: "" },
       confirmedAt: { type: Date, default: null },
     },
+    source: { type: String, enum: ["web", "whatsapp"], default: "web", index: true },
     deliveryType: { type: String, enum: ["delivery", "pickup"], default: "delivery" },
     deliveryCost: { type: Number, default: 0 },
     deliveryDistance: { type: Number, default: 0 },
