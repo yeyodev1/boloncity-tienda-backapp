@@ -3,7 +3,7 @@ import { authMiddleware } from "../middlewares/auth.middleware";
 import { adminMiddleware } from "../middlewares/admin.middleware";
 import { branchScope } from "../middlewares/branchScope.middleware";
 import { addOrderNote, confirmOrder, createOrder, getMyOrderById, getMyOrders, getOrderById, getOrderByNumber, getOrdersByEmail, listOrders, retryPickerBooking, startScheduledPickerSearch, streamMyOrder, streamOrderByNumber, updateOrderStatus } from "../controllers/order.controller";
-import { whatsappBotAssistant, whatsappBotBrain, whatsappBotCheckout, whatsappBotLocation, whatsappBotTrackOrder } from "../controllers/whatsappBot.controller";
+import { whatsappBotAssistant, whatsappBotBrain, whatsappBotCatalog, whatsappBotCheckout, whatsappBotLocation, whatsappBotTrackOrder } from "../controllers/whatsappBot.controller";
 
 const orderRouter = Router();
 
@@ -11,6 +11,8 @@ orderRouter.post("/", createOrder);
 orderRouter.post("/confirm", confirmOrder);
 orderRouter.post("/whatsapp-bot/brain", whatsappBotBrain);
 orderRouter.post("/whatsapp-bot/assistant", whatsappBotAssistant);
+orderRouter.post("/whatsapp-bot/catalog", whatsappBotCatalog);
+orderRouter.get("/whatsapp-bot/catalog", whatsappBotCatalog);
 orderRouter.post("/whatsapp-bot/location", whatsappBotLocation);
 orderRouter.post("/whatsapp-bot/checkout", whatsappBotCheckout);
 orderRouter.get("/whatsapp-bot/track", whatsappBotTrackOrder);

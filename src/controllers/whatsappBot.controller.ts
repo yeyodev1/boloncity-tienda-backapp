@@ -31,6 +31,19 @@ function latestHistoryMessage(history: unknown) {
   return "";
 }
 
+function externalHistoryText(history: unknown) {
+  if (typeof history === "string") return history.slice(-8000);
+  if (Array.isArray(history)) {
+    return history
+      .slice(-25)
+      .map((entry) => `${String(entry?.role || entry?.sender || "cliente")}: ${String(entry?.content || entry?.text || entry?.message || "")}`)
+      .filter(Boolean)
+      .join("\n")
+      .slice(-8000);
+  }
+  return "";
+}
+
 function appendHistory(session: any, role: "user" | "assistant", content: string) {
   if (!content.trim()) return;
   session.history = [...(session.history || []), { role, content: content.trim(), createdAt: new Date() }].slice(-30);
@@ -319,6 +332,29 @@ export async function whatsappBotAssistant(req: Request, res: Response) {
     _intent: payload.route === "conversation" ? "chat" : payload.route || "chat",
     missingData: payload.missingData || [],
   });
+}
+
+export async function whatsappBotCatalog(req: Request, res: Response) {
+  const phone = normalizePhone(req.body?.phone || req.query.phone);
+  const rawMessage = String(req.body?.rawMessage || req.body?.message || latestHistoryMessage(req.body?.history) || "").trim();
+  const externalHistory = externalHistoryText(req.body?.history || req.query.history);
+  const session = phone ? await WhatsAppSession.findOne({ phone }) : null;
+  const history = `${textHistory(session || { history: [] })}\n${externalHistory}`.trim().slice(-12000);
+
+  if (!session?.data.deliveryCoordinates?.lat || !session.data.deliveryCoordinates?.lng) {
+    const message = await callNaturalReply("Aún no hay ubicación validada. Explica que antes de recomendar productos el cliente debe compartir ubicación o enlace de Google Maps para calcular delivery y asignar sucursal", history);
+    return res.status(200).json({ success: false, message, _intent: "catalog", missingData: ["ubicación o enlace de Google Maps"] });
+  }
+
+  const result = await callGemini(
+    `${rawMessage || "El cliente pidió recomendaciones"}. Recomienda exactamente 2 o 3 productos del catálogo real, según el historial y lo que busca el cliente. Incluye nombre y precio, no muestres el menú completo, no inventes productos y pregunta cuál desea pedir`,
+    history,
+    String(session.data.branch || "")
+  );
+  const message = normalizeReply(result?.reply);
+  appendHistory(session, "assistant", message);
+  await session.save();
+  res.status(200).json({ success: Boolean(message), message, _intent: "catalog", missingData: [] });
 }
 
 export async function whatsappBotLocation(req: Request, res: Response) {
