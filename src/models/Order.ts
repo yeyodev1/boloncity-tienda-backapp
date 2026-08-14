@@ -9,18 +9,34 @@ export interface IOrderItem {
   pointsValue: number;
 }
 
+/** Reverso de PayPhone. Solo total: la API no admite reversos parciales. */
+export interface IPayphoneRefund {
+  status: "none" | "processing" | "refunded" | "failed";
+  amount?: number;
+  reason?: string;
+  requestedBy?: Types.ObjectId | null;
+  requestedByEmail?: string;
+  requestedAt?: Date;
+  refundedAt?: Date;
+  errorCode?: number;
+  errorMessage?: string;
+}
+
 export interface IPayphoneData {
   clientTransactionId?: string;
+  /** Tienda de PayPhone de la sucursal que cobro este pedido. */
+  storeId?: string;
   transactionId?: number;
   authorizationCode?: string;
   statusCode?: number;
   cardBrand?: string;
   lastDigits?: string;
   confirmedAt?: Date;
+  refund?: IPayphoneRefund;
 }
 
 export interface IOrderAudit {
-  action: "created" | "status_change" | "payment_confirmed" | "user_assigned" | "note_added" | "branch_assigned";
+  action: "created" | "status_change" | "payment_confirmed" | "user_assigned" | "note_added" | "branch_assigned" | "refund_requested" | "refunded" | "refund_failed";
   performedBy?: Types.ObjectId | null;
   performedByEmail?: string;
   fromValue?: string;
@@ -119,12 +135,24 @@ const orderSchema = new Schema<IOrder>(
     },
     payphone: {
       clientTransactionId: { type: String, default: "" },
+      storeId: { type: String, default: "" },
       transactionId: { type: Number, default: null },
       authorizationCode: { type: String, default: "" },
       statusCode: { type: Number, default: null },
       cardBrand: { type: String, default: "" },
       lastDigits: { type: String, default: "" },
       confirmedAt: { type: Date, default: null },
+      refund: {
+        status: { type: String, enum: ["none", "processing", "refunded", "failed"], default: "none" },
+        amount: { type: Number, default: 0 },
+        reason: { type: String, default: "" },
+        requestedBy: { type: Schema.Types.ObjectId, ref: "User", default: null },
+        requestedByEmail: { type: String, default: "" },
+        requestedAt: { type: Date, default: null },
+        refundedAt: { type: Date, default: null },
+        errorCode: { type: Number, default: null },
+        errorMessage: { type: String, default: "" },
+      },
     },
     source: { type: String, enum: ["web", "whatsapp"], default: "web", index: true },
     deliveryType: { type: String, enum: ["delivery", "pickup"], default: "delivery" },

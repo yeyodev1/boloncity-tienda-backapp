@@ -18,6 +18,7 @@ export interface IBranch {
   timezone: string
   openingHours: IBranchOpeningHours[]
   pickerStore?: IPickerStore
+  payphone?: IBranchPayphone
   isActive: boolean
   isArchived: boolean
   createdAt?: Date
@@ -35,11 +36,20 @@ export interface IBranchOpeningHours {
 
 export interface IPickerStore {
   storeApiKey?: string
+  productionStoreApiKey?: string
   token?: string
   storeId?: string
   createdAt?: Date
   createdBy?: string
   creationStatus?: string
+}
+
+/**
+ * Cada sucursal cobra en su propia tienda de PayPhone. El token de la cuenta es global
+ * (PAYPHONE_TOKEN); lo que cambia por local es el storeId que recibe la cajita de pagos.
+ */
+export interface IBranchPayphone {
+  storeId?: string
 }
 
 const branchWeekdays: BranchWeekday[] = [
@@ -81,11 +91,15 @@ const branchSchema = new Schema<IBranch>(
     },
     pickerStore: {
       storeApiKey: { type: String, default: '', select: false },
+      productionStoreApiKey: { type: String, default: '', select: false },
       token: { type: String, default: '', select: false },
       storeId: { type: String, default: '' },
       createdAt: { type: Date },
       createdBy: { type: String, default: '' },
       creationStatus: { type: String, default: '' },
+    },
+    payphone: {
+      storeId: { type: String, default: '' },
     },
     isActive: { type: Boolean, default: true },
     isArchived: { type: Boolean, default: false },

@@ -5,18 +5,19 @@ import { resolveMapsCoordinates } from "../utils/parseMapsUrl";
 import { distanceKm } from "../utils/haversine";
 import { slugify } from "../utils/slugify";
 import { deleteFromCloudinary, isCloudinaryConfigured, uploadToCloudinary } from "../services/cloudinary.service";
-import { normalizeOpeningHours, normalizePickerStore, normalizeTimezone, toPublicBranch } from "../services/branchOperational.service";
+import { normalizeBranchPayphone, normalizeOpeningHours, normalizePickerStore, normalizeTimezone, pickerEnabledBranchFilter, toPublicBranch } from "../services/branchOperational.service";
 import { createPickerStore } from "../services/pickerexpress.service";
 import { env } from "../config/env";
 import { AuthRequest } from "../types/AuthRequest";
 
 function normalizedBranchInput(body: Record<string, unknown>) {
-  const { openingHours, timezone, pickerStore, ...values } = body;
+  const { openingHours, timezone, pickerStore, payphone, ...values } = body;
   return {
     ...values,
     ...(timezone !== undefined ? { timezone: normalizeTimezone(timezone) } : {}),
     ...(openingHours !== undefined ? { openingHours: normalizeOpeningHours(openingHours) } : {}),
     ...(pickerStore !== undefined ? { pickerStore: normalizePickerStore(pickerStore) } : {}),
+    ...(payphone !== undefined ? { payphone: normalizeBranchPayphone(payphone) } : {}),
   };
 }
 
@@ -26,7 +27,7 @@ export async function listBranches(_req: Request, res: Response) {
 }
 
 export async function listPublicBranches(_req: Request, res: Response) {
-  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true } }).sort({ createdAt: -1 });
+  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true }, ...pickerEnabledBranchFilter() }).sort({ createdAt: -1 });
   res.json(branches.map(toPublicBranch));
 }
 
@@ -161,7 +162,7 @@ export async function createBranchPickerStore(req: AuthRequest, res: Response) {
     return;
   }
 
-  const branch = await Branch.findById(req.params.id).select("+pickerStore.storeApiKey");
+  const branch = await Branch.findById(req.params.id).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
   if (!branch) {
     res.status(404).json({ message: "Branch not found" });
     return;
@@ -208,7 +209,7 @@ export async function createBranchPickerStore(req: AuthRequest, res: Response) {
 
     branch.pickerStore = {
       ...branch.pickerStore,
-      storeApiKey: pickerStore.token,
+      ...(env.PICKER_ENV === "production" ? { productionStoreApiKey: pickerStore.token } : { storeApiKey: pickerStore.token }),
       ...(pickerStore.storeId ? { storeId: pickerStore.storeId } : {}),
       createdAt: new Date(),
       createdBy: req.user?.userId || "",
@@ -224,7 +225,7 @@ export async function createBranchPickerStore(req: AuthRequest, res: Response) {
 
 export async function getNearestBranch(req: Request, res: Response) {
   const { lat, lng } = req.body as { lat: number; lng: number };
-  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true } });
+  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true }, ...pickerEnabledBranchFilter() });
   const scored = branches
     .filter((branch) => branch.coordinates?.lat != null && branch.coordinates?.lng != null)
     .map((branch) => ({

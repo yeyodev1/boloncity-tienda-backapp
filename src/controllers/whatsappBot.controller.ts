@@ -9,6 +9,7 @@ import { Setting } from "../models/Setting";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { env, getFrontendUrl } from "../config/env";
 import { createPickerBooking, preCheckout } from "../services/pickerexpress.service";
+import { getBranchPayphoneStoreId, getPickerStoreApiKey, pickerEnabledBranchFilter } from "../services/branchOperational.service";
 import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl, resolveMapsCoordinates } from "../utils/parseMapsUrl";
 
@@ -54,7 +55,7 @@ function textHistory(session: any) {
 }
 
 async function findNearestBranch(lat: number, lng: number) {
-  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true } }).select("+pickerStore.storeApiKey");
+  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true }, ...pickerEnabledBranchFilter() }).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
   return branches
     .filter((branch) => branch.coordinates?.lat != null && branch.coordinates?.lng != null)
     .map((branch) => ({ branch, distance: distanceKm({ lat, lng }, { lat: branch.coordinates!.lat, lng: branch.coordinates!.lng }) }))
@@ -65,7 +66,7 @@ async function quoteDelivery(lat: number, lng: number) {
   const nearest = await findNearestBranch(lat, lng);
   if (!nearest) throw new Error("No hay sucursales disponibles para delivery");
   let deliveryFee = 0;
-  const branchKey = nearest.branch.pickerStore?.storeApiKey || "";
+  const branchKey = getPickerStoreApiKey(nearest.branch.pickerStore);
   if (branchKey) {
     try {
       deliveryFee = (await preCheckout({ branchKey, latitude: lat, longitude: lng })).deliveryFee;
@@ -492,7 +493,7 @@ async function createBotOrder(session: any) {
     deliveryFee = quote.deliveryFee;
     distance = quote.distance;
   } else if (data.branch) {
-    branch = await Branch.findById(data.branch).select("+pickerStore.storeApiKey");
+    branch = await Branch.findById(data.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
   }
   if (!branch) throw new Error("No se pudo asignar una sucursal");
   const items = await resolveBotItems(data.items, String(branch._id));
@@ -528,10 +529,10 @@ async function createBotOrder(session: any) {
     } : {}),
     source: "whatsapp",
     audit: [{ action: "created", details: "Pedido creado desde WhatsApp", toValue: "pending", timestamp: new Date() }],
-    payphone: { clientTransactionId: `BOL-${Date.now()}` },
+    payphone: { clientTransactionId: `BOL-${Date.now()}`, storeId: getBranchPayphoneStoreId(branch.payphone) },
   });
   if (data.paymentMethod === "cash" && data.deliveryType === "delivery") {
-    const branchKey = branch.pickerStore?.storeApiKey || "";
+    const branchKey = getPickerStoreApiKey(branch.pickerStore);
     if (!branchKey) throw new Error("La sucursal no tiene Picker configurado");
     const [firstName, ...lastName] = String(order.customerName || "Cliente").split(" ");
     const booking = await createPickerBooking({ branchKey, latitude: data.deliveryCoordinates.lat, longitude: data.deliveryCoordinates.lng, address: order.deliveryAddress, reference: order.deliveryGoogleMapsUrl, customerName: firstName, customerLastName: lastName.join(" ") || "Cliente", customerEmail: order.customerEmail, customerPhone: order.customerPhone || "", customerCountryCode: "593", orderAmount: subtotal, businessDeliveryFee: deliveryFee, paymentMethod: "CASH", externalBookingId: order.orderNumber });
