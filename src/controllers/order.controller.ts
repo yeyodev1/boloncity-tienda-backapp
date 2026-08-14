@@ -3,7 +3,7 @@ import { Request, Response } from "express";
 import { Order } from "../models/Order";
 import { Counter } from "../models/Counter";
 import { Product } from "../models/Product";
-import { Setting } from "../models/Setting";
+import { extractIva, getOrCreateSettings, Setting } from "../models/Setting";
 import { confirmPayphoneTransaction, reversePayphoneTransaction } from "../services/payphone.service";
 import { createAutoUser } from "../services/auth.service";
 import { sendEmail } from "../services/resend.service";
@@ -184,8 +184,20 @@ export async function createOrder(req: Request, res: Response) {
   .filter(Boolean) as Array<{ product: any; name: string; price: number; quantity: number; image: string; pointsValue: number }>;
 
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const tax = 0;
   const total = subtotal + centsToDollars(deliveryCostCents);
+
+  // Los precios del catalogo YA incluyen IVA: el impuesto se desglosa hacia atras,
+  // no se suma encima. `tax` es informativo (facturacion y desglose en PayPhone);
+  // no altera el total que paga el cliente.
+  const settings = await getOrCreateSettings();
+  const taxCents = settings.pricesIncludeIva
+    ? orderItems.reduce((sum, item) => {
+        const product = products.find((current) => String(current._id) === String(item.product));
+        if (!product?.hasIva) return sum;
+        const rate = product.ivaRate || settings.ivaRate;
+        return sum + extractIva(dollarsToCents(item.price * item.quantity), rate).tax;
+      }, 0)
+    : 0;
 
   const counter = await Counter.findByIdAndUpdate(
     { _id: "orderNumber" },
@@ -198,7 +210,7 @@ export async function createOrder(req: Request, res: Response) {
     orderNumber,
     items: orderItems,
     subtotal: dollarsToCents(subtotal),
-    tax: dollarsToCents(tax),
+    tax: taxCents,
     total: dollarsToCents(total),
     paymentMethod,
     deliveryType: isDelivery ? "delivery" : "pickup",

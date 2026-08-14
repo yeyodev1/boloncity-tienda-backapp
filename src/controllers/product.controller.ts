@@ -3,6 +3,7 @@ import { Product } from "../models/Product";
 import { Category } from "../models/Category";
 import { deleteFromCloudinary, isCloudinaryConfigured, uploadToCloudinary } from "../services/cloudinary.service";
 import { slugify } from "../utils/slugify";
+import { getOrCreateSettings } from "../models/Setting";
 
 function parseCategoryIds(value: unknown) {
   if (!value) return [];
@@ -111,14 +112,26 @@ export async function getProductBySlug(req: Request, res: Response) {
   res.json(product);
 }
 
+/**
+ * IVA del producto. Si el formulario no manda nada, hereda la tasa global de settings
+ * en vez de quedar en cero: los precios del catalogo ya vienen con IVA incluido.
+ */
+async function resolveIva(body: Record<string, unknown>) {
+  const settings = await getOrCreateSettings();
+  const hasIva = body.hasIva === undefined ? true : parseBoolean(body.hasIva, true);
+  if (!hasIva) return { hasIva: false, ivaRate: 0 };
+  const rate = Number(body.ivaRate);
+  return { hasIva: true, ivaRate: Number.isFinite(rate) && rate > 0 ? rate : settings.ivaRate };
+}
+
 export async function createProduct(req: Request, res: Response) {
   const imagePayload = parseJsonArray<{ url: string; publicId: string }>(req.body.images, []);
   const branchPrices = parseJsonArray<{ branch: string; price: number }>(req.body.branchPrices, []);
+  const iva = await resolveIva(req.body);
   const product = await Product.create({
     ...req.body,
     code: parseInternalCode(req.body.code),
-    hasIva: false,
-    ivaRate: 0,
+    ...iva,
     slug: req.body.slug || slugify(req.body.name),
     categories: parseCategoryIds(req.body.categories),
     branches: parseCategoryIds(req.body.branches),
@@ -134,11 +147,11 @@ export async function createProduct(req: Request, res: Response) {
 
 export async function updateProduct(req: Request, res: Response) {
   const branchPrices = parseJsonArray<{ branch: string; price: number }>(req.body.branchPrices, []);
+  const iva = await resolveIva(req.body);
   const updateData: Record<string, unknown> = {
     ...req.body,
     code: parseInternalCode(req.body.code),
-    hasIva: false,
-    ivaRate: 0,
+    ...iva,
     slug: req.body.slug || slugify(req.body.name),
     categories: parseCategoryIds(req.body.categories),
     branches: parseCategoryIds(req.body.branches),

@@ -3,3 +3,4 @@ dist
 .env
 uploads
 .vercel
+.env.bak.*

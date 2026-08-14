@@ -15,6 +15,7 @@
     "picker:sync:dev": "ts-node --transpile-only src/scripts/syncPickerStores.ts --env=development",
     "picker:sync:prod": "ts-node --transpile-only src/scripts/syncPickerStores.ts --env=production",
     "payphone:sync": "ts-node --transpile-only src/scripts/syncPayphoneStores.ts",
+    "products:fix-branches": "ts-node --transpile-only src/scripts/fixProductBranches.ts",
     "branches:audit": "ts-node --transpile-only src/scripts/auditBranches.ts",
     "branches:audit:prod": "ts-node --transpile-only src/scripts/auditBranches.ts --env=production",
     "db:clone": "ts-node --transpile-only src/scripts/cloneDatabase.ts",

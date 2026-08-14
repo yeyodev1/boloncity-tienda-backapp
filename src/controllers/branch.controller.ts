@@ -21,9 +21,119 @@ function normalizedBranchInput(body: Record<string, unknown>) {
   };
 }
 
+/**
+ * Las llaves de Picker son `select: false` y nunca deben salir del backend, pero el
+ * admin necesita saber si la sucursal ya esta conectada en cada entorno. Se manda el
+ * hecho, no la llave.
+ */
+function withPickerFlags(branch: { toObject: () => Record<string, unknown> }) {
+  const plain = branch.toObject();
+  const pickerStore = (plain.pickerStore || {}) as Record<string, string | undefined>;
+  plain.pickerStore = {
+    storeId: pickerStore.storeId || "",
+    createdAt: pickerStore.createdAt,
+    creationStatus: pickerStore.creationStatus || "",
+    createdBy: pickerStore.createdBy || "",
+    hasDevKey: Boolean(pickerStore.storeApiKey?.trim()),
+    hasProdKey: Boolean(pickerStore.productionStoreApiKey?.trim()),
+  };
+  plain.pickerEnv = env.PICKER_ENV;
+  return plain;
+}
+
 export async function listBranches(_req: Request, res: Response) {
-  const branches = await Branch.find({ isArchived: { $ne: true } }).sort({ createdAt: -1 });
-  res.json(branches);
+  const branches = await Branch.find({ isArchived: { $ne: true } })
+    .select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
+    .sort({ createdAt: -1 });
+  res.json(branches.map(withPickerFlags));
+}
+
+/**
+ * Stores que ya existen en Picker, para vincular una sucursal a la suya en vez de
+ * crear un duplicado. Marca cuales ya estan tomadas por otra Branch.
+ */
+export async function listPickerStores(req: Request, res: Response) {
+  const environment = req.query.environment === "production" ? "production" : "development";
+  const masterKey = env.PICKER_MASTER_KEY.trim();
+  if (!masterKey) {
+    res.status(503).json({ message: "Falta PICKER_MASTER_KEY en este entorno" });
+    return;
+  }
+
+  const apiBase = (environment === "production"
+    ? "https://api.pickerexpress.com/api"
+    : "https://dev-api.pickerexpress.com/api");
+
+  const response = await fetch(`${apiBase}/getStores`, { headers: { Authorization: `Bearer ${masterKey}` } });
+  if (!response.ok) {
+    res.status(502).json({ message: `Picker respondio ${response.status} al listar las tiendas` });
+    return;
+  }
+
+  const payload = (await response.json()) as { data?: Array<{ companyName?: string; token?: string }> };
+  const stores = payload.data ?? [];
+
+  const keyField = environment === "production" ? "productionStoreApiKey" : "storeApiKey";
+  const branches = await Branch.find({ isArchived: { $ne: true } }).select(`+pickerStore.${keyField}`);
+  const taken = new Map<string, string>();
+  for (const branch of branches) {
+    const key = (branch.pickerStore as Record<string, string | undefined> | undefined)?.[keyField];
+    if (key) taken.set(key, branch.name);
+  }
+
+  res.json({
+    environment,
+    stores: stores
+      .filter((store) => store.token)
+      .map((store) => ({
+        companyName: store.companyName || "(sin nombre)",
+        token: store.token!,
+        linkedTo: taken.get(store.token!) || null,
+      })),
+  });
+}
+
+/** Vincula la sucursal a un store que ya existe en Picker. */
+export async function linkBranchPickerStore(req: Request, res: Response) {
+  const { token, environment } = req.body as { token?: string; environment?: string };
+  const target = environment === "production" ? "production" : "development";
+  const keyField = target === "production" ? "productionStoreApiKey" : "storeApiKey";
+
+  if (typeof token !== "string" || !token.trim()) {
+    res.status(400).json({ message: "Falta el token del store de Picker" });
+    return;
+  }
+
+  const branch = await Branch.findById(req.params.id);
+  if (!branch) {
+    res.status(404).json({ message: "Branch not found" });
+    return;
+  }
+
+  // Dos sucursales apuntando al mismo store mandarian los pedidos al local equivocado.
+  const clash = await Branch.findOne({
+    _id: { $ne: branch._id },
+    isArchived: { $ne: true },
+    [`pickerStore.${keyField}`]: token.trim(),
+  }).lean();
+  if (clash) {
+    res.status(409).json({ message: `Ese store de Picker ya esta vinculado a ${(clash as { name?: string }).name || "otra sucursal"}` });
+    return;
+  }
+
+  await Branch.updateOne(
+    { _id: branch._id },
+    {
+      $set: {
+        [`pickerStore.${keyField}`]: token.trim(),
+        "pickerStore.creationStatus": "linked",
+        "pickerStore.createdBy": "admin",
+      },
+    }
+  );
+
+  const updated = await Branch.findById(branch._id).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
+  res.json(withPickerFlags(updated!));
 }
 
 export async function listPublicBranches(_req: Request, res: Response) {
