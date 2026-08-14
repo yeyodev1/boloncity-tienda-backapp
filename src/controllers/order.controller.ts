@@ -4,7 +4,7 @@ import { Order } from "../models/Order";
 import { Counter } from "../models/Counter";
 import { Product } from "../models/Product";
 import { Setting } from "../models/Setting";
-import { confirmPayphoneTransaction } from "../services/payphone.service";
+import { confirmPayphoneTransaction, reversePayphoneTransaction } from "../services/payphone.service";
 import { createAutoUser } from "../services/auth.service";
 import { sendEmail } from "../services/resend.service";
 import { createPickerBooking, startSearch } from "../services/pickerexpress.service";
@@ -15,7 +15,7 @@ import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl } from "../utils/parseMapsUrl";
 import { AuthRequest } from "../types/AuthRequest";
 import { publishOrderUpdate, subscribeToOrder } from "../services/orderEvents.service";
-import { validateScheduledTime } from "../services/branchOperational.service";
+import { getBranchAvailability, getBranchPayphoneStoreId, getPickerStoreApiKey, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
 import { getFrontendUrl } from "../config/env";
 import { getOrderStatusEmailHtml } from "../services/email-templates";
 
@@ -35,13 +35,21 @@ function pushAudit(order: any, entry: Record<string, unknown>) {
   });
 }
 
+function pickerErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error) && error.response) {
+    const data = error.response.data;
+    return data?.message || data?.error || `Picker API error: ${error.response.status}`;
+  }
+  return error instanceof Error ? error.message : "Error desconocido al crear el delivery";
+}
+
 async function resolveBranch(input: { branchId?: string; lat?: number; lng?: number }) {
   if (input.branchId) {
-    return Branch.findById(input.branchId).select("+pickerStore.storeApiKey");
+    return Branch.findOne({ _id: input.branchId, isActive: true, isArchived: { $ne: true }, ...pickerEnabledBranchFilter() }).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
   }
 
   if (typeof input.lat === "number" && typeof input.lng === "number") {
-    const branches = await Branch.find({ isActive: true }).select("+pickerStore.storeApiKey");
+    const branches = await Branch.find({ isActive: true, isArchived: { $ne: true }, ...pickerEnabledBranchFilter() }).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
     const scored = branches
       .filter((branch) => branch.coordinates?.lat != null && branch.coordinates?.lng != null)
       .map((branch) => ({
@@ -104,7 +112,7 @@ export async function createOrder(req: Request, res: Response) {
   if (scheduledForInput !== undefined && scheduledForInput !== null && scheduledForInput !== "") {
     scheduledFor = new Date(scheduledForInput);
     if (Number.isNaN(scheduledFor.getTime()) || scheduledFor <= new Date()) {
-      res.status(400).json({ message: "scheduledFor must be a future valid date" });
+      res.status(400).json({ message: "La fecha programada debe ser futura y válida." });
       return;
     }
     const scheduledValidation = validateScheduledTime(branch, scheduledFor);
@@ -112,6 +120,18 @@ export async function createOrder(req: Request, res: Response) {
       res.status(400).json({ message: scheduledValidation.message || "La sucursal no atiende en el horario seleccionado" });
       return;
     }
+  } else if (!isBranchOpenAt(branch)) {
+    // Fuera de horario no se vende para ahora: el cliente debe programar el pedido.
+    const availability = getBranchAvailability(branch);
+    res.status(409).json({
+      message: availability.nextOpening
+        ? `${branch.name} está cerrada en este momento. Programa tu pedido a partir de las ${availability.nextOpening.opensAt}.`
+        : `${branch.name} no tiene horarios de atención configurados. Elige otra sucursal.`,
+      code: "BRANCH_CLOSED",
+      branchClosed: true,
+      availability,
+    });
+    return;
   }
 
   const isDelivery = deliveryType !== "pickup";
@@ -198,6 +218,7 @@ export async function createOrder(req: Request, res: Response) {
     audit: [],
     payphone: {
       clientTransactionId: `BOL-${Date.now()}`,
+      storeId: getBranchPayphoneStoreId(branch?.payphone),
     },
   });
 
@@ -212,7 +233,7 @@ export async function createOrder(req: Request, res: Response) {
 
   if ((paymentMethod === "cash" || Boolean(scheduledFor)) && isDelivery) {
     try {
-      const branchKey = branch.pickerStore?.storeApiKey || "";
+      const branchKey = getPickerStoreApiKey(branch.pickerStore);
       if (!branchKey || !deliveryCoords) throw new Error("No hay llave de Picker o coordenadas de entrega");
       const nameParts = (order.customerName || "").split(" ");
       const pickerResult = await createPickerBooking({
@@ -286,6 +307,7 @@ export async function confirmOrder(req: Request, res: Response) {
     const previousStatus = order.status;
     order.status = "paid";
     order.payphone = {
+      ...(order.payphone?.toObject ? order.payphone.toObject() : order.payphone),
       clientTransactionId: clientTxId,
       transactionId: payphoneResult.transactionId,
       authorizationCode: payphoneResult.authorizationCode,
@@ -323,8 +345,8 @@ export async function confirmOrder(req: Request, res: Response) {
 
     if (order.deliveryType === "delivery" && !order.picker?.bookingId) {
       try {
-        const branch = order.branch ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey") : null;
-        const branchKey = branch?.pickerStore?.storeApiKey || "";
+        const branch = order.branch ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey") : null;
+        const branchKey = getPickerStoreApiKey(branch?.pickerStore);
         if (branchKey && order.deliveryCoordinates?.lat && order.deliveryCoordinates?.lng) {
           const nameParts = (order.customerName || "").split(" ");
           const firstName = nameParts[0] || order.customerName || "";
@@ -365,12 +387,13 @@ export async function confirmOrder(req: Request, res: Response) {
           await order.save();
         }
       } catch (pickerErr) {
-        console.error("Picker booking failed:", pickerErr);
+        const errorMessage = pickerErrorMessage(pickerErr);
+        console.error("Picker booking failed:", errorMessage);
         pushAudit(order, {
           action: "note_added",
           performedBy: null,
           performedByEmail: "system",
-          details: `Picker booking falló: ${pickerErr instanceof Error ? pickerErr.message : "error"}`,
+          details: `Picker booking falló: ${errorMessage}`,
         });
         await order.save();
       }
@@ -460,6 +483,7 @@ export async function confirmOrder(req: Request, res: Response) {
   const previousStatus = order.status;
   order.status = "cancelled";
   order.payphone = {
+    ...(order.payphone?.toObject ? order.payphone.toObject() : order.payphone),
     clientTransactionId: clientTxId,
     transactionId: payphoneResult?.transactionId,
     authorizationCode: payphoneResult?.authorizationCode,
@@ -483,6 +507,143 @@ export async function confirmOrder(req: Request, res: Response) {
     order,
     payphoneResult,
   });
+}
+
+const REFUNDABLE_UNTIL_HOUR = 20;
+
+/**
+ * PayPhone solo acepta el reverso el mismo dia de la transaccion y antes de las 20:00 EC.
+ * Se evalua en hora de Ecuador, no en la del servidor (Vercel corre en UTC).
+ */
+export function getRefundWindow(confirmedAt: Date | null | undefined, now = new Date()) {
+  const ecuadorParts = (date: Date) =>
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Guayaquil",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(date)
+      .reduce<Record<string, string>>((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+
+  if (!confirmedAt) return { open: false, reason: "El pedido no tiene un pago confirmado en PayPhone." };
+
+  const paid = ecuadorParts(confirmedAt);
+  const current = ecuadorParts(now);
+  const paidDate = `${paid.year}-${paid.month}-${paid.day}`;
+  const currentDate = `${current.year}-${current.month}-${current.day}`;
+
+  if (paidDate !== currentDate) {
+    return { open: false, reason: "PayPhone solo permite reversar el mismo dia del pago. Gestiona la devolucion desde PayPhone Business." };
+  }
+  if (Number(current.hour) >= REFUNDABLE_UNTIL_HOUR) {
+    return { open: false, reason: `El reverso solo se acepta hasta las ${REFUNDABLE_UNTIL_HOUR}:00 de Ecuador. Gestiona la devolucion desde PayPhone Business.` };
+  }
+  return { open: true as const };
+}
+
+/**
+ * Reversa el cobro en PayPhone y cancela el pedido. El reverso es siempre por el total:
+ * la API no admite montos parciales.
+ */
+export async function refundOrder(req: AuthRequest, res: Response) {
+  const order = await Order.findOne({ _id: req.params.id, ...(req.branchFilter || {}) });
+  if (!order) {
+    res.status(404).json({ message: "Order not found" });
+    return;
+  }
+
+  if (order.paymentMethod !== "card") {
+    res.status(400).json({ message: "Solo se pueden reversar pedidos pagados con tarjeta." });
+    return;
+  }
+  if (!order.payphone?.transactionId && !order.payphone?.clientTransactionId) {
+    res.status(400).json({ message: "El pedido no tiene una transaccion de PayPhone asociada." });
+    return;
+  }
+  if (order.payphone?.refund?.status === "refunded") {
+    res.status(409).json({ message: "Este pedido ya fue reversado." });
+    return;
+  }
+  if (order.payphone?.refund?.status === "processing") {
+    res.status(409).json({ message: "Ya hay un reverso en curso para este pedido." });
+    return;
+  }
+
+  const window = getRefundWindow(order.payphone?.confirmedAt);
+  if (!window.open) {
+    res.status(422).json({ message: window.reason });
+    return;
+  }
+
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+  const requestedByEmail = req.user?.email || "";
+
+  order.payphone.refund = {
+    status: "processing",
+    amount: order.total,
+    reason,
+    requestedBy: req.user?.userId || null,
+    requestedByEmail,
+    requestedAt: new Date(),
+  };
+  pushAudit(order, {
+    action: "refund_requested",
+    performedBy: req.user?.userId || null,
+    performedByEmail: requestedByEmail,
+    details: reason ? `Reverso solicitado: ${reason}` : "Reverso solicitado",
+  });
+  await order.save();
+
+  const result = order.payphone.transactionId
+    ? await reversePayphoneTransaction({ transactionId: order.payphone.transactionId })
+    : await reversePayphoneTransaction({ clientTransactionId: order.payphone.clientTransactionId! });
+
+  if (!result.ok) {
+    order.payphone.refund.status = "failed";
+    order.payphone.refund.errorCode = result.errorCode;
+    order.payphone.refund.errorMessage = result.message || "";
+    pushAudit(order, {
+      action: "refund_failed",
+      performedBy: req.user?.userId || null,
+      performedByEmail: requestedByEmail,
+      details: `PayPhone rechazo el reverso: ${result.message || "sin detalle"}${result.errorCode ? ` (codigo ${result.errorCode})` : ""}`,
+    });
+    await order.save();
+    publishOrderUpdate(order);
+    res.status(502).json({ message: result.message || "PayPhone rechazo el reverso.", order });
+    return;
+  }
+
+  const previousStatus = order.status;
+  order.payphone.refund.status = "refunded";
+  order.payphone.refund.refundedAt = new Date();
+  order.status = "cancelled";
+  pushAudit(order, {
+    action: "refunded",
+    performedBy: req.user?.userId || null,
+    performedByEmail: requestedByEmail,
+    fromValue: previousStatus,
+    toValue: order.status,
+    details: `Reverso aprobado por PayPhone${reason ? `: ${reason}` : ""}`,
+  });
+  await order.save();
+  publishOrderUpdate(order);
+
+  const html = getOrderStatusEmailHtml({
+    orderNumber: order.orderNumber,
+    customerName: order.customerName || "Cliente",
+    status: order.status,
+    statusText: "Tu pago fue devuelto",
+    detailUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
+    items: order.items || [],
+    total: order.total,
+  });
+  void sendEmail(order.customerEmail, `Boloncity: devolucion del pedido ${order.orderNumber}`, html).catch(() => {});
+
+  res.json({ message: "Reverso aprobado por PayPhone", order });
 }
 
 export async function listOrders(req: AuthRequest, res: Response) {
@@ -771,19 +932,28 @@ export async function streamMyOrder(req: AuthRequest, res: Response) {
 
 export async function retryPickerBooking(req: AuthRequest, res: Response) {
   const userId = req.user?.userId;
-  if (!userId) {
+  const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+  const isPublicRetry = Boolean(email);
+  if (!userId && !isPublicRetry) {
     res.status(401).json({ message: "No autenticado" });
     return;
   }
 
-  const order = await Order.findById(req.params.id).populate("branch");
+  const order = isPublicRetry
+    ? await Order.findOne({ orderNumber: req.params.orderNumber, customerEmail: email }).populate("branch")
+    : await Order.findById(req.params.id).populate("branch");
   if (!order) {
     res.status(404).json({ message: "Orden no encontrada" });
     return;
   }
 
-  if (String(order.user) !== userId) {
+  if (!isPublicRetry && String(order.user) !== userId && req.user?.accountType !== "admin") {
     res.status(403).json({ message: "No tienes permiso para modificar esta orden" });
+    return;
+  }
+
+  if (order.status !== "paid") {
+    res.status(400).json({ message: "Solo se puede solicitar delivery para una orden pagada" });
     return;
   }
 
@@ -797,8 +967,13 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
     return;
   }
 
-  const branch = order.branch ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey") : null;
-  const branchKey = branch?.pickerStore?.storeApiKey || "";
+  if (isPublicRetry && !order.audit.some((entry: { action: string; details?: string }) => entry.action === "note_added" && /picker booking fall[oó]|intento de delivery fall[oó]/i.test(entry.details || ""))) {
+    res.status(409).json({ message: "Esta orden no tiene un error de delivery para reintentar" });
+    return;
+  }
+
+  const branch = order.branch ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey") : null;
+  const branchKey = getPickerStoreApiKey(branch?.pickerStore);
 
   if (!branchKey || !order.deliveryCoordinates?.lat || !order.deliveryCoordinates?.lng) {
     res.status(400).json({ message: "No hay coordenadas de entrega o llave de sucursal para crear el delivery" });
@@ -842,28 +1017,20 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
     pushAudit(order, {
       action: "note_added",
       performedBy: req.user?.userId || null,
-      performedByEmail: req.user?.email || "",
-      details: `Delivery solicitado por el cliente — Picker booking #${pickerResult.bookingNumericId} creado`,
+      performedByEmail: req.user?.email || order.customerEmail,
+      details: `Delivery reintentado — Picker booking #${pickerResult.bookingNumericId} creado`,
     });
 
     await order.save();
     res.json({ success: true, order, picker: pickerResult });
   } catch (pickerErr) {
-    console.error("Retry Picker booking failed:", pickerErr);
-    let errorMsg = "Error desconocido al crear el delivery";
-
-    if (axios.isAxiosError(pickerErr) && pickerErr.response) {
-      const pickerData = pickerErr.response.data;
-      errorMsg = pickerData?.message || pickerData?.error || `Picker API error: ${pickerErr.response.status}`;
-      console.error("Picker API response data:", JSON.stringify(pickerData, null, 2));
-    } else if (pickerErr instanceof Error) {
-      errorMsg = pickerErr.message;
-    }
+    const errorMsg = pickerErrorMessage(pickerErr);
+    console.error("Retry Picker booking failed:", errorMsg);
 
     pushAudit(order, {
       action: "note_added",
       performedBy: req.user?.userId || null,
-      performedByEmail: req.user?.email || "",
+      performedByEmail: req.user?.email || order.customerEmail,
       details: `Intento de delivery falló: ${errorMsg}`,
     });
     await order.save();
@@ -896,9 +1063,9 @@ export async function startScheduledPickerSearch(req: AuthRequest, res: Response
   }
 
   const branch = order.branch
-    ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey")
+    ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
     : null;
-  const branchKey = branch?.pickerStore?.storeApiKey || "";
+  const branchKey = getPickerStoreApiKey(branch?.pickerStore);
   if (!branchKey) {
     res.status(400).json({ message: "La sucursal no tiene una llave de Picker configurada" });
     return;

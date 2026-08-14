@@ -2,7 +2,7 @@ import { Router } from "express";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { adminMiddleware } from "../middlewares/admin.middleware";
 import { branchScope } from "../middlewares/branchScope.middleware";
-import { addOrderNote, confirmOrder, createOrder, getMyOrderById, getMyOrders, getOrderById, getOrderByNumber, getOrdersByEmail, listOrders, retryPickerBooking, startScheduledPickerSearch, streamMyOrder, streamOrderByNumber, updateOrderStatus } from "../controllers/order.controller";
+import { addOrderNote, confirmOrder, createOrder, getMyOrderById, getMyOrders, getOrderById, getOrderByNumber, getOrdersByEmail, listOrders, refundOrder, retryPickerBooking, startScheduledPickerSearch, streamMyOrder, streamOrderByNumber, updateOrderStatus } from "../controllers/order.controller";
 import { whatsappBotAssistant, whatsappBotBrain, whatsappBotCatalog, whatsappBotCheckout, whatsappBotLocation, whatsappBotSearchOrder, whatsappBotTrackOrder } from "../controllers/whatsappBot.controller";
 
 const orderRouter = Router();
@@ -27,8 +27,10 @@ orderRouter.get("/mine/:id/stream", authMiddleware, streamMyOrder);
 orderRouter.get("/mine/:id", authMiddleware, getMyOrderById);
 orderRouter.get("/:orderNumber/stream", streamOrderByNumber);
 orderRouter.get("/:orderNumber", getOrderByNumber);
+orderRouter.post("/:orderNumber/retry-picker-public", retryPickerBooking);
 orderRouter.post("/:id/notes", authMiddleware, adminMiddleware, branchScope, addOrderNote);
 orderRouter.put("/:id/status", authMiddleware, adminMiddleware, branchScope, updateOrderStatus);
+orderRouter.post("/:id/refund", authMiddleware, adminMiddleware, branchScope, refundOrder);
 orderRouter.post("/:id/start-picker-search", authMiddleware, adminMiddleware, branchScope, startScheduledPickerSearch);
 orderRouter.post("/:id/retry-picker", authMiddleware, retryPickerBooking);
 
