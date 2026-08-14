@@ -1,7 +1,7 @@
 import "dotenv/config";
 
 function required(key: string): string {
-  const value = process.env[key];
+  const value = process.env[key]?.trim();
   if (!value) {
     throw new Error(`Missing required env var: ${key}`);
   }
@@ -9,7 +9,7 @@ function required(key: string): string {
 }
 
 function optional(key: string, fallback: string): string {
-  return process.env[key] || fallback;
+  return process.env[key]?.trim() || fallback;
 }
 
 export const env = {
@@ -21,7 +21,7 @@ export const env = {
   PAYPHONE_TOKEN: optional("PAYPHONE_TOKEN", ""),
   PAYPHONE_STORE_ID: optional("PAYPHONE_STORE_ID", ""),
   RESEND_API_KEY: optional("RESEND_API_KEY", ""),
-  RESEND_FROM_EMAIL: optional("RESEND_FROM_EMAIL", "boloncity@bakano.ec"),
+  RESEND_FROM_EMAIL: optional("RESEND_FROM_EMAIL", "Boloncity <team@boloncity.com>"),
   PICKER_MASTER_KEY: optional("PICKER_MASTER_KEY", ""),
   GOOGLE_MAPS_API_KEY: optional("GOOGLE_MAPS_API_KEY", ""),
   GEMINI_API_KEY: optional("GEMINI_API_KEY", ""),
@@ -30,11 +30,13 @@ export const env = {
   CLOUDINARY_CLOUD_NAME: optional("CLOUDINARY_CLOUD_NAME", ""),
   CLOUDINARY_API_KEY: optional("CLOUDINARY_API_KEY", ""),
   CLOUDINARY_API_SECRET: optional("CLOUDINARY_API_SECRET", ""),
+  PICKER_ENV: optional("PICKER_ENV", "development"),
+  PICKER_API_BASE_URL: optional("PICKER_API_BASE_URL", "https://dev-api.pickerexpress.com/api"),
   SLACK_ERROR_WEBHOOK: optional("SLACK_ERROR_WEBHOOK", ""),
   FRONTEND_URLS: {
     local: "http://localhost:5173",
     tunnel: "https://testing-storybrand-frontend.bakano.ec",
-    develop: "https://boloncity-tienda.netlify.app",
+    develop: "https://dev.boloncity.com",
     production: "https://boloncity.com",
   } as const,
 } as const;

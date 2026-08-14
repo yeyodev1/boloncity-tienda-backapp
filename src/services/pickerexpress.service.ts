@@ -1,7 +1,7 @@
 import axios from "axios";
 import { env } from "../config/env";
 
-const PICKER_API = "https://dev-api.pickerexpress.com/api";
+const PICKER_API = env.PICKER_API_BASE_URL.replace(/\/+$/, "");
 
 export interface PreCheckoutInput {
   branchKey: string;
@@ -126,9 +126,11 @@ export async function preCheckout(
   console.error(`[pickerexpress/preCheckout] POST ${url}`);
   console.error(`[pickerexpress/preCheckout] Body:`, body);
 
+  // Picker autentica con `Authorization: Bearer <api key de la sucursal>`;
+  // x-api-key queda como respaldo por si cambian el contrato.
   const strategies = [
-    { key: input.branchKey, header: "x-api-key" },
     { key: input.branchKey, header: "Authorization" },
+    { key: input.branchKey, header: "x-api-key" },
   ];
 
   for (const s of strategies) {

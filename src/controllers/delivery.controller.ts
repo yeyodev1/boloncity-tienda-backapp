@@ -3,7 +3,7 @@ import axios from "axios";
 import { Branch } from "../models/Branch";
 import { Setting } from "../models/Setting";
 import { preCheckout } from "../services/pickerexpress.service";
-import { toPublicBranch } from "../services/branchOperational.service";
+import { getPickerStoreApiKey, pickerEnabledBranchFilter, toPublicBranch } from "../services/branchOperational.service";
 
 function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371;
@@ -22,7 +22,7 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
     return;
   }
 
-  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true } }).select("+pickerStore.storeApiKey");
+  const branches = await Branch.find({ isActive: true, isArchived: { $ne: true }, ...pickerEnabledBranchFilter() }).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
   const scored = branches
     .filter((b) => b.coordinates?.lat != null && b.coordinates?.lng != null)
     .map((b) => ({
@@ -41,7 +41,7 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
 
   let deliveryFee: number;
 
-  const branchKey = nearest.branch.pickerStore?.storeApiKey || "";
+  const branchKey = getPickerStoreApiKey(nearest.branch.pickerStore);
   if (branchKey) {
     try {
       const pickerResult = await preCheckout({ branchKey, latitude: lat, longitude: lng });
