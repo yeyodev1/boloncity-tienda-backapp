@@ -23,6 +23,7 @@ const whitelist = [
   // Alias estables del entorno de desarrollo (deploys preview)
   "https://boloncity-api-dev.vercel.app",
   "https://boloncity-tienda-dev.vercel.app",
+  "https://boloncity-dev.vercel.app",
   ...(process.env.EXTRA_CORS_ORIGINS || "")
     .split(",")
     .map((origin) => origin.trim())

@@ -653,7 +653,8 @@ export async function refundOrder(req: AuthRequest, res: Response) {
     items: order.items || [],
     total: order.total,
   });
-  void sendEmail(order.customerEmail, `Boloncity: devolucion del pedido ${order.orderNumber}`, html).catch(() => {});
+  // En serverless hay que esperar el envio: responder antes congela la funcion y el correo muere en vuelo.
+  await sendEmail(order.customerEmail, `Boloncity: devolucion del pedido ${order.orderNumber}`, html).catch(() => {});
 
   res.json({ message: "Reverso aprobado por PayPhone", order });
 }
@@ -831,7 +832,8 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
       items: order.items || [],
       total: order.total,
     });
-    void sendEmail(order.customerEmail, `Tu pedido ${order.orderNumber} — ${statusText[order.status] || "Actualización"}`, html).catch(() => {});
+    // En serverless hay que esperar el envio: responder antes congela la funcion y el correo muere en vuelo.
+    await sendEmail(order.customerEmail, `Tu pedido ${order.orderNumber} — ${statusText[order.status] || "Actualización"}`, html).catch(() => {});
   }
 
   res.json(order);
