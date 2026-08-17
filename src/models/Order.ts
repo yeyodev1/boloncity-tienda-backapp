@@ -97,6 +97,8 @@ export interface IOrder {
   billing?: IBillingData;
   pointsEarned: number;
   pointsRedeemed: number;
+  /** Descuento en centavos aplicado por canje de puntos. */
+  discount: number;
   customerEmail: string;
   customerName?: string;
   customerPhone?: string;
@@ -194,6 +196,7 @@ const orderSchema = new Schema<IOrder>(
     },
     pointsEarned: { type: Number, default: 0 },
     pointsRedeemed: { type: Number, default: 0 },
+    discount: { type: Number, default: 0 },
     customerEmail: { type: String, required: true },
     customerName: { type: String, default: "" },
     customerPhone: { type: String, default: "" },

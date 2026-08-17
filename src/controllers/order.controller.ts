@@ -9,7 +9,7 @@ import { createAutoUser } from "../services/auth.service";
 import { sendEmail } from "../services/resend.service";
 import { createPickerBooking, startSearch } from "../services/pickerexpress.service";
 import { User } from "../models/User";
-import { calculatePoints } from "../services/points.service";
+import { calculateEarnedPoints, discountCentsToPoints, pointsToDiscountCents } from "../services/points.service";
 import { Branch } from "../models/Branch";
 import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl } from "../utils/parseMapsUrl";
@@ -90,7 +90,10 @@ export async function createOrder(req: Request, res: Response) {
     billingEmail?: string;
     billingAddress?: string;
     scheduledFor?: string;
+    /** true = canjear los puntos disponibles de la cuenta asociada al correo. */
+    redeemPoints?: boolean;
   };
+  const redeemPoints = req.body.redeemPoints === true;
 
   if (paymentMethod !== "card" && paymentMethod !== "cash") {
     res.status(400).json({ message: "Método de pago inválido" });
@@ -199,6 +202,25 @@ export async function createOrder(req: Request, res: Response) {
       }, 0)
     : 0;
 
+  // ─── Puntos: cuanto gana esta compra y canje opcional del saldo del correo ───
+  const pointsEarned = calculateEarnedPoints(dollarsToCents(subtotal), orderItems, settings);
+  const totalCents = dollarsToCents(total);
+  let pointsRedeemed = 0;
+  let discountCents = 0;
+  let redeemUser: InstanceType<typeof User> | null = null;
+  if (redeemPoints && settings.pointsEnabled && customerEmail) {
+    redeemUser = await User.findOne({ email: String(customerEmail).toLowerCase().trim() });
+    const balance = redeemUser?.points || 0;
+    // Siempre queda al menos $1 por pagar: PayPhone no procesa montos menores.
+    const maxDiscount = Math.max(0, Math.min(pointsToDiscountCents(balance, settings.pointsRedeemPerDollar), totalCents - 100));
+    if (redeemUser && maxDiscount > 0) {
+      pointsRedeemed = Math.min(balance, discountCentsToPoints(maxDiscount, settings.pointsRedeemPerDollar));
+      discountCents = Math.min(pointsToDiscountCents(pointsRedeemed, settings.pointsRedeemPerDollar), maxDiscount);
+    }
+  }
+  // El IVA informativo se ajusta en proporcion al descuento para que el desglose cuadre.
+  const finalTaxCents = discountCents > 0 && totalCents > 0 ? Math.round(taxCents * ((totalCents - discountCents) / totalCents)) : taxCents;
+
   const counter = await Counter.findByIdAndUpdate(
     { _id: "orderNumber" },
     { $inc: { seq: 1 } },
@@ -210,8 +232,11 @@ export async function createOrder(req: Request, res: Response) {
     orderNumber,
     items: orderItems,
     subtotal: dollarsToCents(subtotal),
-    tax: taxCents,
-    total: dollarsToCents(total),
+    tax: finalTaxCents,
+    total: totalCents - discountCents,
+    pointsEarned,
+    pointsRedeemed,
+    discount: discountCents,
     paymentMethod,
     deliveryType: isDelivery ? "delivery" : "pickup",
     deliveryCost: deliveryCostCents,
@@ -241,6 +266,20 @@ export async function createOrder(req: Request, res: Response) {
       : "Sucursal no asignada",
     toValue: order.status,
   });
+  if (pointsRedeemed > 0 && redeemUser) {
+    redeemUser.points = Math.max(0, (redeemUser.points || 0) - pointsRedeemed);
+    redeemUser.pointsHistory.push({
+      amount: -pointsRedeemed,
+      reason: `Canje en compra ${order.orderNumber}`,
+      orderId: order._id,
+      date: new Date(),
+    });
+    await redeemUser.save();
+    pushAudit(order, {
+      action: "note_added",
+      details: `Canje de puntos: ${pointsRedeemed} pts = descuento de $${(discountCents / 100).toFixed(2)}`,
+    });
+  }
   await order.save();
 
   if ((paymentMethod === "cash" || Boolean(scheduledFor)) && isDelivery) {
@@ -344,7 +383,7 @@ export async function confirmOrder(req: Request, res: Response) {
       order.user = user._id;
     }
 
-    order.pointsEarned = calculatePoints(order.items);
+    // pointsEarned ya se calculo al crear la orden (tarifa por dolar + extras por producto).
     pushAudit(order, {
       action: "payment_confirmed",
       performedBy: null,
@@ -633,6 +672,24 @@ export async function refundOrder(req: AuthRequest, res: Response) {
   order.payphone.refund.status = "refunded";
   order.payphone.refund.refundedAt = new Date();
   order.status = "cancelled";
+
+  // Al reversar se devuelven los puntos canjeados y se retiran los ganados por esta compra.
+  if (order.pointsRedeemed > 0 || order.pointsEarned > 0) {
+    const pointsUser = await User.findOne({ email: String(order.customerEmail || "").toLowerCase().trim() });
+    if (pointsUser) {
+      const adjustment = (order.pointsRedeemed || 0) - (order.pointsEarned || 0);
+      if (adjustment !== 0) {
+        pointsUser.points = Math.max(0, (pointsUser.points || 0) + adjustment);
+        pointsUser.pointsHistory.push({
+          amount: adjustment,
+          reason: `Reverso de compra ${order.orderNumber}`,
+          orderId: order._id,
+          date: new Date(),
+        });
+        await pointsUser.save();
+      }
+    }
+  }
   pushAudit(order, {
     action: "refunded",
     performedBy: req.user?.userId || null,
