@@ -16,6 +16,7 @@ import { parseMapsUrl } from "../utils/parseMapsUrl";
 import { AuthRequest } from "../types/AuthRequest";
 import { publishOrderUpdate, subscribeToOrder } from "../services/orderEvents.service";
 import { getBranchAvailability, getBranchPayphoneStoreId, getPickerStoreApiKey, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
+import { pushOrderToRunfood } from "../services/runfood.service";
 import { getFrontendUrl } from "../config/env";
 import { getOrderStatusEmailHtml } from "../services/email-templates";
 
@@ -325,7 +326,40 @@ export async function createOrder(req: Request, res: Response) {
     }
   }
 
+  // Efectivo sin programar: la cocina arranca ya, asi que la comanda entra al POS RunFood.
+  // (Tarjeta se envia al confirmarse el pago; programados, no — imprimiria antes de tiempo.)
+  if (paymentMethod === "cash" && !scheduledFor) {
+    await sendOrderToRunfood(order);
+  }
+
   res.status(201).json(order);
+}
+
+/** Empuja el pedido al POS RunFood de su sucursal (si esta configurado) y lo deja en la auditoria. */
+async function sendOrderToRunfood(order: InstanceType<typeof Order>) {
+  try {
+    if (!order.branch) return;
+    const branch = await Branch.findById(order.branch).select("+runfood.apiKey");
+    const runfood = branch?.runfood;
+    if (!runfood?.enabled || !runfood.baseUrl || !runfood.apiKey) return;
+    const result = await pushOrderToRunfood({
+      config: { baseUrl: runfood.baseUrl, apiKey: runfood.apiKey },
+      orderNumber: order.orderNumber,
+      customerName: order.customerName || order.customerEmail,
+      deliveryType: order.deliveryType,
+      notes: order.notes || "",
+      items: (order.items || []).map((item: { name: string; quantity: number }) => ({ name: item.name, quantity: item.quantity })),
+    });
+    pushAudit(order, {
+      action: "note_added",
+      performedBy: null,
+      performedByEmail: "system",
+      details: result.ok ? `RunFood: ${result.message}` : `RunFood NO recibió el pedido: ${result.message}`,
+    });
+    await order.save();
+  } catch (err) {
+    console.error("RunFood push failed:", err);
+  }
 }
 
 export async function confirmOrder(req: Request, res: Response) {
@@ -393,6 +427,11 @@ export async function confirmOrder(req: Request, res: Response) {
       details: `PayPhone txId: ${payphoneResult.transactionId || ""}`,
     });
     await order.save();
+
+    // Pago confirmado: la comanda entra al POS RunFood del local (si esta configurado).
+    if (!order.scheduledFor) {
+      await sendOrderToRunfood(order);
+    }
 
     if (order.deliveryType === "delivery" && !order.picker?.bookingId) {
       try {
