@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { AuthRequest } from "../types/AuthRequest";
 import { Product } from "../models/Product";
 import { Category } from "../models/Category";
 import { deleteFromCloudinary, isCloudinaryConfigured, uploadToCloudinary } from "../services/cloudinary.service";
@@ -177,6 +178,102 @@ export async function updateProduct(req: Request, res: Response) {
   }
 
   res.json(product);
+}
+
+/**
+ * Resuelve sobre qué sucursal opera el usuario:
+ *  - admin general: la que venga en query/body (branchId), obligatoria.
+ *  - admin de sucursal (branch_admin): SIEMPRE su propia sucursal; si pide otra, 403.
+ * Devuelve { branchId } o { error, status }.
+ */
+function resolveBranchForUser(req: AuthRequest, requested?: string): { branchId?: string; error?: string; status?: number } {
+  const user = req.user;
+  if (!user) return { error: "No autenticado", status: 401 };
+  const own = (user.branches || []).map((b) => String(b));
+  if (user.allBranches || user.accountType === "admin") {
+    if (!requested) return { error: "Falta branchId de la sucursal", status: 400 };
+    return { branchId: String(requested) };
+  }
+  // branch_admin: su propia sucursal
+  if (!own.length) return { error: "Tu usuario no tiene sucursal asignada", status: 400 };
+  if (requested && !own.includes(String(requested))) return { error: "Solo puedes gestionar tu sucursal", status: 403 };
+  return { branchId: requested ? String(requested) : own[0] };
+}
+
+/** Un producto está disponible en una sucursal si no está en unavailableBranches y (branches vacío o incluye la sucursal). */
+function isAvailableAt(product: { isAvailable?: boolean; branches?: unknown[]; unavailableBranches?: unknown[] }, branchId: string) {
+  if (product.isAvailable === false) return false;
+  const unavailable = (product.unavailableBranches || []).map((b: unknown) => String((b as { _id?: unknown })?._id ?? b));
+  if (unavailable.includes(branchId)) return false;
+  const limited = (product.branches || []).map((b: unknown) => String((b as { _id?: unknown })?._id ?? b));
+  if (limited.length && !limited.includes(branchId)) return false;
+  return true;
+}
+
+/**
+ * Lista de productos con su disponibilidad para UNA sucursal. La usa el vendedor
+ * (branch_admin) para ver y togglear lo de su local, y el admin para cualquier sucursal.
+ */
+export async function listBranchAvailability(req: AuthRequest, res: Response) {
+  const resolved = resolveBranchForUser(req, req.query.branchId as string | undefined);
+  if (resolved.error) {
+    res.status(resolved.status || 400).json({ message: resolved.error });
+    return;
+  }
+  const branchId = resolved.branchId!;
+  const search = String(req.query.search || "").trim();
+  const filter: Record<string, unknown> = {};
+  if (search) {
+    const rx = new RegExp(escapeRegExp(search), "i");
+    filter.$or = [{ name: rx }, { code: rx }];
+  }
+  const products = await Product.find(filter)
+    .select("name price code images categories branches unavailableBranches isAvailable sortOrder")
+    .populate("categories", "name")
+    .sort({ sortOrder: 1, name: 1 })
+    .lean();
+
+  const items = products.map((p: Record<string, unknown>) => ({
+    _id: p._id,
+    name: p.name,
+    price: p.price,
+    image: (p.images as Array<{ url?: string }> | undefined)?.[0]?.url || "",
+    category: (p.categories as Array<{ name?: string }> | undefined)?.[0]?.name || "",
+    available: isAvailableAt(p as { isAvailable?: boolean; branches?: unknown[]; unavailableBranches?: unknown[] }, branchId),
+    globallyOff: p.isAvailable === false,
+  }));
+  const availableCount = items.filter((i) => i.available).length;
+  res.json({ branchId, products: items, summary: { total: items.length, available: availableCount, unavailable: items.length - availableCount } });
+}
+
+/** Activa/desactiva un producto para una sucursal (toggle de unavailableBranches). */
+export async function toggleBranchAvailability(req: AuthRequest, res: Response) {
+  const resolved = resolveBranchForUser(req, req.body.branchId);
+  if (resolved.error) {
+    res.status(resolved.status || 400).json({ message: resolved.error });
+    return;
+  }
+  const branchId = resolved.branchId!;
+  const available = req.body.available === true || req.body.available === "true";
+
+  const product = await Product.findById(req.params.id);
+  if (!product) {
+    res.status(404).json({ message: "Producto no encontrado" });
+    return;
+  }
+
+  const unavailable = (product.unavailableBranches || []).map((b: unknown) => String(b));
+  if (available) {
+    // Disponible: quitar de unavailableBranches y, si usa lista blanca legacy, incluir la sucursal.
+    product.unavailableBranches = product.unavailableBranches.filter((b: unknown) => String(b) !== branchId) as typeof product.unavailableBranches;
+    if (product.branches?.length && !product.branches.map((b: unknown) => String(b)).includes(branchId)) {
+      product.branches.push(branchId as never);
+    }
+  } else if (!unavailable.includes(branchId)) {
+    product.unavailableBranches.push(branchId as never);
+  }
+  await product.save();
+  res.json({ _id: product._id, name: product.name, branchId, available });
 }
 
 export async function deleteProduct(req: Request, res: Response) {
