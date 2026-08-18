@@ -186,7 +186,13 @@ export async function deleteProduct(req: Request, res: Response) {
     return;
   }
 
-  await Promise.all(product.images.map((image: { publicId: string }) => deleteFromCloudinary(image.publicId)));
+  // La limpieza de imágenes no debe bloquear el borrado: si Cloudinary falla (id
+  // inválido, imagen sembrada, red), igual se elimina el producto del catálogo.
+  await Promise.all(
+    product.images.map((image: { publicId: string }) =>
+      deleteFromCloudinary(image.publicId).catch(() => undefined)
+    )
+  );
   await Product.findByIdAndDelete(req.params.id);
   res.json({ message: "Product deleted" });
 }
