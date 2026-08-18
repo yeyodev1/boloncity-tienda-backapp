@@ -748,6 +748,14 @@ export async function listOrders(req: AuthRequest, res: Response) {
 
   if (status && status !== "all") query.status = status;
 
+  // Ocultar órdenes de TARJETA que quedaron sin pagar (checkout abandonado o pago
+  // fallido): no deben aparecer en el tablero ni prepararse. Solo se muestran cuando
+  // PayPhone confirmó el cobro (hay transactionId) o si son en efectivo. Con
+  // ?includeUnpaid=true un admin puede verlas para auditar.
+  if (req.query.includeUnpaid !== "true") {
+    query.$nor = [{ paymentMethod: "card", status: "pending", "payphone.transactionId": null }];
+  }
+
   const cappedLimit = Math.min(Math.max(Number(limit) || 100, 1), 200);
   const orders = await Order.find(query)
     .sort({ createdAt: -1 })
