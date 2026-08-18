@@ -870,6 +870,17 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
     return;
   }
 
+  // Una orden de TARJETA sin pago confirmado no se puede procesar: solo se puede
+  // cancelar. Sin esto, un pedido no pagado podría prepararse y entregarse gratis.
+  const cardUnpaid = order.paymentMethod === "card" && !order.payphone?.transactionId && !order.payphone?.confirmedAt;
+  if (cardUnpaid && req.body.status !== "cancelled") {
+    res.status(409).json({
+      code: "ORDER_UNPAID",
+      message: "Este pedido no está pagado. El cliente no completó el pago con tarjeta, así que no se puede preparar ni avanzar. Solo puede cancelarse.",
+    });
+    return;
+  }
+
   const note = typeof req.body.note === "string" ? req.body.note.trim() : "";
   const previousStatus = order.status;
   order.status = req.body.status;
