@@ -19,6 +19,7 @@ export interface IBranch {
   openingHours: IBranchOpeningHours[]
   pickerStore?: IPickerStore
   payphone?: IBranchPayphone
+  runfood?: IBranchRunfood
   isActive: boolean
   isArchived: boolean
   createdAt?: Date
@@ -50,6 +51,13 @@ export interface IPickerStore {
  */
 export interface IBranchPayphone {
   storeId?: string
+}
+
+/** Conexion al POS RunFood del local (on-premise: URL y API key distintas por sucursal). */
+export interface IBranchRunfood {
+  enabled?: boolean
+  baseUrl?: string
+  apiKey?: string
 }
 
 const branchWeekdays: BranchWeekday[] = [
@@ -100,6 +108,12 @@ const branchSchema = new Schema<IBranch>(
     },
     payphone: {
       storeId: { type: String, default: '' },
+    },
+    // RunFood es el POS on-premise de cada local: URL base y API key propias por sucursal.
+    runfood: {
+      enabled: { type: Boolean, default: false },
+      baseUrl: { type: String, default: '' },
+      apiKey: { type: String, default: '', select: false },
     },
     isActive: { type: Boolean, default: true },
     isArchived: { type: Boolean, default: false },
