@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { authMiddleware } from "../middlewares/auth.middleware";
-import { adminMiddleware } from "../middlewares/admin.middleware";
+import { adminOnlyMiddleware } from "../middlewares/adminOnly.middleware";
 import {
   createCategory,
   deleteCategory,
@@ -14,9 +14,10 @@ const categoryRouter = Router();
 
 categoryRouter.get("/", listCategories);
 categoryRouter.get("/:slug", getCategoryBySlug);
-categoryRouter.put("/reorder", authMiddleware, adminMiddleware, reorderCategories);
-categoryRouter.post("/", authMiddleware, adminMiddleware, createCategory);
-categoryRouter.put("/:id", authMiddleware, adminMiddleware, updateCategory);
-categoryRouter.delete("/:id", authMiddleware, adminMiddleware, deleteCategory);
+// Mutar categorías: solo admin general.
+categoryRouter.put("/reorder", authMiddleware, adminOnlyMiddleware, reorderCategories);
+categoryRouter.post("/", authMiddleware, adminOnlyMiddleware, createCategory);
+categoryRouter.put("/:id", authMiddleware, adminOnlyMiddleware, updateCategory);
+categoryRouter.delete("/:id", authMiddleware, adminOnlyMiddleware, deleteCategory);
 
 export default categoryRouter;
