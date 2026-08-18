@@ -283,56 +283,73 @@ export async function createOrder(req: Request, res: Response) {
   }
   await order.save();
 
-  if ((paymentMethod === "cash" || Boolean(scheduledFor)) && isDelivery) {
-    try {
-      const branchKey = getPickerStoreApiKey(branch.pickerStore);
-      if (!branchKey || !deliveryCoords) throw new Error("No hay llave de Picker o coordenadas de entrega");
-      const nameParts = (order.customerName || "").split(" ");
-      const pickerResult = await createPickerBooking({
-        branchKey,
-        latitude: deliveryCoords.lat,
-        longitude: deliveryCoords.lng,
-        address: order.deliveryAddress || "Sin dirección",
-        reference: order.deliveryGoogleMapsUrl || "",
-        customerName: nameParts[0] || order.customerName || "",
-        customerLastName: nameParts.slice(1).join(" ") || "Cliente",
-        customerEmail: order.customerEmail,
-        customerPhone: order.customerPhone || "",
-        customerCountryCode: "593",
-        orderAmount: centsToDollars(order.subtotal),
-        businessDeliveryFee: centsToDollars(order.deliveryCost),
-        paymentMethod: paymentMethod === "cash" ? "CASH" : "CARD",
-        externalBookingId: order.orderNumber,
-        notes: order.notes || "",
-        ...(scheduledFor ? { cookTime: scheduledFor.getTime() - Date.now() } : {}),
-      });
-      order.picker = {
-        bookingId: pickerResult._id,
-        bookingNumericId: pickerResult.bookingNumericId,
-        statusText: scheduledFor ? "Esperando preparación" : pickerResult.statusText,
-        smrURL: pickerResult.smrURL,
-        bookingDetailUrl: pickerResult.bookingDetailUrl,
-        createdAt: new Date(),
-        currentStatus: scheduledFor ? "ON_HOLD" : String(pickerResult.currentStatus || ""),
-        deliveryFee: pickerResult.deliveryFee || 0,
-        ...(scheduledFor ? { searchState: "on_hold" as const } : {}),
-      };
-      pushAudit(order, { action: "note_added", details: scheduledFor ? `Picker booking #${pickerResult.bookingNumericId} creado en espera para ${scheduledFor.toISOString()}` : `Picker booking #${pickerResult.bookingNumericId} creado para cobro en efectivo` });
-      await order.save();
-    } catch (pickerErr) {
-      console.error("Cash Picker booking failed:", pickerErr);
-      pushAudit(order, { action: "note_added", details: `Picker booking para efectivo falló: ${pickerErr instanceof Error ? pickerErr.message : "error"}` });
-      await order.save();
-    }
+  // Picker SOLO para efectivo inmediato. Los pedidos PROGRAMADOS no reservan Picker
+  // aquí: la reserva se crea recién cuando el cajero mueve el pedido a "Listas para
+  // recolección" (awaiting_pickup). Ver bookPickerForOrder + updateOrderStatus.
+  if (paymentMethod === "cash" && !scheduledFor && isDelivery) {
+    await bookPickerForOrder(order, "CASH");
   }
 
-  // Efectivo sin programar: la cocina arranca ya, asi que la comanda entra al POS RunFood.
-  // (Tarjeta se envia al confirmarse el pago; programados, no — imprimiria antes de tiempo.)
+  // Efectivo sin programar: la cocina arranca ya, así que la comanda entra al POS RunFood.
+  // (Tarjeta se envía al confirmarse el pago; programados, cuando pasan a "En preparación".)
   if (paymentMethod === "cash" && !scheduledFor) {
     await sendOrderToRunfood(order);
   }
 
   res.status(201).json(order);
+}
+
+/**
+ * Crea la reserva de Picker de un delivery y la guarda en order.picker. No lanza:
+ * si falla, deja el motivo en la auditoría. Idempotente (si ya hay bookingId, no hace nada).
+ * Se llama para efectivo inmediato (al crear), tarjeta inmediata (al confirmar el pago)
+ * y para CUALQUIER pedido al pasar a "Listas para recolección" (incluidos los programados).
+ */
+async function bookPickerForOrder(order: InstanceType<typeof Order>, paymentMethod: "CASH" | "CARD") {
+  if (order.deliveryType !== "delivery" || order.picker?.bookingId) return;
+  try {
+    const branch = order.branch
+      ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
+      : null;
+    const branchKey = getPickerStoreApiKey(branch?.pickerStore);
+    const coords = order.deliveryCoordinates;
+    if (!branchKey || !coords?.lat || !coords?.lng) throw new Error("No hay llave de Picker o coordenadas de entrega");
+    const nameParts = (order.customerName || "").split(" ");
+    const pickerResult = await createPickerBooking({
+      branchKey,
+      latitude: coords.lat,
+      longitude: coords.lng,
+      address: order.deliveryAddress || "Sin dirección",
+      reference: order.deliveryGoogleMapsUrl || "",
+      customerName: nameParts[0] || order.customerName || "",
+      customerLastName: nameParts.slice(1).join(" ") || "Cliente",
+      customerEmail: order.customerEmail,
+      customerPhone: order.customerPhone || "",
+      customerCountryCode: "593",
+      orderAmount: centsToDollars(order.subtotal),
+      businessDeliveryFee: centsToDollars(order.deliveryCost),
+      paymentMethod,
+      externalBookingId: order.orderNumber,
+      notes: order.notes || "",
+    });
+    order.picker = {
+      bookingId: pickerResult._id,
+      bookingNumericId: pickerResult.bookingNumericId,
+      statusText: pickerResult.statusText,
+      smrURL: pickerResult.smrURL,
+      bookingDetailUrl: pickerResult.bookingDetailUrl,
+      createdAt: new Date(),
+      currentStatus: String(pickerResult.currentStatus || ""),
+      deliveryFee: pickerResult.deliveryFee || 0,
+    };
+    pushAudit(order, { action: "note_added", performedBy: null, performedByEmail: "system", details: `Picker booking #${pickerResult.bookingNumericId} creado` });
+    await order.save();
+  } catch (pickerErr) {
+    const errorMessage = pickerErr instanceof Error ? pickerErr.message : "error";
+    console.error("Picker booking failed:", errorMessage);
+    pushAudit(order, { action: "note_added", performedBy: null, performedByEmail: "system", details: `Picker booking falló: ${errorMessage}` });
+    await order.save();
+  }
 }
 
 /** Empuja el pedido al POS RunFood de su sucursal (si esta configurado) y lo deja en la auditoria. */
@@ -433,60 +450,10 @@ export async function confirmOrder(req: Request, res: Response) {
       await sendOrderToRunfood(order);
     }
 
-    if (order.deliveryType === "delivery" && !order.picker?.bookingId) {
-      try {
-        const branch = order.branch ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey") : null;
-        const branchKey = getPickerStoreApiKey(branch?.pickerStore);
-        if (branchKey && order.deliveryCoordinates?.lat && order.deliveryCoordinates?.lng) {
-          const nameParts = (order.customerName || "").split(" ");
-          const firstName = nameParts[0] || order.customerName || "";
-          const lastName = nameParts.slice(1).join(" ") || "Cliente";
-          const pickerResult = await createPickerBooking({
-            branchKey,
-            latitude: order.deliveryCoordinates.lat,
-            longitude: order.deliveryCoordinates.lng,
-            address: order.deliveryAddress || "Sin dirección",
-            reference: order.deliveryGoogleMapsUrl || "",
-            customerName: firstName,
-            customerLastName: lastName,
-            customerEmail: order.customerEmail,
-            customerPhone: order.customerPhone || "",
-            customerCountryCode: "593",
-            orderAmount: centsToDollars(order.subtotal),
-            businessDeliveryFee: centsToDollars(order.deliveryCost),
-            paymentMethod: "CARD",
-            externalBookingId: order.orderNumber,
-            notes: order.notes || "",
-          });
-          order.picker = {
-            bookingId: pickerResult._id,
-            bookingNumericId: pickerResult.bookingNumericId,
-            statusText: pickerResult.statusText,
-            smrURL: pickerResult.smrURL,
-            bookingDetailUrl: pickerResult.bookingDetailUrl,
-            createdAt: new Date(),
-            currentStatus: pickerResult.currentStatus || "",
-            deliveryFee: pickerResult.deliveryFee || 0,
-          };
-          pushAudit(order, {
-            action: "note_added",
-            performedBy: null,
-            performedByEmail: "system",
-            details: `Picker booking #${pickerResult.bookingNumericId} creado`,
-          });
-          await order.save();
-        }
-      } catch (pickerErr) {
-        const errorMessage = pickerErrorMessage(pickerErr);
-        console.error("Picker booking failed:", errorMessage);
-        pushAudit(order, {
-          action: "note_added",
-          performedBy: null,
-          performedByEmail: "system",
-          details: `Picker booking falló: ${errorMessage}`,
-        });
-        await order.save();
-      }
+    // Tarjeta inmediata: se reserva Picker al confirmar el pago. Los PROGRAMADOS no:
+    // su Picker se pide recién al pasar a "Listas para recolección" (ver updateOrderStatus).
+    if (order.deliveryType === "delivery" && !order.picker?.bookingId && !order.scheduledFor) {
+      await bookPickerForOrder(order, "CARD");
     }
 
     if (user) {
@@ -908,6 +875,19 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
   });
   await order.save();
   publishOrderUpdate(order);
+
+  if (previousStatus !== order.status) {
+    // Picker se pide SOLO al llegar a "Listas para recolección" (cubre los programados,
+    // que a propósito no reservan Picker antes). Idempotente: si ya hay reserva, no repite.
+    if (order.status === "awaiting_pickup" && order.deliveryType === "delivery" && !order.picker?.bookingId) {
+      await bookPickerForOrder(order, order.paymentMethod === "cash" ? "CASH" : "CARD");
+      publishOrderUpdate(order);
+    }
+    // Pedido programado: la comanda entra al POS RunFood cuando la cocina arranca.
+    if (order.status === "preparing" && order.scheduledFor) {
+      await sendOrderToRunfood(order);
+    }
+  }
 
   if (previousStatus !== order.status) {
     const statusText: Record<string, string> = {
