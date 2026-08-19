@@ -123,6 +123,12 @@ export async function createOrder(req: Request, res: Response) {
 
   let scheduledFor: Date | undefined;
   if (scheduledForInput !== undefined && scheduledForInput !== null && scheduledForInput !== "") {
+    // Regla de negocio: una reserva (pedido programado) solo se confirma con pago
+    // por tarjeta; en efectivo no hay garantía de que el cliente llegue.
+    if (paymentMethod === "cash") {
+      res.status(400).json({ message: "Los pedidos programados se pagan con tarjeta para confirmar la reserva. Cambia el método de pago a tarjeta o pide para ahora." });
+      return;
+    }
     scheduledFor = new Date(scheduledForInput);
     if (Number.isNaN(scheduledFor.getTime()) || scheduledFor <= new Date()) {
       res.status(400).json({ message: "La fecha programada debe ser futura y válida." });
