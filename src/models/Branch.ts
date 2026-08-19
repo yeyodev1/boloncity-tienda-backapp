@@ -17,6 +17,8 @@ export interface IBranch {
   } | null
   timezone: string
   openingHours: IBranchOpeningHours[]
+  /** Minutos que Picker espera antes de buscar motorizado (cookTime, en ms hacia su API). */
+  cookTimeMinutes: number
   pickerStore?: IPickerStore
   payphone?: IBranchPayphone
   runfood?: IBranchRunfood
@@ -97,6 +99,7 @@ const branchSchema = new Schema<IBranch>(
       type: [openingHoursSchema],
       default: defaultOpeningHours,
     },
+    cookTimeMinutes: { type: Number, default: 0, min: 0, max: 240 },
     pickerStore: {
       storeApiKey: { type: String, default: '', select: false },
       productionStoreApiKey: { type: String, default: '', select: false },

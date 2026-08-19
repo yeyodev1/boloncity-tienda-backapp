@@ -11,13 +11,16 @@ import { env } from "../config/env";
 import { AuthRequest } from "../types/AuthRequest";
 
 function normalizedBranchInput(body: Record<string, unknown>) {
-  const { openingHours, timezone, pickerStore, payphone, ...values } = body;
+  const { openingHours, timezone, pickerStore, payphone, cookTimeMinutes, ...values } = body;
   return {
     ...values,
     ...(timezone !== undefined ? { timezone: normalizeTimezone(timezone) } : {}),
     ...(openingHours !== undefined ? { openingHours: normalizeOpeningHours(openingHours) } : {}),
     ...(pickerStore !== undefined ? { pickerStore: normalizePickerStore(pickerStore) } : {}),
     ...(payphone !== undefined ? { payphone: normalizeBranchPayphone(payphone) } : {}),
+    ...(cookTimeMinutes !== undefined
+      ? { cookTimeMinutes: Math.min(240, Math.max(0, Math.round(Number(cookTimeMinutes)) || 0)) }
+      : {}),
   };
 }
 

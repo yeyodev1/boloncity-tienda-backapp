@@ -32,6 +32,7 @@ export interface CreateBookingInput {
   paymentMethod: "CARD" | "CASH";
   externalBookingId: string;
   notes?: string;
+  /** Espera antes de que Picker busque motorizado, en MILISEGUNDOS (doc: cookTime). 0 = inmediato. */
   cookTime?: number;
 }
 

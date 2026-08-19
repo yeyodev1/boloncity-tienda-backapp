@@ -337,12 +337,20 @@ export async function createOrder(req: Request, res: Response) {
  * Se llama para efectivo inmediato (al crear), tarjeta inmediata (al confirmar el pago)
  * y para CUALQUIER pedido al pasar a "Listas para recolección" (incluidos los programados).
  */
-async function bookPickerForOrder(order: InstanceType<typeof Order>, paymentMethod: "CASH" | "CARD") {
+async function bookPickerForOrder(
+  order: InstanceType<typeof Order>,
+  paymentMethod: "CASH" | "CARD",
+  // applyCookTime=false cuando la comida ya está lista (p. ej. al pasar a "Listas para
+  // recolección"): ahí Picker debe buscar motorizado de inmediato, sin esperar cocina.
+  { applyCookTime = true }: { applyCookTime?: boolean } = {}
+) {
   if (order.deliveryType !== "delivery" || order.picker?.bookingId) return;
   try {
     const branch = order.branch
       ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
       : null;
+    // Picker recibe cookTime en milisegundos; la sucursal lo configura en minutos.
+    const cookTimeMs = applyCookTime ? Math.max(0, Math.round(Number(branch?.cookTimeMinutes) || 0)) * 60_000 : 0;
     const branchKey = getPickerStoreApiKey(branch?.pickerStore);
     const coords = order.deliveryCoordinates;
     if (!branchKey || !coords?.lat || !coords?.lng) throw new Error("No hay llave de Picker o coordenadas de entrega");
@@ -363,6 +371,7 @@ async function bookPickerForOrder(order: InstanceType<typeof Order>, paymentMeth
       paymentMethod,
       externalBookingId: order.orderNumber,
       notes: order.notes || "",
+      cookTime: cookTimeMs,
     });
     order.picker = {
       bookingId: pickerResult._id,
@@ -932,7 +941,8 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
     // Picker se pide SOLO al llegar a "Listas para recolección" (cubre los programados,
     // que a propósito no reservan Picker antes). Idempotente: si ya hay reserva, no repite.
     if (order.status === "awaiting_pickup" && order.deliveryType === "delivery" && !order.picker?.bookingId) {
-      await bookPickerForOrder(order, order.paymentMethod === "cash" ? "CASH" : "CARD");
+      // La comida ya está lista para recolección: sin espera de cocina.
+      await bookPickerForOrder(order, order.paymentMethod === "cash" ? "CASH" : "CARD", { applyCookTime: false });
       publishOrderUpdate(order);
     }
     // Pedido programado: la comanda entra al POS RunFood cuando la cocina arranca.
