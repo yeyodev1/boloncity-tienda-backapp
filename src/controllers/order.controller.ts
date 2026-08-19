@@ -305,6 +305,29 @@ export async function createOrder(req: Request, res: Response) {
     await sendOrderToRunfood(order);
   }
 
+  // Confirmación por correo para efectivo — tarjeta recibe la suya al confirmarse el pago.
+  // En serverless hay que esperar el envío antes de responder o el correo muere en vuelo.
+  if (paymentMethod === "cash") {
+    const scheduledLabel = scheduledFor
+      ? new Intl.DateTimeFormat("es-EC", {
+          timeZone: "America/Guayaquil",
+          weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit",
+        }).format(new Date(scheduledFor))
+      : "";
+    const html = getOrderStatusEmailHtml({
+      orderNumber: order.orderNumber,
+      customerName: order.customerName || "Cliente",
+      status: order.status,
+      statusText: scheduledLabel
+        ? `Pedido programado para ${scheduledLabel}`
+        : `Recibimos tu pedido — pagas en efectivo al ${order.deliveryType === "pickup" ? "retirarlo en el local" : "recibirlo"}`,
+      detailUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
+      items: order.items || [],
+      total: order.total,
+    });
+    await sendEmail(order.customerEmail, `Boloncity: recibimos tu pedido ${order.orderNumber}`, html).catch(() => {});
+  }
+
   res.status(201).json(order);
 }
 
