@@ -4,6 +4,27 @@ import { Branch } from "../models/Branch";
 import { Setting } from "../models/Setting";
 import { preCheckout } from "../services/pickerexpress.service";
 import { getPickerStoreApiKey, pickerEnabledBranchFilter, toPublicBranch } from "../services/branchOperational.service";
+import { resolveMapsCoordinates } from "../utils/parseMapsUrl";
+import { env } from "../config/env";
+
+/**
+ * Resuelve un enlace de Google Maps a coordenadas. Los links cortos
+ * (maps.app.goo.gl) no traen coordenadas en la URL: hay que seguir el
+ * redirect desde el servidor (el navegador no puede por CORS).
+ */
+export async function resolveMapsLink(req: Request, res: Response) {
+  const { url, address } = req.body || {};
+  if (!url || typeof url !== "string") {
+    res.status(400).json({ message: "Falta el enlace de Google Maps" });
+    return;
+  }
+  const coords = await resolveMapsCoordinates(url, typeof address === "string" ? address : "", env.GOOGLE_MAPS_API_KEY);
+  if (!coords) {
+    res.status(422).json({ message: "No pudimos obtener la ubicación de ese enlace. Verifica que sea un enlace de Google Maps." });
+    return;
+  }
+  res.json(coords);
+}
 
 function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
   const R = 6371;
