@@ -150,12 +150,25 @@ export async function createOrder(req: Request, res: Response) {
   const isDelivery = deliveryType !== "pickup";
   const deliveryCoords = isDelivery && deliveryGoogleMapsUrl ? parseMapsUrl(deliveryGoogleMapsUrl) : null;
 
+  // El documento de factura debe ser usable por contabilidad: solo dígitos y con la
+  // longitud correcta (cédula 10, RUC 13). Antes se guardaba cualquier texto tipeado.
+  const billingDocDigits = String(billingDocNumber || "").replace(/\D+/g, "");
+  if (billingDocType && billingName) {
+    const expectedDigits = billingDocType === "ruc" ? 13 : billingDocType === "cedula" ? 10 : 0;
+    if (expectedDigits && billingDocDigits.length !== expectedDigits) {
+      res.status(400).json({
+        message: `Para la factura, ${billingDocType === "ruc" ? "el RUC debe tener 13 dígitos" : "la cédula debe tener 10 dígitos"}. Revisa el número ingresado.`,
+      });
+      return;
+    }
+  }
+
   const billing =
     billingDocType && billingName
       ? {
           docType: billingDocType,
           name: billingName,
-          docNumber: billingDocNumber || "",
+          docNumber: billingDocDigits,
           email: billingEmail || "",
           address: billingAddress || "",
         }
