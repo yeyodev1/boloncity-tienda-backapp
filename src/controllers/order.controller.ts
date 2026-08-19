@@ -19,9 +19,18 @@ import { getBranchAvailability, getBranchPayphoneStoreId, getPickerStoreApiKey, 
 import { pushOrderToRunfood } from "../services/runfood.service";
 import { getFrontendUrl } from "../config/env";
 import { getOrderStatusEmailHtml } from "../services/email-templates";
+import { PICKER_STATUS_LABELS } from "./webhook.controller";
 
 function centsToDollars(value: number) {
   return value / 100;
+}
+
+// Picker devuelve el código legible en statusText y un número en currentStatus.
+// Guardamos el código en picker.currentStatus (igual que el webhook) y la
+// etiqueta en español en picker.statusText.
+export function pickerStatusFields(result: { currentStatus?: unknown; statusText?: unknown }) {
+  const code = typeof result.statusText === "string" && result.statusText ? result.statusText : String(result.currentStatus || "");
+  return { currentStatus: code, statusText: PICKER_STATUS_LABELS[code] || code };
 }
 
 function dollarsToCents(value: number) {
@@ -335,11 +344,10 @@ async function bookPickerForOrder(order: InstanceType<typeof Order>, paymentMeth
     order.picker = {
       bookingId: pickerResult._id,
       bookingNumericId: pickerResult.bookingNumericId,
-      statusText: pickerResult.statusText,
+      ...pickerStatusFields(pickerResult),
       smrURL: pickerResult.smrURL,
       bookingDetailUrl: pickerResult.bookingDetailUrl,
       createdAt: new Date(),
-      currentStatus: String(pickerResult.currentStatus || ""),
       deliveryFee: pickerResult.deliveryFee || 0,
     };
     pushAudit(order, { action: "note_added", performedBy: null, performedByEmail: "system", details: `Picker booking #${pickerResult.bookingNumericId} creado` });
@@ -865,10 +873,10 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
     return;
   }
 
-  if (order.deliveryType === "delivery" && req.body.status === "delivered") {
-    res.status(400).json({ message: "Un delivery solo se marca como entregado cuando Picker confirma la entrega." });
-    return;
-  }
+  // Un delivery normalmente pasa a "entregado" por el webhook de Picker, pero si el
+  // webhook no llega (p. ej. no está registrado en el entorno) el cajero puede
+  // confirmarlo manualmente; queda auditado como confirmación manual.
+  const manualDeliveryConfirmation = order.deliveryType === "delivery" && req.body.status === "delivered" && order.picker?.currentStatus !== "COMPLETED";
 
   // Una orden de TARJETA sin pago confirmado no se puede procesar: solo se puede
   // cancelar. Sin esto, un pedido no pagado podría prepararse y entregarse gratis.
@@ -890,7 +898,9 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
     performedByEmail: req.user?.email || "",
     fromValue: previousStatus,
     toValue: req.body.status,
-    details: note ? `Cambio de estado manual: ${note}` : `Cambio de estado manual`,
+    details: manualDeliveryConfirmation
+      ? `Entrega confirmada manualmente por el cajero (Picker no reportó la entrega por webhook)${note ? `: ${note}` : ""}`
+      : note ? `Cambio de estado manual: ${note}` : `Cambio de estado manual`,
   });
   await order.save();
   publishOrderUpdate(order);
@@ -1115,11 +1125,10 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
     order.picker = {
       bookingId: pickerResult._id,
       bookingNumericId: pickerResult.bookingNumericId,
-      statusText: pickerResult.statusText,
+      ...pickerStatusFields(pickerResult),
       smrURL: pickerResult.smrURL,
       bookingDetailUrl: pickerResult.bookingDetailUrl,
       createdAt: new Date(),
-      currentStatus: pickerResult.currentStatus || "",
       deliveryFee: pickerResult.deliveryFee || 0,
     };
 

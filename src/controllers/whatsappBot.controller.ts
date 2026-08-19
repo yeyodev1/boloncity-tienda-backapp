@@ -9,6 +9,7 @@ import { Setting } from "../models/Setting";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { env, getFrontendUrl } from "../config/env";
 import { createPickerBooking, preCheckout } from "../services/pickerexpress.service";
+import { pickerStatusFields } from "./order.controller";
 import { getBranchPayphoneStoreId, getPickerStoreApiKey, pickerEnabledBranchFilter } from "../services/branchOperational.service";
 import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl, resolveMapsCoordinates } from "../utils/parseMapsUrl";
@@ -536,7 +537,7 @@ async function createBotOrder(session: any) {
     if (!branchKey) throw new Error("La sucursal no tiene Picker configurado");
     const [firstName, ...lastName] = String(order.customerName || "Cliente").split(" ");
     const booking = await createPickerBooking({ branchKey, latitude: data.deliveryCoordinates.lat, longitude: data.deliveryCoordinates.lng, address: order.deliveryAddress, reference: order.deliveryGoogleMapsUrl, customerName: firstName, customerLastName: lastName.join(" ") || "Cliente", customerEmail: order.customerEmail, customerPhone: order.customerPhone || "", customerCountryCode: "593", orderAmount: subtotal, businessDeliveryFee: deliveryFee, paymentMethod: "CASH", externalBookingId: order.orderNumber });
-    order.picker = { bookingId: booking._id, bookingNumericId: booking.bookingNumericId, statusText: booking.statusText, smrURL: booking.smrURL, bookingDetailUrl: booking.bookingDetailUrl, createdAt: new Date(), currentStatus: String(booking.currentStatus || ""), deliveryFee: booking.deliveryFee || 0 };
+    order.picker = { bookingId: booking._id, bookingNumericId: booking.bookingNumericId, ...pickerStatusFields(booking), smrURL: booking.smrURL, bookingDetailUrl: booking.bookingDetailUrl, createdAt: new Date(), deliveryFee: booking.deliveryFee || 0 };
     order.audit.push({ action: "note_added", details: `Picker booking #${booking.bookingNumericId} creado para efectivo`, timestamp: new Date() });
     await order.save();
   }

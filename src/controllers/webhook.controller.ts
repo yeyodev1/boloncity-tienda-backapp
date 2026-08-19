@@ -22,7 +22,7 @@ const PICKER_STATUS_ORDER_MAP: Record<string, string> = {
   RETURNED: "ready",
 };
 
-const PICKER_STATUS_LABELS: Record<string, string> = {
+export const PICKER_STATUS_LABELS: Record<string, string> = {
   ON_HOLD: "Esperando preparación",
   READY_FOR_PICKUP: "Buscando delivery",
   ACCEPTED: "Delivery asignado",
