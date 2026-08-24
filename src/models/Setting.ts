@@ -17,6 +17,15 @@ export interface ISetting {
   pointsEarnAmount: number;
   /** Cuantos puntos equivalen a $1 al canjear (100 = "100 puntos valen 1 dolar"). */
   pointsRedeemPerDollar: number;
+  /** Promocion global: descuento en % sobre el subtotal de productos. Nunca toca el envio. */
+  promoEnabled: boolean;
+  /** Porcentaje de descuento (20 = 20%). */
+  promoPercent: number;
+  /** Texto que ve el cliente (ej. "20% de descuento en todo"). */
+  promoLabel: string;
+  /** Ventana opcional de vigencia; vacio = sin limite. */
+  promoStartsAt?: Date | null;
+  promoEndsAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -30,6 +39,11 @@ const settingSchema = new Schema<ISetting>(
     pointsEarnDollars: { type: Number, required: true, default: 1, min: 0.01 },
     pointsEarnAmount: { type: Number, required: true, default: 1, min: 0 },
     pointsRedeemPerDollar: { type: Number, required: true, default: 100, min: 1 },
+    promoEnabled: { type: Boolean, required: true, default: false },
+    promoPercent: { type: Number, required: true, default: 0, min: 0, max: 100 },
+    promoLabel: { type: String, default: "" },
+    promoStartsAt: { type: Date, default: null },
+    promoEndsAt: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -41,6 +55,28 @@ export async function getOrCreateSettings() {
   const existing = await Setting.findOne();
   if (existing) return existing;
   return Setting.create({});
+}
+
+/**
+ * Promocion vigente, si la hay. El descuento aplica SOLO al subtotal de productos:
+ * el envio nunca se descuenta (regla del negocio).
+ */
+export function getActivePromo(settings: Pick<ISetting, "promoEnabled" | "promoPercent" | "promoLabel" | "promoStartsAt" | "promoEndsAt">, now = new Date()) {
+  const percent = Math.min(100, Math.max(0, Number(settings.promoPercent) || 0));
+  const started = !settings.promoStartsAt || new Date(settings.promoStartsAt) <= now;
+  const notEnded = !settings.promoEndsAt || new Date(settings.promoEndsAt) >= now;
+  const active = Boolean(settings.promoEnabled) && percent > 0 && started && notEnded;
+  return {
+    active,
+    percent: active ? percent : 0,
+    label: active ? settings.promoLabel || `${percent}% de descuento` : "",
+  };
+}
+
+/** Centavos de descuento que la promo aplica sobre un subtotal de productos. */
+export function promoDiscountCents(subtotalCents: number, percent: number) {
+  if (!percent || subtotalCents <= 0) return 0;
+  return Math.round((subtotalCents * percent) / 100);
 }
 
 /**
