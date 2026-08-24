@@ -99,10 +99,20 @@ export interface IOrder {
   pointsRedeemed: number;
   /** Descuento en centavos aplicado por canje de puntos. */
   discount: number;
+  /** Promocion global vigente al momento de la compra (solo productos, nunca el envio). */
+  promo?: { percent: number; label: string; amount: number } | null;
   customerEmail: string;
   customerName?: string;
   customerPhone?: string;
   notes?: string;
+  /** Quién canceló el pedido, por qué y cuándo (auditoría rápida sin recorrer `audit`). */
+  cancellation?: {
+    by?: Types.ObjectId | null;
+    byEmail?: string;
+    byName?: string;
+    reason?: string;
+    at?: Date;
+  } | null;
   audit: IOrderAudit[];
   createdAt?: Date;
   updatedAt?: Date;
@@ -134,6 +144,18 @@ const orderSchema = new Schema<IOrder>(
       type: String,
       enum: ["pending", "paid", "preparing", "awaiting_pickup", "ready", "delivered", "cancelled"],
       default: "pending",
+    },
+    promo: {
+      percent: { type: Number, default: 0 },
+      label: { type: String, default: "" },
+      amount: { type: Number, default: 0 },
+    },
+    cancellation: {
+      by: { type: Schema.Types.ObjectId, ref: "User", default: null },
+      byEmail: { type: String, default: "" },
+      byName: { type: String, default: "" },
+      reason: { type: String, default: "" },
+      at: { type: Date, default: null },
     },
     payphone: {
       clientTransactionId: { type: String, default: "" },
