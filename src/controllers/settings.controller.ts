@@ -1,12 +1,13 @@
 import { Request, Response } from "express";
-import { getOrCreateSettings, Setting } from "../models/Setting";
+import { getActivePromo, getOrCreateSettings, Setting } from "../models/Setting";
 import { Product } from "../models/Product";
 import { User } from "../models/User";
 import { pointsToDiscountCents } from "../services/points.service";
 
 export async function getSettings(_req: Request, res: Response) {
   const settings = await getOrCreateSettings();
-  res.json(settings);
+  // `activePromo` es la promo ya resuelta (vigencia incluida): el front no repite la lógica.
+  res.json({ ...settings.toObject(), activePromo: getActivePromo(settings) });
 }
 
 /** Saldo de puntos por correo, para canjearlos desde el checkout sin iniciar sesion. */
@@ -28,7 +29,7 @@ export async function getPointsBalance(req: Request, res: Response) {
 }
 
 export async function updateSettings(req: Request, res: Response) {
-  const { deliveryPricePerKm, ivaRate, pricesIncludeIva, pointsEnabled, pointsEarnDollars, pointsEarnAmount, pointsRedeemPerDollar } = req.body as {
+  const { deliveryPricePerKm, ivaRate, pricesIncludeIva, pointsEnabled, pointsEarnDollars, pointsEarnAmount, pointsRedeemPerDollar, promoEnabled, promoPercent, promoLabel, promoStartsAt, promoEndsAt } = req.body as {
     deliveryPricePerKm?: number;
     ivaRate?: number;
     pricesIncludeIva?: boolean;
@@ -36,6 +37,11 @@ export async function updateSettings(req: Request, res: Response) {
     pointsEarnDollars?: number;
     pointsEarnAmount?: number;
     pointsRedeemPerDollar?: number;
+    promoEnabled?: boolean;
+    promoPercent?: number;
+    promoLabel?: string;
+    promoStartsAt?: string | null;
+    promoEndsAt?: string | null;
   };
 
   if (deliveryPricePerKm !== undefined && (typeof deliveryPricePerKm !== "number" || deliveryPricePerKm < 0)) {
@@ -67,6 +73,27 @@ export async function updateSettings(req: Request, res: Response) {
     return;
   }
 
+  if (promoEnabled !== undefined && typeof promoEnabled !== "boolean") {
+    res.status(400).json({ message: "promoEnabled debe ser booleano" });
+    return;
+  }
+  if (promoPercent !== undefined && (typeof promoPercent !== "number" || promoPercent < 0 || promoPercent > 100)) {
+    res.status(400).json({ message: "promoPercent debe ser un porcentaje entre 0 y 100" });
+    return;
+  }
+  const parsePromoDate = (value?: string | null) => {
+    if (value === undefined) return undefined;
+    if (value === null || value === "") return null;
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+  };
+  const startsAt = parsePromoDate(promoStartsAt);
+  const endsAt = parsePromoDate(promoEndsAt);
+  if (startsAt && endsAt && startsAt > endsAt) {
+    res.status(400).json({ message: "La promo no puede terminar antes de empezar." });
+    return;
+  }
+
   const settings = await getOrCreateSettings();
   if (deliveryPricePerKm !== undefined) settings.deliveryPricePerKm = deliveryPricePerKm;
   if (ivaRate !== undefined) settings.ivaRate = ivaRate;
@@ -75,6 +102,11 @@ export async function updateSettings(req: Request, res: Response) {
   if (pointsEarnDollars !== undefined) settings.pointsEarnDollars = pointsEarnDollars;
   if (pointsEarnAmount !== undefined) settings.pointsEarnAmount = pointsEarnAmount;
   if (pointsRedeemPerDollar !== undefined) settings.pointsRedeemPerDollar = pointsRedeemPerDollar;
+  if (promoEnabled !== undefined) settings.promoEnabled = promoEnabled;
+  if (promoPercent !== undefined) settings.promoPercent = promoPercent;
+  if (promoLabel !== undefined) settings.promoLabel = String(promoLabel).slice(0, 120);
+  if (promoStartsAt !== undefined) settings.promoStartsAt = startsAt ?? null;
+  if (promoEndsAt !== undefined) settings.promoEndsAt = endsAt ?? null;
   await settings.save();
 
   res.json(settings);

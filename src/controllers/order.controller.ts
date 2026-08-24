@@ -3,7 +3,7 @@ import { Request, Response } from "express";
 import { Order } from "../models/Order";
 import { Counter } from "../models/Counter";
 import { Product } from "../models/Product";
-import { extractIva, getOrCreateSettings, Setting } from "../models/Setting";
+import { extractIva, getActivePromo, getOrCreateSettings, promoDiscountCents, Setting } from "../models/Setting";
 import { confirmPayphoneTransaction, reversePayphoneTransaction } from "../services/payphone.service";
 import { createAutoUser } from "../services/auth.service";
 import { sendEmail } from "../services/resend.service";
@@ -43,6 +43,14 @@ function pushAudit(order: any, entry: Record<string, unknown>) {
     timestamp: new Date(),
     ...entry,
   });
+}
+
+/**
+ * Administración general: `admin` o un usuario con acceso a todas las sucursales.
+ * Un `branch_admin` de una o varias sucursales NO lo es (no puede cancelar ni devolver).
+ */
+function isGeneralAdmin(req: AuthRequest) {
+  return Boolean(req.user && (req.user.accountType === "admin" || req.user.allBranches));
 }
 
 function pickerErrorMessage(error: unknown): string {
@@ -123,12 +131,10 @@ export async function createOrder(req: Request, res: Response) {
 
   let scheduledFor: Date | undefined;
   if (scheduledForInput !== undefined && scheduledForInput !== null && scheduledForInput !== "") {
-    // Regla de negocio: una reserva (pedido programado) solo se confirma con pago
-    // por tarjeta; en efectivo no hay garantía de que el cliente llegue.
-    if (paymentMethod === "cash") {
-      res.status(400).json({ message: "Los pedidos programados se pagan con tarjeta para confirmar la reserva. Cambia el método de pago a tarjeta o pide para ahora." });
-      return;
-    }
+    // Los pedidos programados aceptan efectivo además de tarjeta (regla levantada a
+    // pedido del cliente): el efectivo se cobra al entregar/retirar, igual que un pedido
+    // inmediato. La reserva de Picker y la comanda RunFood se disparan más tarde
+    // (ver bookPickerForOrder en "Listas para recolección" y sendOrderToRunfood en "En preparación").
     scheduledFor = new Date(scheduledForInput);
     if (Number.isNaN(scheduledFor.getTime()) || scheduledFor <= new Date()) {
       res.status(400).json({ message: "La fecha programada debe ser futura y válida." });
@@ -222,6 +228,11 @@ export async function createOrder(req: Request, res: Response) {
   // no se suma encima. `tax` es informativo (facturacion y desglose en PayPhone);
   // no altera el total que paga el cliente.
   const settings = await getOrCreateSettings();
+
+  // ─── Promoción global: % sobre el subtotal de PRODUCTOS. El envío nunca se descuenta. ───
+  const activePromo = getActivePromo(settings);
+  const promoCents = promoDiscountCents(dollarsToCents(subtotal), activePromo.percent);
+
   const taxCents = settings.pricesIncludeIva
     ? orderItems.reduce((sum, item) => {
         const product = products.find((current) => String(current._id) === String(item.product));
@@ -232,8 +243,9 @@ export async function createOrder(req: Request, res: Response) {
     : 0;
 
   // ─── Puntos: cuanto gana esta compra y canje opcional del saldo del correo ───
-  const pointsEarned = calculateEarnedPoints(dollarsToCents(subtotal), orderItems, settings);
-  const totalCents = dollarsToCents(total);
+  // Los puntos se ganan sobre lo que el cliente realmente paga en productos (ya con promo).
+  const pointsEarned = calculateEarnedPoints(Math.max(0, dollarsToCents(subtotal) - promoCents), orderItems, settings);
+  const totalCents = Math.max(0, dollarsToCents(total) - promoCents);
   let pointsRedeemed = 0;
   let discountCents = 0;
   let redeemUser: InstanceType<typeof User> | null = null;
@@ -266,6 +278,7 @@ export async function createOrder(req: Request, res: Response) {
     pointsEarned,
     pointsRedeemed,
     discount: discountCents,
+    promo: promoCents > 0 ? { percent: activePromo.percent, label: activePromo.label, amount: promoCents } : null,
     paymentMethod,
     deliveryType: isDelivery ? "delivery" : "pickup",
     deliveryCost: deliveryCostCents,
@@ -555,6 +568,7 @@ export async function confirmOrder(req: Request, res: Response) {
             <table style="width:100%;border-collapse:collapse;margin-bottom:16px">${itemsRows}</table>
             <div style="border-top:2px solid #235931;padding:12px 0;text-align:right;font-size:15px;font-weight:700">
               Subtotal: $${centsToDollars(order.subtotal).toFixed(2)}<br />
+              ${order.promo?.amount ? `${order.promo.label || "Promoción"}: -$${centsToDollars(order.promo.amount).toFixed(2)}<br />` : ""}
               ${order.deliveryCost ? `Envío: $${centsToDollars(order.deliveryCost).toFixed(2)}<br />` : ""}
               <span style="font-size:18px;color:#235931">Total pagado: $${centsToDollars(order.total).toFixed(2)}</span>
             </div>
@@ -665,6 +679,15 @@ export function getRefundWindow(confirmedAt: Date | null | undefined, now = new 
  * la API no admite montos parciales.
  */
 export async function refundOrder(req: AuthRequest, res: Response) {
+  // La devolución del dinero la ejecuta administración general, igual que la cancelación.
+  if (!isGeneralAdmin(req)) {
+    res.status(403).json({
+      code: "REFUND_FORBIDDEN",
+      message: "Solo un administrador general puede devolver el pago de un pedido.",
+    });
+    return;
+  }
+
   const order = await Order.findOne({ _id: req.params.id, ...(req.branchFilter || {}) });
   if (!order) {
     res.status(404).json({ message: "Order not found" });
@@ -941,16 +964,59 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
   }
 
   const note = typeof req.body.note === "string" ? req.body.note.trim() : "";
+  const isCancelling = req.body.status === "cancelled" && order.status !== "cancelled";
+
+  // Cancelar es privilegio de administración general (contabilidad/gerencia): un admin de
+  // sucursal no puede cancelar pedidos. Además exige motivo, porque una cancelación con
+  // tarjeta NO devuelve el dinero: la devolución se hace aparte desde el detalle.
+  if (isCancelling && !isGeneralAdmin(req)) {
+    res.status(403).json({
+      code: "CANCEL_FORBIDDEN",
+      message: "Solo un administrador general puede cancelar pedidos. Pide la cancelación a administración.",
+    });
+    return;
+  }
+  if (isCancelling && !note) {
+    res.status(400).json({
+      code: "CANCEL_REASON_REQUIRED",
+      message: "Escribe el motivo de la cancelación: queda registrado en la auditoría del pedido.",
+    });
+    return;
+  }
+
+  // Retiro en local: la orden la cierra el cajero cuando el cliente se lleva el pedido.
+  const manualPickupConfirmation = order.deliveryType === "pickup" && req.body.status === "delivered";
+
   const previousStatus = order.status;
   order.status = req.body.status;
+
+  if (isCancelling) {
+    order.set("cancellation", {
+      by: req.user?.userId || null,
+      byEmail: req.user?.email || "",
+      byName: req.user?.email || "",
+      reason: note,
+      at: new Date(),
+    });
+  }
+
+  const cardStillCharged = isCancelling
+    && order.paymentMethod === "card"
+    && Boolean(order.payphone?.transactionId)
+    && order.payphone?.refund?.status !== "refunded";
+
   pushAudit(order, {
     action: "status_change",
     performedBy: req.user?.userId || null,
     performedByEmail: req.user?.email || "",
     fromValue: previousStatus,
     toValue: req.body.status,
-    details: manualDeliveryConfirmation
+    details: isCancelling
+      ? `Orden cancelada por ${req.user?.email || "administración"}. Motivo: ${note}${cardStillCharged ? " · El cobro con tarjeta NO se anuló automáticamente: hay que hacer la devolución desde el detalle del pedido." : ""}`
+      : manualDeliveryConfirmation
       ? `Entrega confirmada manualmente por el cajero (Picker no reportó la entrega por webhook)${note ? `: ${note}` : ""}`
+      : manualPickupConfirmation
+      ? `Retiro confirmado en el local por ${req.user?.email || "el cajero"}${note ? `: ${note}` : ""}`
       : note ? `Cambio de estado manual: ${note}` : `Cambio de estado manual`,
   });
   await order.save();
@@ -975,9 +1041,9 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
       pending: "Pedido recibido",
       paid: "Pago confirmado",
       preparing: "Tu pedido está en preparación",
-      awaiting_pickup: "Tu pedido espera recolección",
+      awaiting_pickup: order.deliveryType === "pickup" ? "Tu pedido ya está listo para retirar" : "Tu pedido espera recolección",
       ready: "Tu pedido ya va en entrega",
-      delivered: "Pedido entregado",
+      delivered: order.deliveryType === "pickup" ? "Pedido retirado" : "Pedido entregado",
       cancelled: "Pedido cancelado",
     };
     const html = getOrderStatusEmailHtml({

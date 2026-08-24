@@ -79,13 +79,19 @@ async function handleUpdateBookingStatus(payload: any) {
   const mappedOrderStatus = PICKER_STATUS_ORDER_MAP[newStatus];
   const isNewDeliveryStatus = newStatus && newStatus !== oldStatus;
 
-  if (mappedOrderStatus && isNewDeliveryStatus) {
-    if (
-      (mappedOrderStatus === "cancelled" && order.status !== "cancelled") ||
-      mappedOrderStatus !== "cancelled"
-    ) {
-      order.status = mappedOrderStatus;
-    }
+  // El pedido NO retrocede por un webhook. Una orden ya entregada o cancelada es final:
+  // si Picker cancela la reserva después (p. ej. el cajero entregó a mano y Picker limpió
+  // el booking horas más tarde), solo se registra en la entrega, sin tocar el estado del
+  // pedido. Antes esto convertía órdenes entregadas en "Cancelada" sin que nadie cancelara.
+  const FLOW = ["pending", "paid", "preparing", "awaiting_pickup", "ready", "delivered"];
+  const isFinal = order.status === "delivered" || order.status === "cancelled";
+  const goesBackwards =
+    mappedOrderStatus !== "cancelled" &&
+    FLOW.indexOf(mappedOrderStatus || "") > -1 &&
+    FLOW.indexOf(mappedOrderStatus || "") < FLOW.indexOf(order.status);
+
+  if (mappedOrderStatus && isNewDeliveryStatus && !isFinal && !goesBackwards) {
+    order.status = mappedOrderStatus;
   }
 
   if (isNewDeliveryStatus) {
@@ -101,7 +107,9 @@ async function handleUpdateBookingStatus(payload: any) {
   publishOrderUpdate(order);
   console.log(`[Picker Webhook] UPDATE_BOOKING_STATUS processed order=${order.orderNumber} status=${newStatus}`);
 
-  if (isNewDeliveryStatus) sendStatusEmail(order, newStatus, newStatusText).catch(() => {});
+  // El cliente no recibe un correo de "cancelado" por un pedido que ya recibió.
+  const silentUpdate = isFinal && mappedOrderStatus === "cancelled";
+  if (isNewDeliveryStatus && !silentUpdate) sendStatusEmail(order, newStatus, newStatusText).catch(() => {});
 }
 
 async function handleDriverAssigned(payload: any) {
@@ -137,7 +145,9 @@ async function handleDriverAssigned(payload: any) {
   order.picker.driverVehicle = driverVehicle;
   order.picker.driverPhoto = driverPhoto;
 
-  if (order.status !== "cancelled") {
+  // Solo adelanta la cocina si el pedido aún no pasó de ahí: un pedido ya entregado,
+  // cancelado o en reparto no vuelve a "En preparación" porque Picker reasigne motorizado.
+  if (order.status === "pending" || order.status === "paid") {
     order.status = "preparing";
   }
 
