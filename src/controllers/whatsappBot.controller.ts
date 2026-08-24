@@ -5,7 +5,7 @@ import { Branch } from "../models/Branch";
 import { Counter } from "../models/Counter";
 import { Order } from "../models/Order";
 import { Product } from "../models/Product";
-import { Setting } from "../models/Setting";
+import { getActivePromo, getOrCreateSettings, promoDiscountCents, Setting } from "../models/Setting";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { env, getFrontendUrl } from "../config/env";
 import { createPickerBooking, preCheckout } from "../services/pickerexpress.service";
@@ -275,12 +275,15 @@ async function getSessionQuote(data: any) {
   if (!items.length) return null;
   const subtotal = items.reduce((total: number, item: any) => total + item.price * item.quantity, 0);
   const deliveryFee = Number(data.deliveryFee) || 0;
-  return { items, subtotal, deliveryFee, total: subtotal + deliveryFee };
+  const promo = getActivePromo(await getOrCreateSettings());
+  const promoAmount = promoDiscountCents(Math.round(subtotal * 100), promo.percent) / 100;
+  return { items, subtotal, deliveryFee, promo, promoAmount, total: Math.max(0, subtotal + deliveryFee - promoAmount) };
 }
 
 function formatOrderSummary(quote: NonNullable<Awaited<ReturnType<typeof getSessionQuote>>>) {
   const items = quote.items.map((item: any) => `${item.quantity} x ${item.name} $${(item.price * item.quantity).toFixed(2)}`).join("\n");
-  return `Resumen de tu pedido\n\n${items}\n\nSubtotal $${quote.subtotal.toFixed(2)}\nDelivery $${quote.deliveryFee.toFixed(2)}\nTotal $${quote.total.toFixed(2)}\n\nEscribe confirmo para crear tu orden o dime qué deseas cambiar ☕`;
+  const promoLine = quote.promoAmount > 0 ? `\n${quote.promo.label}: -$${quote.promoAmount.toFixed(2)}` : "";
+  return `Resumen de tu pedido\n\n${items}\n\nSubtotal $${quote.subtotal.toFixed(2)}${promoLine}\nDelivery $${quote.deliveryFee.toFixed(2)}\nTotal $${quote.total.toFixed(2)}\n\nEscribe confirmo para crear tu orden o dime qué deseas cambiar ☕`;
 }
 
 function isCheckoutConfirmation(message: string) {
@@ -500,13 +503,17 @@ async function createBotOrder(session: any) {
   const items = await resolveBotItems(data.items, String(branch._id));
   if (!items.length) throw new Error("No hay productos válidos disponibles");
   const subtotal = items.reduce((sum: number, item: any) => sum + item.price * item.quantity, 0);
+  // La promo global del catálogo también aplica al pedido por WhatsApp (solo productos).
+  const botPromo = getActivePromo(await getOrCreateSettings());
+  const botPromoCents = promoDiscountCents(Math.round(subtotal * 100), botPromo.percent);
   const counter = await Counter.findByIdAndUpdate({ _id: "orderNumber" }, { $inc: { seq: 1 } }, { new: true, upsert: true });
   const order = await Order.create({
     orderNumber: `ORD-${String(counter.seq).padStart(5, "0")}`,
     items,
     subtotal: Math.round(subtotal * 100),
     tax: 0,
-    total: Math.round((subtotal + deliveryFee) * 100),
+    promo: botPromoCents > 0 ? { percent: botPromo.percent, label: botPromo.label, amount: botPromoCents } : null,
+    total: Math.max(0, Math.round((subtotal + deliveryFee) * 100) - botPromoCents),
     paymentMethod: data.paymentMethod as PaymentMethod,
     deliveryType: data.deliveryType,
     deliveryCost: Math.round(deliveryFee * 100),
