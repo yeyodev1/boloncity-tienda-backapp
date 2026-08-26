@@ -118,11 +118,26 @@ export async function createOrder(req: Request, res: Response) {
     return;
   }
 
-  const branch = await resolveBranch({
-    branchId: req.body.branchId,
-    lat: req.body.lat,
-    lng: req.body.lng,
-  });
+  const isDelivery = deliveryType !== "pickup";
+  const deliveryCoords = isDelivery ? parseMapsUrl(deliveryGoogleMapsUrl) : null;
+
+  // Sin coordenadas no hay sucursal cercana, ni costo de envio, ni reserva de Picker:
+  // la orden entraba con envio $0 y asignada a la sucursal que el cliente tuviera
+  // seleccionada. Se rechaza antes de crearla.
+  if (isDelivery && !deliveryCoords) {
+    res.status(400).json({
+      message: 'Necesitamos la ubicación exacta de la entrega. Abre Google Maps, mantén presionado tu punto y comparte el enlace desde ahí (un enlace de "cómo llegar" no sirve).',
+      code: "DELIVERY_LOCATION_REQUIRED",
+    });
+    return;
+  }
+
+  // En delivery manda la ubicacion, no la sucursal que el cliente tenga elegida en la tienda.
+  const branch = await resolveBranch(
+    deliveryCoords
+      ? { lat: deliveryCoords.lat, lng: deliveryCoords.lng }
+      : { branchId: req.body.branchId, lat: req.body.lat, lng: req.body.lng }
+  );
 
   if (!branch) {
     res.status(400).json({ message: "No se encontró una sucursal cercana o seleccionada. Selecciona una sucursal e intenta de nuevo." });
@@ -159,9 +174,6 @@ export async function createOrder(req: Request, res: Response) {
     return;
   }
 
-  const isDelivery = deliveryType !== "pickup";
-  const deliveryCoords = isDelivery && deliveryGoogleMapsUrl ? parseMapsUrl(deliveryGoogleMapsUrl) : null;
-
   // El documento de factura debe ser usable por contabilidad: solo dígitos y con la
   // longitud correcta (cédula 10, RUC 13). Antes se guardaba cualquier texto tipeado.
   const billingDocDigits = String(billingDocNumber || "").replace(/\D+/g, "");
@@ -190,6 +202,8 @@ export async function createOrder(req: Request, res: Response) {
   let deliveryDistance = 0;
 
   if (isDelivery && deliveryCoords && branch?.coordinates?.lat != null && branch?.coordinates?.lng != null) {
+    // deliveryCostCents queda garantizado > 0 mas abajo: un delivery sin costo era el sintoma
+    // de la orden ORD-00048 (coordenadas perdidas -> envio gratis sin quererlo).
     deliveryDistance = distanceKm(
       { lat: deliveryCoords.lat, lng: deliveryCoords.lng },
       { lat: branch.coordinates.lat, lng: branch.coordinates.lng }
@@ -199,6 +213,10 @@ export async function createOrder(req: Request, res: Response) {
     } else {
       const pricePerKm = await getDeliveryPricePerKm();
       deliveryCostCents = dollarsToCents(deliveryDistance * centsToDollars(pricePerKm));
+    }
+    if (deliveryCostCents <= 0) {
+      const pricePerKm = await getDeliveryPricePerKm();
+      deliveryCostCents = Math.max(pricePerKm, dollarsToCents(deliveryDistance * centsToDollars(pricePerKm)));
     }
   }
 
