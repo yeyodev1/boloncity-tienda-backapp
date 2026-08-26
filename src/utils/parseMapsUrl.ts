@@ -16,12 +16,21 @@ export function parseMapsUrl(url?: string) {
     return isValidCoords(lat, lng) ? { lat, lng } : null
   }
 
+  // En un link de ruta el destino es SOLO daddr/destination: "@", "center", "sll" son el
+  // centro del mapa y "saddr" es el origen (la ubicacion de quien armo la ruta, no la entrega).
+  if (/[?&](?:daddr|saddr|destination)=/.test(normalized)) {
+    const target = normalized.match(/[?&](?:daddr|destination)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/)
+    if (!target) return null
+    const lat = Number(target[1]); const lng = Number(target[2])
+    return isValidCoords(lat, lng) ? { lat, lng } : null
+  }
+
   const patterns = [
     /@(-?\d+\.\d+),(-?\d+\.\d+)/,
     /[?&]q=(?:loc:)?\s*(-?\d+\.\d+),\s*(-?\d+\.\d+)/,
     /[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/,
     /[?&]query=(-?\d+\.\d+),\s*(-?\d+\.\d+)/,
-    /[?&](?:daddr|destination|center|sll|saddr)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/,
+    /[?&](?:center|sll)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/,
     /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
     /\/maps\/search\/(-?\d+\.\d+),\s*\+?(-?\d+\.\d+)/,
     /\/maps\/(?:place|dir)\/[^/]*\/(-?\d+\.\d+),\s*\+?(-?\d+\.\d+)/,
@@ -71,6 +80,27 @@ function parseCoordsFromHtml(html: string) {
   return null
 }
 
+/** Plus code de Google ("W382+7QF" o "867W382+7QF"), lo unico que traen los links de "como llegar". */
+function extractPlusCode(value: string) {
+  const match = value.match(/(?:^|[/=?&+\s])((?:[23456789CFGHJMPQRVWX]{4,8}\+[23456789CFGHJMPQRVWX]{2,3}))(?:[/=?&+\s]|$)/i)
+  return match ? match[1].toUpperCase() : null
+}
+
+async function geocode(query: string, apiKey: string, precise: boolean) {
+  const endpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${encodeURIComponent(apiKey)}`
+  const response = await fetch(endpoint, { signal: AbortSignal.timeout(8000) })
+  const data = await response.json() as { results?: Array<{ geometry?: { location?: { lat?: number; lng?: number }; location_type?: string } }> }
+  const result = data.results?.[0]
+  const location = result?.geometry?.location
+  // Una direccion escrita a mano ("Sur de gye") geocodifica a un punto generico: se descarta.
+  // Ese punto falso costaria una sucursal y una tarifa equivocadas.
+  if (precise && !['ROOFTOP', 'RANGE_INTERPOLATED'].includes(result?.geometry?.location_type || '')) return null
+  if (typeof location?.lat === 'number' && typeof location.lng === 'number' && isValidCoords(location.lat, location.lng)) {
+    return { lat: location.lat, lng: location.lng }
+  }
+  return null
+}
+
 export async function resolveMapsCoordinates(url?: string, address?: string, apiKey?: string) {
   const direct = parseMapsUrl(url)
   if (direct) return direct
@@ -80,6 +110,14 @@ export async function resolveMapsCoordinates(url?: string, address?: string, api
       const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(8000) })
       const resolved = parseMapsUrl(response.url)
       if (resolved) return resolved
+      const finalUrl = decodeURIComponent(response.url)
+      // Un link de "como llegar" (ruta) NO es una ubicacion: su HTML trae el centro del
+      // mapa y el origen, no el destino. Se resuelve solo por el plus code del destino.
+      const isDirections = /\/maps\/dir\/|[?&]daddr=|[?&]saddr=/.test(finalUrl)
+      if (isDirections) {
+        const plusCode = extractPlusCode(finalUrl)
+        return plusCode && apiKey ? await geocode(plusCode, apiKey, false) : null
+      }
       // Links de "lugar": la URL final no trae coordenadas, pero el HTML sí.
       const html = (await response.text()).slice(0, 300_000)
       const fromHtml = parseCoordsFromHtml(html)
@@ -89,11 +127,8 @@ export async function resolveMapsCoordinates(url?: string, address?: string, api
 
   if (apiKey && address?.trim()) {
     try {
-      const endpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${encodeURIComponent(apiKey)}`
-      const response = await fetch(endpoint, { signal: AbortSignal.timeout(8000) })
-      const data = await response.json() as { results?: Array<{ geometry?: { location?: { lat?: number; lng?: number } } }> }
-      const location = data.results?.[0]?.geometry?.location
-      if (typeof location?.lat === 'number' && typeof location.lng === 'number') return { lat: location.lat, lng: location.lng }
+      const fromAddress = await geocode(address, apiKey, true)
+      if (fromAddress) return fromAddress
     } catch { /* Caller returns a clear validation response. */ }
   }
 
