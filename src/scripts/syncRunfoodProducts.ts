@@ -216,7 +216,14 @@ async function main() {
       const tasa = gravaEnPos ? tasaGlobal : 0;
       const nuevo = Math.round(base * (1 + tasa / 100) * 100) / 100;
 
-      if (Math.abs(nuevo - product.price) >= 0.005) {
+      // Un precio 0 en el POS significa "aqui no se cotiza" (acompanamientos,
+      // cubiertos, promos), no "es gratis". Bajar a 0 algo que la web cobra lo
+      // regalaria: paso con CAFE AMERICANO PASADO, que estaba en $1.92.
+      if (nuevo <= 0 && product.price > 0) {
+        console.log(
+          `  PRECIO 0 EN POS ${sku.padEnd(8)} ${product.name.slice(0, 30).padEnd(30)} la web cobra $${product.price.toFixed(2)} — no se toca`
+        );
+      } else if (Math.abs(nuevo - product.price) >= 0.005) {
         recotizados += 1;
         deltaTotal += nuevo - product.price;
         console.log(
