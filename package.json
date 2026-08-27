@@ -18,6 +18,8 @@
     "webhooks:register:prod": "ts-node --transpile-only src/scripts/registerPickerWebhooks.ts --env=production",
     "payphone:sync": "ts-node --transpile-only src/scripts/syncPayphoneStores.ts",
     "products:fix-branches": "ts-node --transpile-only src/scripts/fixProductBranches.ts",
+    "runfood:sync": "ts-node --transpile-only src/scripts/syncRunfoodBranches.ts",
+    "runfood:sync:products": "ts-node --transpile-only src/scripts/syncRunfoodProducts.ts",
     "branches:audit": "ts-node --transpile-only src/scripts/auditBranches.ts",
     "branches:audit:prod": "ts-node --transpile-only src/scripts/auditBranches.ts --env=production",
     "db:clone": "ts-node --transpile-only src/scripts/cloneDatabase.ts",
