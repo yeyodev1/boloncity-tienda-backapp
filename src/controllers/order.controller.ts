@@ -449,13 +449,30 @@ async function sendOrderToRunfood(order: InstanceType<typeof Order>) {
     const branch = await Branch.findById(order.branch).select("+runfood.apiKey");
     const runfood = branch?.runfood;
     if (!runfood?.enabled || !runfood.baseUrl || !runfood.apiKey) return;
+    // El POS empareja por SKU, y el SKU es `product.code`. El pedido guarda solo el
+    // ObjectId del producto, asi que hay que resolver los codigos y la tasa de IVA.
+    const productIds = (order.items || []).map((item: { product: unknown }) => item.product).filter(Boolean);
+    const catalogo = await Product.find({ _id: { $in: productIds } }).select("code hasIva ivaRate");
+    const porId = new Map(catalogo.map((product) => [String(product._id), product]));
+    const settings = await getOrCreateSettings();
+
     const result = await pushOrderToRunfood({
       config: { baseUrl: runfood.baseUrl, apiKey: runfood.apiKey },
       orderNumber: order.orderNumber,
       customerName: order.customerName || order.customerEmail,
       deliveryType: order.deliveryType,
       notes: order.notes || "",
-      items: (order.items || []).map((item: { name: string; quantity: number }) => ({ name: item.name, quantity: item.quantity })),
+      items: (order.items || []).map((item: { product: unknown; name: string; price: number; quantity: number }) => {
+        const product = porId.get(String(item.product));
+        return {
+          sku: product?.code || "",
+          name: item.name,
+          quantity: item.quantity,
+          priceCents: dollarsToCents(item.price),
+          // Los precios del catalogo ya incluyen IVA; el POS espera la base imponible.
+          ivaRatePercent: product?.hasIva ? product.ivaRate || settings.ivaRate : 0,
+        };
+      }),
     });
     pushAudit(order, {
       action: "note_added",
