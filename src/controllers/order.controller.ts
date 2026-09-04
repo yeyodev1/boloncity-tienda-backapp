@@ -224,7 +224,7 @@ export async function createOrder(req: Request, res: Response) {
 
     if (!quote.covered) {
       res.status(422).json({
-        message: quote.reason || "Esa dirección queda fuera de nuestra zona de entrega.",
+        message: quote.reason || "Todavía no llegamos a esa dirección con delivery. Puedes elegir «Retiro en tienda» y recogerlo en la sucursal más cercana.",
         code: "DELIVERY_OUT_OF_COVERAGE",
       });
       return;

@@ -64,6 +64,6 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
   // Ninguna sucursal llega: se dice claro en vez de inventar un precio por distancia.
   res.status(422).json({
     code: "DELIVERY_OUT_OF_COVERAGE",
-    message: "Esa dirección queda fuera de nuestra zona de entrega. Puedes elegir retiro en tienda o escribirnos por WhatsApp.",
+    message: "Todavía no llegamos a esa dirección con delivery. Puedes elegir «Retiro en tienda» y recogerlo en la sucursal más cercana.",
   });
 }
