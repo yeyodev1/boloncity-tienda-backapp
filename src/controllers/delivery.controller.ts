@@ -1,11 +1,11 @@
 import { Request, Response } from "express";
 import axios from "axios";
 import { Branch } from "../models/Branch";
-import { Setting } from "../models/Setting";
-import { preCheckout } from "../services/pickerexpress.service";
-import { getPickerStoreApiKey, pickerEnabledBranchFilter, toPublicBranch } from "../services/branchOperational.service";
+import { quoteDelivery } from "../services/deliveryQuote.service";
+import { pickerEnabledBranchFilter, toPublicBranch } from "../services/branchOperational.service";
 import { resolveMapsCoordinates } from "../utils/parseMapsUrl";
 import { env } from "../config/env";
+import { distanceKm } from "../utils/haversine";
 
 /**
  * Resuelve un enlace de Google Maps a coordenadas. Los links cortos
@@ -24,16 +24,6 @@ export async function resolveMapsLink(req: Request, res: Response) {
     return;
   }
   res.json(coords);
-}
-
-function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }) {
-  const R = 6371;
-  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
-  const A =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((a.lat * Math.PI) / 180) * Math.cos((b.lat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.atan2(Math.sqrt(A), Math.sqrt(1 - A));
 }
 
 export async function getDeliveryPreCheckout(req: Request, res: Response) {
@@ -57,30 +47,23 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
     return;
   }
 
-  const nearest = scored[0];
-  const roundedDistance = Math.round(nearest.distance * 10) / 10;
+  // Se recorren de la mas cercana hacia afuera: la sucursal mas cerca puede tener el
+  // punto fuera de su poligono y la siguiente cubrirlo igual.
+  for (const candidate of scored) {
+    const quote = await quoteDelivery({ branch: candidate.branch, lat, lng });
+    if (!quote.covered) continue;
 
-  let deliveryFee: number;
-
-  const branchKey = getPickerStoreApiKey(nearest.branch.pickerStore);
-  if (branchKey) {
-    try {
-      const pickerResult = await preCheckout({ branchKey, latitude: lat, longitude: lng });
-      deliveryFee = pickerResult.deliveryFee;
-    } catch {
-      const settings = await Setting.findOne();
-      const pricePerKm = settings?.deliveryPricePerKm || 150;
-      deliveryFee = Math.round(nearest.distance * (pricePerKm / 100) * 100) / 100;
-    }
-  } else {
-    const settings = await Setting.findOne();
-    const pricePerKm = settings?.deliveryPricePerKm || 150;
-    deliveryFee = Math.round(nearest.distance * (pricePerKm / 100) * 100) / 100;
+    res.json({
+      branch: toPublicBranch(candidate.branch),
+      distance: Math.round(quote.distance * 10) / 10,
+      deliveryFee: quote.deliveryFee,
+    });
+    return;
   }
 
-  res.json({
-    branch: toPublicBranch(nearest.branch),
-    distance: roundedDistance,
-    deliveryFee,
+  // Ninguna sucursal llega: se dice claro en vez de inventar un precio por distancia.
+  res.status(422).json({
+    code: "DELIVERY_OUT_OF_COVERAGE",
+    message: "Esa dirección queda fuera de nuestra zona de entrega. Puedes elegir retiro en tienda o escribirnos por WhatsApp.",
   });
 }

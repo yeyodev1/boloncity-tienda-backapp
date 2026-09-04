@@ -2,6 +2,13 @@ import mongoose, { Schema } from "mongoose";
 
 export interface ISetting {
   deliveryPricePerKm: number;
+  /**
+   * Tope de distancia de un delivery, en km desde la sucursal. Es una red de
+   * seguridad, no la definicion de cobertura: las zonas reales son los poligonos
+   * dibujados en Picker. Existe porque sin el, un punto mal resuelto se cotizaba
+   * por distancia sin techo (ORD-00110: 4301 km = $6542 de envio).
+   */
+  deliveryMaxDistanceKm: number;
   /** IVA vigente en porcentaje (15 = 15%). Se usa como tasa por defecto del catalogo. */
   ivaRate: number;
   /**
@@ -33,6 +40,7 @@ export interface ISetting {
 const settingSchema = new Schema<ISetting>(
   {
     deliveryPricePerKm: { type: Number, required: true, default: 150 },
+    deliveryMaxDistanceKm: { type: Number, required: true, default: 30, min: 1 },
     ivaRate: { type: Number, required: true, default: 15, min: 0, max: 100 },
     pricesIncludeIva: { type: Boolean, required: true, default: true },
     pointsEnabled: { type: Boolean, required: true, default: true },
