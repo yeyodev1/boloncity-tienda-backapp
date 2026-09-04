@@ -16,6 +16,39 @@ function fingerprint(value?: string): string {
   return createHash("sha256").update(trimmed).digest("hex").slice(0, 12);
 }
 
+/**
+ * Variables cuyo valor trae espacios o saltos de linea ADENTRO.
+ *
+ * `optional()` hace trim, asi que la basura de los extremos no molesta; la del
+ * medio sobrevive y rompe en silencio. Paso de verdad: las tres credenciales de
+ * Cloudinary quedaron guardadas como "valor\ny" —el "y" era la confirmacion del
+ * `vercel env add` que se colo dentro del valor— y la subida de imagenes dejo de
+ * funcionar sin un solo error visible en la configuracion.
+ *
+ * Solo se devuelven NOMBRES, nunca valores.
+ */
+function malformedEnvVars(): string[] {
+  const candidates: Record<string, string | undefined> = {
+    DB_URI: env.DB_URI,
+    JWT_SECRET: env.JWT_SECRET,
+    PAYPHONE_TOKEN: env.PAYPHONE_TOKEN,
+    PAYPHONE_STORE_ID: env.PAYPHONE_STORE_ID,
+    PICKER_MASTER_KEY: env.PICKER_MASTER_KEY,
+    PICKER_API_BASE_URL: env.PICKER_API_BASE_URL,
+    CLOUDINARY_CLOUD_NAME: env.CLOUDINARY_CLOUD_NAME,
+    CLOUDINARY_API_KEY: env.CLOUDINARY_API_KEY,
+    CLOUDINARY_API_SECRET: env.CLOUDINARY_API_SECRET,
+    RESEND_API_KEY: env.RESEND_API_KEY,
+    GOOGLE_MAPS_API_KEY: env.GOOGLE_MAPS_API_KEY,
+    META_PIXEL_ID: env.META_PIXEL_ID,
+    META_CAPI_ACCESS_TOKEN: env.META_CAPI_ACCESS_TOKEN,
+  };
+
+  return Object.entries(candidates)
+    .filter(([, value]) => value && /\s/.test(value.trim()))
+    .map(([key]) => key);
+}
+
 /** Host del cluster de Mongo, sin usuario ni contrasena. */
 function dbHost(uri: string): string {
   const match = uri.match(/@([^/?]+)/);
@@ -49,6 +82,14 @@ export function getConfigHealth(_req: Request, res: Response) {
       // El storeId global ya viaja al navegador en la cajita de pagos: no es secreto.
       globalStoreId: env.PAYPHONE_STORE_ID,
     },
+    // El cloud name no es secreto: aparece en la URL de cada imagen publicada.
+    // Verlo aca permite comparar de un vistazo contra res.cloudinary.com/<name>/.
+    cloudinary: {
+      cloudName: env.CLOUDINARY_CLOUD_NAME || null,
+      usingUrlVar: Boolean(env.CLOUDINARY_URL),
+    },
+    // Vacio es lo esperado. Cualquier nombre aca es una credencial rota.
+    malformedEnvVars: malformedEnvVars(),
     integrations: {
       resend: Boolean(env.RESEND_API_KEY),
       cloudinary: Boolean(env.CLOUDINARY_CLOUD_NAME || env.CLOUDINARY_URL),
