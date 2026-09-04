@@ -53,10 +53,22 @@ function isGeneralAdmin(req: AuthRequest) {
   return Boolean(req.user && (req.user.accountType === "admin" || req.user.allBranches));
 }
 
+/**
+ * Traduce un fallo de Picker a algo accionable. Picker devuelve 422 con el motivo
+ * en el cuerpo (que campo rechazo); si solo se guarda el mensaje de axios queda
+ * "Request failed with status code 422" y no hay forma de saber que corregir.
+ */
 function pickerErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error) && error.response) {
     const data = error.response.data;
-    return data?.message || data?.error || `Picker API error: ${error.response.status}`;
+    const detail =
+      data?.message ||
+      data?.error ||
+      (Array.isArray(data?.errors) ? data.errors.map((item: any) => item?.message || item).join("; ") : "") ||
+      // Sin campos conocidos, el cuerpo crudo vale mas que nada: se recorta para no
+      // llenar la auditoria con un JSON gigante.
+      (data ? JSON.stringify(data).slice(0, 400) : "");
+    return `Picker ${error.response.status}${detail ? `: ${detail}` : ""}`;
   }
   return error instanceof Error ? error.message : "Error desconocido al crear el delivery";
 }
@@ -435,7 +447,10 @@ async function bookPickerForOrder(
     pushAudit(order, { action: "note_added", performedBy: null, performedByEmail: "system", details: `Picker booking #${pickerResult.bookingNumericId} creado` });
     await order.save();
   } catch (pickerErr) {
-    const errorMessage = pickerErr instanceof Error ? pickerErr.message : "error";
+    // "Request failed with status code 422" no dice nada: el motivo real viene en el
+    // cuerpo de la respuesta de Picker y antes se descartaba, dejando la auditoria
+    // sin pistas de que campo rechazaron.
+    const errorMessage = pickerErrorMessage(pickerErr);
     console.error("Picker booking failed:", errorMessage);
     pushAudit(order, { action: "note_added", performedBy: null, performedByEmail: "system", details: `Picker booking falló: ${errorMessage}` });
     await order.save();
