@@ -20,6 +20,7 @@ import { pushOrderToRunfood } from "../services/runfood.service";
 import { getFrontendUrl } from "../config/env";
 import { getOrderStatusEmailHtml } from "../services/email-templates";
 import { PICKER_STATUS_LABELS } from "./webhook.controller";
+import { sendMetaEvent } from "../services/metaConversions.service";
 
 function centsToDollars(value: number) {
   return value / 100;
@@ -367,6 +368,12 @@ export async function createOrder(req: Request, res: Response) {
     await sendOrderToRunfood(order);
   }
 
+  // En efectivo la venta ya está hecha (se cobra al entregar): no hay confirmación
+  // de PayPhone donde reportarla después. La de tarjeta se reporta en confirmOrder.
+  if (paymentMethod === "cash") {
+    await reportPurchaseToMeta(order);
+  }
+
   // Confirmación por correo para efectivo — tarjeta recibe la suya al confirmarse el pago.
   // En serverless hay que esperar el envío antes de responder o el correo muere en vuelo.
   if (paymentMethod === "cash") {
@@ -391,6 +398,51 @@ export async function createOrder(req: Request, res: Response) {
   }
 
   res.status(201).json(order);
+}
+
+/**
+ * Reporta la compra a Meta desde el servidor (Conversions API).
+ *
+ * El navegador tambien dispara su propio `Purchase`, pero se pierde seguido: el
+ * cliente cierra la pestana al volver de PayPhone, o un bloqueador mata el pixel.
+ * Esta copia siempre sale. Las dos comparten `event_id` —`purchase-ORD-00095`—
+ * asi que Meta las cuenta como UNA sola venta, no dos.
+ *
+ * El valor se reporta en dolares (Meta no entiende centavos) y sin el envio: lo
+ * que le importa al anuncio es lo que se vendio, no lo que costo llevarlo.
+ * No lanza nunca: un pedido no se cae porque falle la medicion.
+ */
+async function reportPurchaseToMeta(order: InstanceType<typeof Order>) {
+  const nameParts = String(order.customerName || "").trim().split(/\s+/);
+
+  await sendMetaEvent({
+    eventName: "Purchase",
+    eventId: `purchase-${order.orderNumber}`,
+    // "system_generated": el evento nace del backend al confirmarse el pago, no de un clic.
+    actionSource: "system_generated",
+    eventSourceUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
+    userData: {
+      email: order.customerEmail,
+      phone: order.customerPhone,
+      firstName: nameParts[0],
+      lastName: nameParts.slice(1).join(" "),
+      country: "ec",
+      externalId: order.customerEmail,
+    },
+    customData: {
+      currency: "USD",
+      value: centsToDollars(Math.max(0, order.total - (order.deliveryCost || 0))),
+      content_type: "product",
+      order_id: order.orderNumber,
+      num_items: order.items.reduce((sum: number, item: any) => sum + item.quantity, 0),
+      content_ids: order.items.map((item: any) => String(item.product)),
+      contents: order.items.map((item: any) => ({
+        id: String(item.product),
+        quantity: item.quantity,
+        item_price: item.price,
+      })),
+    },
+  }).catch(() => undefined);
 }
 
 /**
@@ -566,6 +618,9 @@ export async function confirmOrder(req: Request, res: Response) {
       details: `PayPhone txId: ${payphoneResult.transactionId || ""}`,
     });
     await order.save();
+
+    // Pago confirmado = venta real: recién aquí se le reporta a Meta.
+    await reportPurchaseToMeta(order);
 
     // Pago confirmado: la comanda entra al POS RunFood del local (si esta configurado).
     if (!order.scheduledFor) {

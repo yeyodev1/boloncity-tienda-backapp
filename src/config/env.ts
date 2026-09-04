@@ -33,6 +33,13 @@ export const env = {
   PICKER_ENV: optional("PICKER_ENV", "development"),
   PICKER_API_BASE_URL: optional("PICKER_API_BASE_URL", "https://dev-api.pickerexpress.com/api"),
   SLACK_ERROR_WEBHOOK: optional("SLACK_ERROR_WEBHOOK", ""),
+  // Meta (Facebook) Pixel + Conversions API. El pixel id no es secreto (viaja en el
+  // navegador); el access token SI: solo vive aqui y en las env vars de Vercel.
+  META_PIXEL_ID: optional("META_PIXEL_ID", ""),
+  META_CAPI_ACCESS_TOKEN: optional("META_CAPI_ACCESS_TOKEN", ""),
+  // Se llena solo mientras se usa "Probar eventos" en el Events Manager. En
+  // produccion debe quedar vacio, si no los eventos no cuentan como reales.
+  META_TEST_EVENT_CODE: optional("META_TEST_EVENT_CODE", ""),
   FRONTEND_URLS: {
     local: "http://localhost:5173",
     tunnel: "https://testing-storybrand-frontend.bakano.ec",

@@ -1,6 +1,8 @@
 node_modules
 dist
 .env
+# Lo crea `vercel link`; trae un token OIDC de la cuenta.
+.env*.local
 uploads
 .vercel
 .env.bak.*
