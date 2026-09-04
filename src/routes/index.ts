@@ -9,6 +9,7 @@ import settingsRouter from "./settings.routes";
 import deliveryRouter from "./delivery.routes";
 import webhookRouter from "./webhook.routes";
 import healthRouter from "./health.routes";
+import metaRouter from "./meta.routes";
 
 function routerApi(app: Application) {
   const router = express.Router();
@@ -22,6 +23,7 @@ function routerApi(app: Application) {
   router.use("/delivery", deliveryRouter);
   router.use("/webhooks", webhookRouter);
   router.use("/health", healthRouter);
+  router.use("/meta", metaRouter);
   app.use("/api", router);
 }
 
