@@ -21,6 +21,7 @@ import { getFrontendUrl } from "../config/env";
 import { getOrderStatusEmailHtml } from "../services/email-templates";
 import { PICKER_STATUS_LABELS } from "./webhook.controller";
 import { sendMetaEvent } from "../services/metaConversions.service";
+import { quoteDelivery } from "../services/deliveryQuote.service";
 
 function centsToDollars(value: number) {
   return value / 100;
@@ -104,7 +105,7 @@ async function getDeliveryPricePerKm() {
 }
 
 export async function createOrder(req: Request, res: Response) {
-  const { items, customerEmail, customerName, customerPhone, notes, deliveryAddress, deliveryGoogleMapsUrl, deliveryType, deliveryCost: deliveryCostDollars, paymentMethod = "card", billingDocType, billingName, billingDocNumber, billingEmail, billingAddress, scheduledFor: scheduledForInput } = req.body as {
+  const { items, customerEmail, customerName, customerPhone, notes, deliveryAddress, deliveryGoogleMapsUrl, deliveryType, paymentMethod = "card", billingDocType, billingName, billingDocNumber, billingEmail, billingAddress, scheduledFor: scheduledForInput } = req.body as {
     items: Array<{ productId: string; quantity: number }>;
     customerEmail: string;
     customerName?: string;
@@ -113,7 +114,7 @@ export async function createOrder(req: Request, res: Response) {
     deliveryAddress?: string;
     deliveryGoogleMapsUrl?: string;
     deliveryType?: "delivery" | "pickup";
-    deliveryCost?: number;
+    // deliveryCost ya no se lee del body: el precio del envio lo pone el servidor.
     paymentMethod?: "card" | "cash";
     billingDocType?: string;
     billingName?: string;
@@ -215,21 +216,27 @@ export async function createOrder(req: Request, res: Response) {
   let deliveryDistance = 0;
 
   if (isDelivery && deliveryCoords && branch?.coordinates?.lat != null && branch?.coordinates?.lng != null) {
-    // deliveryCostCents queda garantizado > 0 mas abajo: un delivery sin costo era el sintoma
-    // de la orden ORD-00048 (coordenadas perdidas -> envio gratis sin quererlo).
-    deliveryDistance = distanceKm(
-      { lat: deliveryCoords.lat, lng: deliveryCoords.lng },
-      { lat: branch.coordinates.lat, lng: branch.coordinates.lng }
-    );
-    if (typeof deliveryCostDollars === "number" && deliveryCostDollars > 0) {
-      deliveryCostCents = dollarsToCents(deliveryCostDollars);
-    } else {
-      const pricePerKm = await getDeliveryPricePerKm();
-      deliveryCostCents = dollarsToCents(deliveryDistance * centsToDollars(pricePerKm));
+    // El precio lo pone el servidor, no el navegador. Antes se tomaba
+    // `deliveryCost` tal como venia del cliente y solo se calculaba aca si faltaba;
+    // asi entro ORD-00110 con $6542 de envio. Es la misma funcion que cotizo el
+    // checkout, con los mismos datos: el cliente ve y paga el mismo numero.
+    const quote = await quoteDelivery({ branch, lat: deliveryCoords.lat, lng: deliveryCoords.lng });
+
+    if (!quote.covered) {
+      res.status(422).json({
+        message: quote.reason || "Esa dirección queda fuera de nuestra zona de entrega.",
+        code: "DELIVERY_OUT_OF_COVERAGE",
+      });
+      return;
     }
+
+    deliveryDistance = quote.distance;
+    deliveryCostCents = dollarsToCents(quote.deliveryFee);
+
+    // Un delivery jamas sale gratis: sin esto, un cero se colaba como envio regalado
+    // (era el sintoma de ORD-00048, coordenadas perdidas).
     if (deliveryCostCents <= 0) {
-      const pricePerKm = await getDeliveryPricePerKm();
-      deliveryCostCents = Math.max(pricePerKm, dollarsToCents(deliveryDistance * centsToDollars(pricePerKm)));
+      deliveryCostCents = await getDeliveryPricePerKm();
     }
   }
 

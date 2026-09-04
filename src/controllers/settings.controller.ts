@@ -29,8 +29,9 @@ export async function getPointsBalance(req: Request, res: Response) {
 }
 
 export async function updateSettings(req: Request, res: Response) {
-  const { deliveryPricePerKm, ivaRate, pricesIncludeIva, pointsEnabled, pointsEarnDollars, pointsEarnAmount, pointsRedeemPerDollar, promoEnabled, promoPercent, promoLabel, promoStartsAt, promoEndsAt } = req.body as {
+  const { deliveryPricePerKm, deliveryMaxDistanceKm, ivaRate, pricesIncludeIva, pointsEnabled, pointsEarnDollars, pointsEarnAmount, pointsRedeemPerDollar, promoEnabled, promoPercent, promoLabel, promoStartsAt, promoEndsAt } = req.body as {
     deliveryPricePerKm?: number;
+    deliveryMaxDistanceKm?: number;
     ivaRate?: number;
     pricesIncludeIva?: boolean;
     pointsEnabled?: boolean;
@@ -46,6 +47,10 @@ export async function updateSettings(req: Request, res: Response) {
 
   if (deliveryPricePerKm !== undefined && (typeof deliveryPricePerKm !== "number" || deliveryPricePerKm < 0)) {
     res.status(400).json({ message: "deliveryPricePerKm debe ser un numero positivo" });
+    return;
+  }
+  if (deliveryMaxDistanceKm !== undefined && (typeof deliveryMaxDistanceKm !== "number" || deliveryMaxDistanceKm < 1)) {
+    res.status(400).json({ message: "deliveryMaxDistanceKm debe ser al menos 1 km" });
     return;
   }
   if (ivaRate !== undefined && (typeof ivaRate !== "number" || ivaRate < 0 || ivaRate > 100)) {
@@ -96,6 +101,7 @@ export async function updateSettings(req: Request, res: Response) {
 
   const settings = await getOrCreateSettings();
   if (deliveryPricePerKm !== undefined) settings.deliveryPricePerKm = deliveryPricePerKm;
+  if (deliveryMaxDistanceKm !== undefined) settings.deliveryMaxDistanceKm = deliveryMaxDistanceKm;
   if (ivaRate !== undefined) settings.ivaRate = ivaRate;
   if (pricesIncludeIva !== undefined) settings.pricesIncludeIva = pricesIncludeIva;
   if (pointsEnabled !== undefined) settings.pointsEnabled = pointsEnabled;
