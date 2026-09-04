@@ -7,7 +7,7 @@ import { extractIva, getActivePromo, getOrCreateSettings, promoDiscountCents, Se
 import { confirmPayphoneTransaction, reversePayphoneTransaction } from "../services/payphone.service";
 import { createAutoUser } from "../services/auth.service";
 import { sendEmail } from "../services/resend.service";
-import { createPickerBooking, startSearch } from "../services/pickerexpress.service";
+import { cancelPickerBooking, createPickerBooking, startSearch } from "../services/pickerexpress.service";
 import { User } from "../models/User";
 import { calculateEarnedPoints, discountCentsToPoints, pointsToDiscountCents } from "../services/points.service";
 import { Branch } from "../models/Branch";
@@ -513,6 +513,49 @@ async function bookPickerForOrder(
     console.error("Picker booking failed:", errorMessage);
     pushAudit(order, { action: "note_added", performedBy: null, performedByEmail: "system", details: `Picker booking falló: ${errorMessage}` });
     await order.save();
+  }
+}
+
+/**
+ * Cancela la reserva de Picker de un pedido que se acaba de cancelar.
+ *
+ * Sin esto, cancelar en el dashboard dejaba la reserva viva en Picker y el
+ * motorizado igual llegaba al local (caso de ORD-00120): tocaba entrar al panel
+ * de Picker a cancelarla a mano.
+ *
+ * No lanza: si Picker rechaza, la cancelacion del pedido sigue en pie y el motivo
+ * queda en la auditoria. Devuelve false para que el dashboard pueda avisar que
+ * ESA parte hay que hacerla a mano — un silencio aca es un motorizado en la puerta.
+ */
+async function cancelPickerForOrder(order: InstanceType<typeof Order>): Promise<boolean> {
+  const bookingId = order.picker?.bookingId;
+  if (!bookingId) return true;
+
+  try {
+    const branch = order.branch
+      ? await Branch.findById(order.branch).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
+      : null;
+    const branchKey = getPickerStoreApiKey(branch?.pickerStore);
+    if (!branchKey) throw new Error("La sucursal no tiene llave de Picker configurada");
+
+    await cancelPickerBooking(bookingId, branchKey);
+    order.set("picker.currentStatus", "CANCELLED");
+    order.set("picker.statusText", "Cancelado");
+    pushAudit(order, {
+      action: "note_added",
+      performedBy: null,
+      performedByEmail: "system",
+      details: `Reserva de Picker #${order.picker?.bookingNumericId || bookingId} cancelada`,
+    });
+    return true;
+  } catch (error) {
+    pushAudit(order, {
+      action: "note_added",
+      performedBy: null,
+      performedByEmail: "system",
+      details: `No se pudo cancelar la reserva en Picker: ${pickerErrorMessage(error)}. Cancélala desde el panel de Picker.`,
+    });
+    return false;
   }
 }
 
@@ -1102,6 +1145,12 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
   const previousStatus = order.status;
   order.status = req.body.status;
 
+  // Cancelar el pedido tiene que cancelar también el delivery. Si Picker no
+  // responde, el pedido igual queda cancelado y el dashboard avisa que esa parte
+  // hay que hacerla a mano: lo inaceptable es quedarse callado y que llegue el
+  // motorizado.
+  let pickerCancelled = true;
+
   if (isCancelling) {
     order.set("cancellation", {
       by: req.user?.userId || null,
@@ -1110,6 +1159,7 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
       reason: note,
       at: new Date(),
     });
+    pickerCancelled = await cancelPickerForOrder(order);
   }
 
   const cardStillCharged = isCancelling
@@ -1171,7 +1221,14 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
     await sendEmail(order.customerEmail, `Tu pedido ${order.orderNumber} — ${statusText[order.status] || "Actualización"}`, html).catch(() => {});
   }
 
-  res.json(order);
+  // `pickerCancelWarning` es lo que hace que el cajero se entere: sin esta bandera
+  // el dashboard mostraría "cancelado" y el motorizado llegaría igual.
+  res.json({
+    ...order.toObject(),
+    pickerCancelWarning: pickerCancelled
+      ? undefined
+      : "El pedido quedó cancelado, pero NO pudimos cancelar el delivery en Picker. Cancélalo desde el panel de Picker o el motorizado llegará igual.",
+  });
 }
 
 export async function addOrderNote(req: AuthRequest, res: Response) {

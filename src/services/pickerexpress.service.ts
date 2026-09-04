@@ -216,3 +216,32 @@ export async function startSearch(bookingId: string, branchApiKey: string): Prom
 
   return response.data?.data || response.data || {};
 }
+
+/**
+ * Cancela una reserva en Picker.
+ *
+ * Cancelar el pedido en el dashboard de Boloncity no bastaba: la reserva seguía
+ * viva del lado de Picker y el motorizado igual llegaba al local a retirar algo
+ * que ya no existía. Había que entrar al panel de Picker a cancelarlo a mano.
+ *
+ * El endpoint se confirmó sondeando la API (`/cancelBooking` responde 401 —ruta
+ * real que pide auth— mientras que cualquier otro nombre da 404). El nombre del
+ * campo se toma de `startSearch`, que es la operación hermana sobre una reserva
+ * existente. Si Picker esperara otro nombre, el 422 ahora dice cuál: quien llame
+ * a esto debe registrar el error, no tragárselo.
+ */
+export async function cancelPickerBooking(bookingId: string, branchApiKey: string): Promise<Record<string, unknown>> {
+  const response = await axios.post(
+    `${PICKER_API}/cancelBooking`,
+    { bookingID: bookingId },
+    {
+      headers: {
+        Authorization: `Bearer ${branchApiKey}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 12000,
+    }
+  );
+
+  return response.data?.data || response.data || {};
+}
