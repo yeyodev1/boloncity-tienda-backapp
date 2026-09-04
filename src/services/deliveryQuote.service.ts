@@ -39,7 +39,7 @@ interface QuoteInput {
 }
 
 const OUT_OF_RANGE_MESSAGE =
-  "Esa dirección queda fuera de nuestra zona de entrega. Puedes elegir retiro en tienda o escribirnos por WhatsApp.";
+  "Todavía no llegamos a esa dirección con delivery. Puedes elegir «Retiro en tienda» y recogerlo en la sucursal más cercana.";
 
 export async function quoteDelivery({ branch, lat, lng }: QuoteInput): Promise<DeliveryQuote> {
   const branchLat = branch.coordinates?.lat;
