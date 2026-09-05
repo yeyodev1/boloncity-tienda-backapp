@@ -250,16 +250,23 @@ export async function startSearch(bookingId: string, branchApiKey: string): Prom
  * viva del lado de Picker y el motorizado igual llegaba al local a retirar algo
  * que ya no existía. Había que entrar al panel de Picker a cancelarlo a mano.
  *
- * El endpoint se confirmó sondeando la API (`/cancelBooking` responde 401 —ruta
- * real que pide auth— mientras que cualquier otro nombre da 404). El nombre del
- * campo se toma de `startSearch`, que es la operación hermana sobre una reserva
- * existente. Si Picker esperara otro nombre, el 422 ahora dice cuál: quien llame
- * a esto debe registrar el error, no tragárselo.
+ * Segun la doc de Picker solo se puede cancelar en los estados ON_HOLD,
+ * READY_FOR_PICKUP, ACCEPTED y ARRIVED_AT_PICKUP. Con el motorizado ya en camino
+ * con el pedido, Picker rechaza: por eso quien llama a esto debe registrar el
+ * error y avisar, no tragarselo.
  */
-export async function cancelPickerBooking(bookingId: string, branchApiKey: string): Promise<Record<string, unknown>> {
+export async function cancelPickerBooking(
+  bookingId: string,
+  branchApiKey: string,
+  cancelReason = "Pedido cancelado por el local"
+): Promise<Record<string, unknown>> {
   const response = await axios.post(
     `${PICKER_API}/cancelBooking`,
-    { bookingID: bookingId },
+    // La doc de Picker pone el id en la ruta, pero la API real solo tiene la ruta
+    // sin id (`/cancelBooking/<id>` responde 404 y `/cancelBooking` responde 401):
+    // el id viaja en el cuerpo, igual que en `startSearch`, que sí funciona hoy.
+    // `cancelReason` sí está documentado y ayuda a que Picker sepa el motivo.
+    { bookingID: bookingId, cancelReason },
     {
       headers: {
         Authorization: `Bearer ${branchApiKey}`,

@@ -1,3 +1,4 @@
+import axios from "axios";
 import { getOrCreateSettings } from "../models/Setting";
 import { distanceKm } from "../utils/haversine";
 import { getPickerStoreApiKey } from "./branchOperational.service";
@@ -98,7 +99,12 @@ export async function quoteDelivery({ branch, lat, lng, paymentMethod }: QuoteIn
       };
     }
 
-    const fee = Number(pickerResult.deliveryFee);
+    // Picker devuelve el envio en dos formas y a Boloncity le factura la que
+    // incluye impuesto: cobrando `deliveryFee` a secas, el impuesto de CADA envio
+    // salia del bolsillo del local. Se usa el bruto cuando viene.
+    const withTax = Number(pickerResult.deliveryFeeWithTax);
+    const raw = Number(pickerResult.deliveryFee);
+    const fee = Number.isFinite(withTax) && withTax > 0 ? withTax : raw;
     if (!Number.isFinite(fee) || fee <= 0) {
       return { covered: true, deliveryFee: byDistance, distance, source: "distance" };
     }
@@ -111,8 +117,15 @@ export async function quoteDelivery({ branch, lat, lng, paymentMethod }: QuoteIn
       driverEtaMinutes: Number.isFinite(eta) && eta > 0 ? Math.round(eta) : undefined,
       source: "picker",
     };
-  } catch {
-    // Picker caido no puede frenar la venta: se cobra por distancia, con techo.
+  } catch (error) {
+    // `covered` no existe en la doc de Picker: la unica senal fiable de "no llego
+    // hasta ahi" es que la cotizacion misma sea rechazada. Un 4xx (que no sea de
+    // autenticacion) es Picker diciendo que no puede servir ese punto; un 5xx o un
+    // timeout es Picker caido, y eso no puede frenar una venta.
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    if (status && status >= 400 && status < 500 && status !== 401 && status !== 403) {
+      return { covered: false, reason: OUT_OF_RANGE_MESSAGE, deliveryFee: 0, distance, source: "picker" };
+    }
     return { covered: true, deliveryFee: byDistance, distance, source: "distance" };
   }
 }
