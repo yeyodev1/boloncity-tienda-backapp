@@ -57,6 +57,8 @@ export async function getDeliveryPreCheckout(req: Request, res: Response) {
       branch: toPublicBranch(candidate.branch),
       distance: Math.round(quote.distance * 10) / 10,
       deliveryFee: quote.deliveryFee,
+      // Minutos hasta que el motorizado llega AL LOCAL, no hasta la casa.
+      driverEtaMinutes: quote.driverEtaMinutes,
     });
     return;
   }

@@ -25,10 +25,18 @@ export interface DeliveryQuote {
   /** En dolares. Solo tiene sentido con covered = true. */
   deliveryFee: number;
   distance: number;
+  /**
+   * Minutos que tarda un motorizado en llegar AL LOCAL, segun Picker. No es el
+   * tiempo total hasta la puerta del cliente: falta la cocina y el viaje. Se
+   * nombra asi para que nadie lo muestre como "tu pedido llega en X".
+   */
+  driverEtaMinutes?: number;
   source: "picker" | "distance";
 }
 
 interface QuoteInput {
+  /** Picker cotiza distinto segun la forma de pago; la doc lo pide obligatorio. */
+  paymentMethod?: "CARD" | "CASH";
   branch: {
     name?: string;
     coordinates?: { lat?: number | null; lng?: number | null } | null;
@@ -41,7 +49,7 @@ interface QuoteInput {
 const OUT_OF_RANGE_MESSAGE =
   "Todavía no llegamos a esa dirección con delivery. Puedes elegir «Retiro en tienda» y recogerlo en la sucursal más cercana.";
 
-export async function quoteDelivery({ branch, lat, lng }: QuoteInput): Promise<DeliveryQuote> {
+export async function quoteDelivery({ branch, lat, lng, paymentMethod }: QuoteInput): Promise<DeliveryQuote> {
   const branchLat = branch.coordinates?.lat;
   const branchLng = branch.coordinates?.lng;
 
@@ -75,7 +83,7 @@ export async function quoteDelivery({ branch, lat, lng }: QuoteInput): Promise<D
   }
 
   try {
-    const pickerResult = await preCheckout({ branchKey, latitude: lat, longitude: lng });
+    const pickerResult = await preCheckout({ branchKey, latitude: lat, longitude: lng, paymentMethod });
 
     // `covered` puede venir undefined si Picker cambia el contrato: en ese caso se
     // asume cubierto (el tope de distancia ya filtro lo absurdo). Solo un `false`
@@ -95,7 +103,14 @@ export async function quoteDelivery({ branch, lat, lng }: QuoteInput): Promise<D
       return { covered: true, deliveryFee: byDistance, distance, source: "distance" };
     }
 
-    return { covered: true, deliveryFee: fee, distance, source: "picker" };
+    const eta = Number(pickerResult.eta);
+    return {
+      covered: true,
+      deliveryFee: fee,
+      distance,
+      driverEtaMinutes: Number.isFinite(eta) && eta > 0 ? Math.round(eta) : undefined,
+      source: "picker",
+    };
   } catch {
     // Picker caido no puede frenar la venta: se cobra por distancia, con techo.
     return { covered: true, deliveryFee: byDistance, distance, source: "distance" };
