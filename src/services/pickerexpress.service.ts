@@ -7,12 +7,28 @@ export interface PreCheckoutInput {
   branchKey: string;
   latitude: number;
   longitude: number;
+  /** Obligatorio segun la doc de Picker; se omitia y la cotizacion viajaba incompleta. */
+  paymentMethod?: "CARD" | "CASH";
 }
 
+/**
+ * Respuesta real de `preCheckout` segun la doc de Picker (Theneo, 2026-09).
+ *
+ * `covered` y `message` NO estan documentados: se dejan opcionales porque el
+ * codigo los consulta, pero la cobertura de verdad no se puede dar por hecha con
+ * ellos. El techo de distancia es la garantia que si tenemos.
+ */
 export interface PreCheckoutResponse {
   deliveryFee: number;
+  /** Mismo monto con impuesto incluido. Hoy se cobra `deliveryFee` (sin impuesto). */
+  deliveryFeeWithTax?: number;
+  tax?: number;
+  taxPercentage?: number;
+  currency?: string;
+  /** Minutos aproximados que tarda un motorizado en llegar AL LOCAL (no a la casa). */
+  eta?: number;
   distance: number;
-  covered: boolean;
+  covered?: boolean;
   message?: string;
 }
 
@@ -122,7 +138,13 @@ export async function preCheckout(
   input: PreCheckoutInput
 ): Promise<PreCheckoutResponse> {
   const url = `${PICKER_API}/preCheckout`;
-  const body = { latitude: input.latitude, longitude: input.longitude, carName: "BIKE" };
+  const body = {
+    latitude: input.latitude,
+    longitude: input.longitude,
+    carName: "BIKE",
+    // La doc lo marca obligatorio. Se enviaba sin el.
+    paymentMethod: input.paymentMethod || "CARD",
+  };
 
   console.error(`[pickerexpress/preCheckout] POST ${url}`);
   console.error(`[pickerexpress/preCheckout] Body:`, body);
@@ -180,7 +202,11 @@ export async function createPickerBooking(
     carName: "BIKE",
   };
 
-  if (input.notes && input.notes.trim().length >= 3) body.bookingNotes = input.notes.trim();
+  // La doc de Picker acota bookingNotes a 3-250 caracteres. Solo se validaba el
+  // minimo: una nota larga del cliente hacia que Picker respondiera 422 y el
+  // pedido se quedaba sin motorizado sin que nadie supiera por que.
+  const notes = (input.notes || "").trim();
+  if (notes.length >= 3) body.bookingNotes = notes.slice(0, 250);
   if (typeof input.cookTime === "number" && Number.isFinite(input.cookTime) && input.cookTime >= 0) {
     body.cookTime = Math.round(input.cookTime);
   }

@@ -220,7 +220,12 @@ export async function createOrder(req: Request, res: Response) {
     // `deliveryCost` tal como venia del cliente y solo se calculaba aca si faltaba;
     // asi entro ORD-00110 con $6542 de envio. Es la misma funcion que cotizo el
     // checkout, con los mismos datos: el cliente ve y paga el mismo numero.
-    const quote = await quoteDelivery({ branch, lat: deliveryCoords.lat, lng: deliveryCoords.lng });
+    const quote = await quoteDelivery({
+      branch,
+      lat: deliveryCoords.lat,
+      lng: deliveryCoords.lng,
+      paymentMethod: paymentMethod === "cash" ? "CASH" : "CARD",
+    });
 
     if (!quote.covered) {
       res.status(422).json({
