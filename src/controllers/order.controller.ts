@@ -554,7 +554,7 @@ async function bookPickerForOrder(
  * queda en la auditoria. Devuelve false para que el dashboard pueda avisar que
  * ESA parte hay que hacerla a mano — un silencio aca es un motorizado en la puerta.
  */
-async function cancelPickerForOrder(order: InstanceType<typeof Order>): Promise<boolean> {
+async function cancelPickerForOrder(order: InstanceType<typeof Order>, reason?: string): Promise<boolean> {
   const bookingId = order.picker?.bookingId;
   if (!bookingId) return true;
 
@@ -565,7 +565,7 @@ async function cancelPickerForOrder(order: InstanceType<typeof Order>): Promise<
     const branchKey = getPickerStoreApiKey(branch?.pickerStore);
     if (!branchKey) throw new Error("La sucursal no tiene llave de Picker configurada");
 
-    await cancelPickerBooking(bookingId, branchKey);
+    await cancelPickerBooking(bookingId, branchKey, reason || "Pedido cancelado por el local");
     order.set("picker.currentStatus", "CANCELLED");
     order.set("picker.statusText", "Cancelado");
     pushAudit(order, {
@@ -1186,7 +1186,7 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
       reason: note,
       at: new Date(),
     });
-    pickerCancelled = await cancelPickerForOrder(order);
+    pickerCancelled = await cancelPickerForOrder(order, note);
   }
 
   const cardStillCharged = isCancelling
