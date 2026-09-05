@@ -259,6 +259,28 @@ export async function createOrder(req: Request, res: Response) {
     })
   .filter(Boolean) as Array<{ product: any; name: string; price: number; quantity: number; image: string; pointsValue: number }>;
 
+  // Un producto que ya no existe se descartaba en silencio y la orden se creaba
+  // igual con lo que quedara. Con el carrito viejo de un cliente eso significa
+  // cobrarle el envio por una bolsa vacia, o cobrarle de menos y que el local
+  // prepare algo que nadie pago. Si falta aunque sea uno, no hay pedido.
+  if (orderItems.length !== items.length) {
+    const faltantes = items
+      .filter((item) => !orderItems.some((current) => String(current.product) === item.productId))
+      .length;
+    res.status(409).json({
+      code: "PRODUCTS_UNAVAILABLE",
+      message: faltantes === items.length
+        ? "Los productos de tu carrito ya no están disponibles. Vuelve al menú y ármalo de nuevo."
+        : `${faltantes} ${faltantes === 1 ? "producto de tu carrito ya no está disponible" : "productos de tu carrito ya no están disponibles"}. Revisa tu carrito y vuelve a intentar.`,
+    });
+    return;
+  }
+
+  if (orderItems.length === 0) {
+    res.status(400).json({ code: "EMPTY_ORDER", message: "Tu carrito está vacío." });
+    return;
+  }
+
   const subtotal = orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const total = subtotal + centsToDollars(deliveryCostCents);
 
