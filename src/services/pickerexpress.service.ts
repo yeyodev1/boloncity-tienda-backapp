@@ -1,5 +1,6 @@
 import axios from "axios";
 import { env } from "../config/env";
+import { normalizePhone } from "../utils/phone";
 
 const PICKER_API = env.PICKER_API_BASE_URL.replace(/\/+$/, "");
 
@@ -81,12 +82,13 @@ export interface CreatePickerStoreResponse {
 }
 
 function parsePhone(phone: string): { code: string; number: string } {
-  const cleaned = phone.replace(/\s+/g, "").replace(/^\+/, "");
-  const match = cleaned.match(/^(\d{1,3})(\d+)$/);
-  if (match) {
-    return { code: match[1], number: match[2].replace(/^0+/, "") };
+  const normalized = normalizePhone(phone);
+  if (!normalized) {
+    // Mejor fallar acá con un motivo legible que dejar que Picker responda un
+    // 422 genérico: el mensaje termina en la auditoría del pedido.
+    throw new Error(`Teléfono del cliente inválido: "${phone || "(vacío)"}"`);
   }
-  return { code: "593", number: cleaned.replace(/^0+/, "") };
+  return { code: normalized.code, number: normalized.number };
 }
 
 export async function createPickerStore(

@@ -22,6 +22,7 @@ import { getOrderStatusEmailHtml } from "../services/email-templates";
 import { PICKER_STATUS_LABELS } from "./webhook.controller";
 import { sendMetaEvent } from "../services/metaConversions.service";
 import { quoteDelivery } from "../services/deliveryQuote.service";
+import { normalizePhone } from "../utils/phone";
 
 function centsToDollars(value: number) {
   return value / 100;
@@ -355,7 +356,10 @@ export async function createOrder(req: Request, res: Response) {
     status: "pending",
     customerEmail,
     customerName: customerName || "",
-    customerPhone: customerPhone || "",
+    // Se guarda en E.164 ("+593968434421"). Si la clienta escribió el número ya con
+    // prefijo, el checkout mandaba "+593 +593968434421" y Picker lo rechazaba
+    // (ORD-00152). Si no se puede normalizar, se conserva tal cual para no perderlo.
+    customerPhone: normalizePhone(customerPhone)?.e164 || customerPhone || "",
     notes: notes || "",
     branch: branch?._id || null,
     billing,
@@ -1385,8 +1389,13 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
     return;
   }
 
-  if (order.status !== "paid") {
-    res.status(400).json({ message: "Solo se puede solicitar delivery para una orden pagada" });
+  // Antes solo se aceptaba "paid", pero el motorizado se pide al pasar a "Por
+  // recoger": si Picker fallaba ahí, el pedido ya estaba en awaiting_pickup y el
+  // botón "Reintentar delivery" respondía 400 (ORD-00152). Vale reintentar en
+  // cualquier estado activo mientras no exista una reserva.
+  const RETRYABLE_STATUSES = ["paid", "preparing", "awaiting_pickup", "ready"];
+  if (!RETRYABLE_STATUSES.includes(order.status)) {
+    res.status(400).json({ message: "Solo se puede solicitar delivery para una orden pagada y en curso" });
     return;
   }
 
@@ -1434,6 +1443,11 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
       paymentMethod: order.paymentMethod === "cash" ? "CASH" : "CARD",
       externalBookingId: order.orderNumber,
       notes: order.notes || "",
+      // Si la comida ya está lista (Por recoger / En entrega) Picker debe buscar
+      // motorizado ya; si aún se cocina, se respeta el tiempo de cocina de la sucursal.
+      cookTime: ["awaiting_pickup", "ready"].includes(order.status)
+        ? 0
+        : Math.max(0, Math.round(Number(branch?.cookTimeMinutes) || 0)) * 60_000,
     });
 
     order.picker = {
