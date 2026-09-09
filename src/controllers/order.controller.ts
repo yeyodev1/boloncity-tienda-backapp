@@ -609,6 +609,7 @@ async function sendOrderToRunfood(order: InstanceType<typeof Order>) {
       orderNumber: order.orderNumber,
       customerName: order.customerName || order.customerEmail,
       deliveryType: order.deliveryType,
+      paymentMethod: order.paymentMethod === "cash" ? "cash" : "card",
       notes: order.notes || "",
       items: (order.items || []).map((item: { product: unknown; name: string; price: number; quantity: number }) => {
         const product = porId.get(String(item.product));
