@@ -138,6 +138,8 @@ export async function pushOrderToRunfood(params: {
   orderNumber: string;
   customerName: string;
   deliveryType: string;
+  /** "card" = ya cobrado en línea por PayPhone; "cash" = el local cobra al entregar. */
+  paymentMethod: "card" | "cash";
   notes?: string;
   items: RunfoodItem[];
 }): Promise<RunfoodPushResult> {
@@ -153,7 +155,12 @@ export async function pushOrderToRunfood(params: {
     return { ok: false, message: "El pedido no tiene renglones que enviar" };
   }
 
-  const label = `${params.deliveryType === "pickup" ? "RETIRO" : "DELIVERY"} WEB ${orderNumber} — ${params.customerName}`.slice(
+  // El pedido entra "open" y sin pagos (RunFood no acepta pagos en un pedido
+  // abierto, y cerrarlo seria facturar ante el SRI). Como el cajero es quien
+  // cierra la cuenta, el titulo tiene que decirle si ya se cobro: con tarjeta ya
+  // esta pagado por PayPhone y NO se vuelve a cobrar; en efectivo hay que cobrar.
+  const cobro = params.paymentMethod === "card" ? "PAGADO TARJETA" : "COBRAR EFECTIVO";
+  const label = `${cobro} · ${params.deliveryType === "pickup" ? "RETIRO" : "DELIVERY"} WEB ${orderNumber} — ${params.customerName}`.slice(
     0,
     MAX_TAB_NAME
   );
