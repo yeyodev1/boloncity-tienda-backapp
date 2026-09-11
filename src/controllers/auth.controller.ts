@@ -119,15 +119,22 @@ export async function changePassword(req: AuthRequest, res: Response) {
 }
 
 export async function forgotPassword(req: Request, res: Response) {
-  const { email } = req.body as { email: string };
+  const email = String((req.body as { email?: string }).email || "").trim().toLowerCase();
   if (!email) {
-    res.status(400).json({ message: "Email es requerido" });
+    res.status(400).json({ message: "Escribe el correo con el que te registraste." });
     return;
   }
 
-  const user = await User.findOne({ email: email.toLowerCase() });
+  // Decimos explicitamente que la cuenta no existe. Los clientes de la app anterior
+  // no tienen cuenta en la web (se crea sola con el primer pedido) y con el mensaje
+  // generico se quedaban esperando un correo que nunca iba a llegar. Que un correo
+  // esta registrado ya se puede averiguar al registrarse o editar el perfil.
+  const user = await User.findOne({ email });
   if (!user) {
-    res.json({ message: "Si el correo existe, recibirás un enlace para restablecer tu contraseña" });
+    res.status(404).json({
+      code: "ACCOUNT_NOT_FOUND",
+      message: `No encontramos una cuenta con ${email}. Si pedías por la app anterior, esa cuenta no pasó a la web: haz tu pedido como nuevo cliente y te creamos la cuenta automáticamente, con la contraseña en tu correo.`,
+    });
     return;
   }
 
@@ -155,9 +162,18 @@ export async function forgotPassword(req: Request, res: Response) {
       </div>
     </div>`;
 
-  await sendEmail(user.email, "Restablece tu contraseña — Boloncity", html);
+  const sent = await sendEmail(user.email, "Restablece tu contraseña — Boloncity", html);
+  if (!sent.ok) {
+    res.status(502).json({
+      code: "EMAIL_SEND_FAILED",
+      message: "Tu cuenta existe, pero no pudimos enviarte el correo de recuperación en este momento. Intenta de nuevo en unos minutos o escríbenos por WhatsApp y te ayudamos.",
+    });
+    return;
+  }
 
-  res.json({ message: "Si el correo existe, recibirás un enlace para restablecer tu contraseña" });
+  res.json({
+    message: `Te enviamos un enlace a ${user.email}. Revisa tu bandeja de entrada y la carpeta de spam o promociones; el enlace vence en 1 hora.`,
+  });
 }
 
 export async function resetPassword(req: Request, res: Response) {
