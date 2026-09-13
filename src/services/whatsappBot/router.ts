@@ -107,10 +107,14 @@ export interface BotState {
   billingName?: string;
   billingDocNumber?: string;
   notes?: string;
+  /** Mensajes seguidos que el bot no entendió. A partir de 2 se deriva a una persona. */
+  misunderstood?: number;
   reorderOffered?: boolean;
   reuseLocationOffered?: boolean;
   lastOrderNumber?: string;
   lastPaymentLink?: string;
+  /** Última intención enviada a BuilderBot; se reusa si BuilderBot reintenta el mismo mensaje. */
+  lastIntent?: Intent;
 }
 
 export interface Quote {
@@ -150,10 +154,18 @@ export interface TurnInput {
 
 export type Route = "conversation" | "catalog" | "choice" | "location" | "checkout" | "tracking" | "human";
 
+/**
+ * Intención en una sola palabra, para que BuilderBot enrute con sus Rules.
+ * `dudas` = este bot no puede resolverlo: hay que derivar al número de soporte.
+ */
+export type Intent = "conversar" | "menu" | "dudas" | "consultar_pedido" | "orden_creada";
+
 export interface TurnResult {
   state: BotState;
   reply: string;
   route: Route;
+  /** Para las Rules de BuilderBot: conversar | menu | dudas | consultar_pedido | orden_creada. */
+  intent: Intent;
   /** Qué espera el bot del próximo mensaje. */
   step: Stage;
   /** Regla que decidió este turno (R1…R11). Sirve para depurar conversaciones reales. */
@@ -196,7 +208,9 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   const finish = async (decision: string, route: Route = "conversation", extra: Partial<TurnResult> = {}): Promise<TurnResult> => {
     const next = await nextStep(state, deps);
     const reply = [...notes, next.question].filter(Boolean).join("\n\n");
-    return { state, reply, route: next.route || route, step: state.stage, decision, ...extra };
+    const resolvedRoute = next.route || route;
+    const intent: Intent = resolvedRoute === "catalog" ? "menu" : "conversar";
+    return { state, reply, route: resolvedRoute, intent, step: state.stage, decision, ...extra };
   };
 
   // Una orden ya creada: si el cliente sigue escribiendo algo que no es consultar, arranca un pedido nuevo.
@@ -245,6 +259,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
       state,
       reply: `Este número lo atiende un asistente automático para pedidos. Para que una persona revise tu caso escribe al ${deps.supportPhone} y te ayudan enseguida`,
       route: "human",
+      intent: "dudas",
       step: state.stage,
       decision: "R2:humano",
     };
@@ -252,7 +267,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
 
   // R3 · Consulta de un pedido ya hecho.
   if (wantsTracking(message) && !(state.stage === "confirm" && wantsCart(message))) {
-    return { state, reply: await deps.trackOrder(state.phone, message), route: "tracking", step: state.stage, decision: "R3:consultar_pedido" };
+    return { state, reply: await deps.trackOrder(state.phone, message), route: "tracking", intent: "consultar_pedido", step: state.stage, decision: "R3:consultar_pedido" };
   }
 
   // R4 · Respuesta a una elección pendiente (opciones de producto, repetir pedido, sucursal, misma dirección).
@@ -287,7 +302,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (wantsConfirm(message) || (state.stage === "confirm" && isYes(message))) {
     if (state.stage === "ordered" && state.lastOrderNumber) {
       notes.push(`Tu pedido ${state.lastOrderNumber} ya está registrado${state.lastPaymentLink ? `\nPuedes pagarlo aquí: ${state.lastPaymentLink}` : ""}`);
-      return { state, reply: notes.join("\n\n"), route: "checkout", step: state.stage, decision: "R7:ya_confirmado", orderNumber: state.lastOrderNumber, paymentLink: state.lastPaymentLink };
+      return { state, reply: notes.join("\n\n"), route: "checkout", intent: "orden_creada", step: state.stage, decision: "R7:ya_confirmado", orderNumber: state.lastOrderNumber, paymentLink: state.lastPaymentLink };
     }
     if (state.stage === "confirm") return confirmOrder(state, deps);
     // Dijo "confirmo" antes de tiempo: se le pide lo que falta.
@@ -332,8 +347,21 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (!answered) {
     // Con el local cerrado no hay nada que entender: se repite solo el aviso de horario.
     notes.push(state.cart.length && state.stage !== "closed" ? "No te entendí bien" : "");
+    state.misunderstood = (state.misunderstood || 0) + 1;
+    // Dos mensajes seguidos sin entender: no es un pedido, es una duda. Se deriva a una persona.
+    if (state.misunderstood >= 2 && state.stage !== "closed") {
+      return {
+        state,
+        reply: `Creo que necesitas ayuda de una persona. Escríbenos al ${deps.supportPhone} y te atienden enseguida\n\nSi quieres hacer un pedido, dime qué se te antoja y seguimos por aquí`,
+        route: "human",
+        intent: "dudas",
+        step: state.stage,
+        decision: "R11:derivado_a_persona",
+      };
+    }
     return finish("R11:no_entendido");
   }
+  state.misunderstood = 0;
   return finish(`R10:${extraction.source}`);
 }
 
@@ -810,11 +838,11 @@ async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult>
   // Antes de crear se revisa todo otra vez: entre el resumen y el "confirmo" pudo cerrar la sucursal.
   const check = await nextStep(state, deps);
   if (state.stage !== "confirm") {
-    return { state, reply: check.question, route: check.route || "conversation", step: state.stage, decision: "R7:confirmo_revalidacion" };
+    return { state, reply: check.question, route: check.route || "conversation", intent: "conversar", step: state.stage, decision: "R7:confirmo_revalidacion" };
   }
   const result = await deps.createOrder(state);
   if (!result.ok) {
-    return { state, reply: `${result.message}\n\n${check.question}`, route: "checkout", step: state.stage, decision: "R7:error_creando" };
+    return { state, reply: `${result.message}\n\n${check.question}`, route: "checkout", intent: "conversar", step: state.stage, decision: "R7:error_creando" };
   }
   state.stage = "ordered";
   state.lastOrderNumber = result.orderNumber;
@@ -825,5 +853,5 @@ async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult>
       : state.deliveryType === "delivery"
       ? `✅ Pedido ${result.orderNumber} confirmado por ${money(result.total)}\n\nYa lo estamos preparando. Ten el efectivo listo para el motorizado`
       : `✅ Pedido ${result.orderNumber} confirmado por ${money(result.total)}\n\nTe esperamos en ${state.branchName}. Pagas en efectivo al retirar`;
-  return { state, reply, route: "checkout", step: "ordered", decision: "R7:orden_creada", orderNumber: result.orderNumber, paymentLink: result.paymentLink };
+  return { state, reply, route: "checkout", intent: "orden_creada", step: "ordered", decision: "R7:orden_creada", orderNumber: result.orderNumber, paymentLink: result.paymentLink };
 }
