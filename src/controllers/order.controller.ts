@@ -450,7 +450,7 @@ export async function createOrder(req: Request, res: Response) {
  * que le importa al anuncio es lo que se vendio, no lo que costo llevarlo.
  * No lanza nunca: un pedido no se cae porque falle la medicion.
  */
-async function reportPurchaseToMeta(order: InstanceType<typeof Order>) {
+export async function reportPurchaseToMeta(order: InstanceType<typeof Order>) {
   const nameParts = String(order.customerName || "").trim().split(/\s+/);
 
   await sendMetaEvent({
@@ -489,7 +489,7 @@ async function reportPurchaseToMeta(order: InstanceType<typeof Order>) {
  * Se llama para efectivo inmediato (al crear), tarjeta inmediata (al confirmar el pago)
  * y para CUALQUIER pedido al pasar a "Listas para recolección" (incluidos los programados).
  */
-async function bookPickerForOrder(
+export async function bookPickerForOrder(
   order: InstanceType<typeof Order>,
   paymentMethod: "CASH" | "CARD",
   // applyCookTime=false cuando la comida ya está lista (p. ej. al pasar a "Listas para
@@ -591,7 +591,7 @@ async function cancelPickerForOrder(order: InstanceType<typeof Order>, reason?: 
 }
 
 /** Empuja el pedido al POS RunFood de su sucursal (si esta configurado) y lo deja en la auditoria. */
-async function sendOrderToRunfood(order: InstanceType<typeof Order>) {
+export async function sendOrderToRunfood(order: InstanceType<typeof Order>) {
   try {
     if (!order.branch) return;
     const branch = await Branch.findById(order.branch).select("+runfood.apiKey");
