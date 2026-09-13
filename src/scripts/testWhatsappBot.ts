@@ -283,7 +283,27 @@ test("consultar pedido y pedir humano van por su propia ruta", async () => {
   const { deps } = fakeDeps();
   const { results } = await chat(deps, ["dónde está mi pedido", "quiero hablar con un asesor"]);
   assert.equal(results[0].route, "tracking");
+  assert.equal(results[0].intent, "consultar_pedido");
   assert.equal(results[1].route, "human");
+  assert.equal(results[1].intent, "dudas");
+  assert.match(results[1].reply, /\+593 99 315 7333/);
+});
+
+test("intención para las Rules de BuilderBot en cada situación", async () => {
+  const { deps } = fakeDeps();
+  const pedido = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "efectivo", "confirmo"]);
+  assert.equal(pedido.results[0].intent, "conversar");
+  assert.equal(pedido.last.intent, "orden_creada");
+  const menu = await chat(deps, ["menú"]);
+  assert.equal(menu.last.intent, "menu");
+});
+
+test("dos mensajes seguidos sin entender: deriva al número de soporte", async () => {
+  const { deps } = fakeDeps();
+  const { results } = await chat(deps, ["asdfgh", "¿ustedes hacen catering para 200 personas?"]);
+  assert.equal(results[0].intent, "conversar", "el primero todavía se intenta resolver aquí");
+  assert.equal(results[1].intent, "dudas");
+  assert.match(results[1].reply, /\+593 99 315 7333/);
 });
 
 test("después de crear la orden, un mensaje nuevo arranca otro pedido conservando los datos", async () => {

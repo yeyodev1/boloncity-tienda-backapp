@@ -330,12 +330,13 @@ async function runTurn(body: any): Promise<(TurnResult & { duplicated?: boolean 
   const hash = crypto.createHash("sha1").update(`${message}|${location?.lat ?? ""}|${location?.lng ?? ""}`).digest("hex");
   if (session.lastMessageHash === hash && session.lastMessageAt && Date.now() - session.lastMessageAt.getTime() < 5000 && session.lastReply) {
     const state = { ...createInitialState(phone), ...(session.state || {}) } as BotState;
-    return { state, reply: session.lastReply, route: "conversation", step: state.stage, decision: "R0:duplicado", duplicated: true };
+    return { state, reply: session.lastReply, route: "conversation", intent: state.lastIntent || "conversar", step: state.stage, decision: "R0:duplicado", duplicated: true };
   }
 
   const previous = { ...createInitialState(phone), ...(session.state || {}), phone } as BotState;
   appendHistory(session, "user", message || (location ? `[ubicación ${location.lat},${location.lng}]` : ""));
   const result = await handleTurn(previous, { message, location, senderName: String(body?.name || "") }, buildDeps());
+  result.state.lastIntent = result.intent;
   appendHistory(session, "assistant", result.reply);
   session.state = JSON.parse(JSON.stringify(result.state));
   session.markModified("state");
@@ -348,9 +349,15 @@ async function runTurn(body: any): Promise<(TurnResult & { duplicated?: boolean 
 }
 
 function toBotResponse(result: TurnResult | null) {
-  if (!result) return { success: false, route: "conversation", message: "", missingData: [], readyToCheckout: false };
+  if (!result) {
+    return { success: false, intencion: "dudas", telefonoSoporte: SUPPORT_PHONE, route: "conversation", message: "", missingData: [], readyToCheckout: false };
+  }
   return {
     success: true,
+    // Para las Rules de BuilderBot: conversar | menu | dudas | consultar_pedido | orden_creada.
+    // "dudas" = el bot no puede resolverlo y hay que derivar al número de soporte.
+    intencion: result.intent,
+    telefonoSoporte: SUPPORT_PHONE,
     route: result.route,
     message: result.reply,
     step: result.step,
@@ -381,7 +388,9 @@ export async function whatsappBotAssistant(req: Request, res: Response) {
     res.status(200).json({
       success: Boolean(result),
       message: result?.reply || "",
-      _intent: !result || result.route === "conversation" ? "chat" : result.route,
+      intencion: result?.intent || "dudas",
+      telefonoSoporte: SUPPORT_PHONE,
+      _intent: result?.intent || "dudas",
       missingData: [],
     });
   } catch (error) {
@@ -396,10 +405,10 @@ export async function whatsappBotCatalog(req: Request, res: Response) {
     const body = { ...req.query, ...req.body };
     if (!readMessage(body)) body.message = "menú";
     const result = await runTurn(body);
-    res.status(200).json({ ...toBotResponse(result), _intent: "catalog" });
+    res.status(200).json({ ...toBotResponse(result), _intent: "menu" });
   } catch (error) {
     console.error("[whatsapp-bot] catalog falló", error);
-    res.status(200).json({ success: false, message: "", _intent: "catalog", missingData: [] });
+    res.status(200).json({ success: false, message: "", intencion: "dudas", telefonoSoporte: SUPPORT_PHONE, _intent: "dudas", missingData: [] });
   }
 }
 
@@ -409,7 +418,7 @@ export async function whatsappBotLocation(req: Request, res: Response) {
     const body = { ...req.body };
     if (body.mapsUrl && !readMessage(body)) body.message = String(body.mapsUrl);
     const result = await runTurn(body);
-    res.status(200).json({ ...toBotResponse(result), _intent: "location" });
+    res.status(200).json({ ...toBotResponse(result), _intent: "conversar" });
   } catch (error) {
     console.error("[whatsapp-bot] location falló", error);
     res.status(200).json({ success: false, route: "location", message: "No pude leer tu ubicación. ¿Me la compartes de nuevo?" });
@@ -509,9 +518,17 @@ export async function whatsappBotSearchOrder(req: Request, res: Response) {
   try {
     const phone = toE164(req.query.phone || req.body?.phone);
     const result = phone ? await trackOrderForPhone(phone, `${req.query.orderNumber || req.body?.orderNumber || ""} ${readMessage(req.body)}`) : null;
-    res.status(200).json({ success: Boolean(result?.success), message: result?.message || "", _intent: "tracking", missingData: [], trackingLink: result?.trackingLink || "" });
+    res.status(200).json({
+      success: Boolean(result?.success),
+      message: result?.message || "",
+      intencion: "consultar_pedido",
+      telefonoSoporte: SUPPORT_PHONE,
+      _intent: "consultar_pedido",
+      missingData: [],
+      trackingLink: result?.trackingLink || "",
+    });
   } catch (error) {
     console.error("[whatsapp-bot] search-order falló", error);
-    res.status(200).json({ success: false, message: "", _intent: "tracking", missingData: [] });
+    res.status(200).json({ success: false, message: "", intencion: "dudas", telefonoSoporte: SUPPORT_PHONE, _intent: "dudas", missingData: [] });
   }
 }

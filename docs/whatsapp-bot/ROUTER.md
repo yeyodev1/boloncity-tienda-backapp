@@ -101,8 +101,21 @@ correo. En tarjeta eso ocurre cuando se confirma el pago (igual que la web).
 
 ## Endpoints para BuilderBot
 
-Todos responden HTTP 200 con `{ success, message, route, step, decision, readyToCheckout, orderNumber, paymentLink, cart }`.
-**`message` es el texto que BuilderBot debe enviar al cliente.**
+Todos responden HTTP 200 con
+`{ success, message, intencion, telefonoSoporte, route, step, decision, readyToCheckout, orderNumber, paymentLink, cart }`.
+**`message` es el texto que BuilderBot debe enviar al cliente** e **`intencion` es la variable para las Rules.**
+
+### La variable `intencion`
+
+| Valor | Cuándo lo devuelve | Qué debe hacer BuilderBot |
+|---|---|---|
+| `conversar` | Está tomando el pedido (productos, entrega, datos, pago) | Enviar `message` y esperar la respuesta |
+| `menu` | El cliente pidió el menú o una categoría | Enviar `message` (puede sumar una imagen del menú) |
+| `consultar_pedido` | Preguntó por un pedido suyo | Enviar `message` |
+| `orden_creada` | La orden quedó registrada (`orderNumber` y, si es tarjeta, `paymentLink`) | Enviar `message` |
+| `dudas` | **Este bot no puede resolverlo**: pidió una persona, tiene un reclamo, o van 2 mensajes seguidos que no se entienden | Derivar al número de soporte (`telefonoSoporte`, hoy +593 99 315 7333) y silenciar el bot |
+
+Este bot es **solo para pedidos**. Todo lo demás sale como `dudas` para que lo tome una persona.
 
 | Flujo BBC | Endpoint | Body mínimo |
 |---|---|---|
