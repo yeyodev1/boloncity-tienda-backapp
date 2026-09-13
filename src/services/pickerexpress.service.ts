@@ -133,7 +133,9 @@ async function tryPreCheckout(
 
   console.error(`[pickerexpress/preCheckout] Intentando con header "${headerName}"`);
 
-  return await axios.post(url, body, { headers });
+  // Sin timeout, un Picker colgado dejaba la request abierta hasta que Vercel o el
+  // nodo HTTP del bot la mataban, y el cliente se quedaba sin respuesta.
+  return await axios.post(url, body, { headers, timeout: 8000 });
 }
 
 export async function preCheckout(
