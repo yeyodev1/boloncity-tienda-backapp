@@ -11,6 +11,8 @@
     "seed:menu": "ts-node-dev --transpile-only src/seeds/seedMenu.ts",
 "seed:branches": "ts-node-dev --transpile-only src/seeds/seedBranches.ts",
     "test:precheckout": "ts-node-dev --transpile-only src/scripts/testPreCheckout.ts",
+    "test:bot": "ts-node-dev --transpile-only src/scripts/testWhatsappBot.ts",
+    "test:bot:live": "DOTENV_CONFIG_PATH=.env.local ts-node-dev --transpile-only src/scripts/liveWhatsappBot.ts",
     "picker:sync": "ts-node --transpile-only src/scripts/syncPickerStores.ts",
     "picker:sync:dev": "ts-node --transpile-only src/scripts/syncPickerStores.ts --env=development",
     "picker:sync:prod": "ts-node --transpile-only src/scripts/syncPickerStores.ts --env=production",
