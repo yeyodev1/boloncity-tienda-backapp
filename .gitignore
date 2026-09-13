@@ -7,3 +7,4 @@ uploads
 .vercel
 .env.bak.*
 runfood-precios-backup-*.json
+.env*
