@@ -16,7 +16,7 @@ import { menuSeedItems } from "../seeds/menuItems";
 import { CatalogProduct, rankProducts } from "../services/whatsappBot/catalog";
 import { heuristicExtract } from "../services/whatsappBot/extractor";
 import { splitItemPhrases } from "../services/whatsappBot/intents";
-import { BotDeps, BotState, createInitialState, handleTurn, LastOrder, TurnResult } from "../services/whatsappBot/router";
+import { BotDeps, BotState, classifyRoute, createInitialState, handleTurn, LastOrder, TurnResult } from "../services/whatsappBot/router";
 
 const MENU: CatalogProduct[] = menuSeedItems
   .filter((item) => item.price > 0)
@@ -296,6 +296,39 @@ test("intención para las Rules de BuilderBot en cada situación", async () => {
   assert.equal(pedido.last.intent, "orden_creada");
   const menu = await chat(deps, ["menú"]);
   assert.equal(menu.last.intent, "menu");
+});
+
+test("router de la Bienvenida: cada mensaje va al flow correcto", async () => {
+  const nuevo = null;
+  assert.equal(classifyRoute(nuevo, "hola"), "conversation");
+  assert.equal(classifyRoute(nuevo, "2 bolones mixtos"), "conversation");
+  assert.equal(classifyRoute(nuevo, "menú"), "catalog");
+  assert.equal(classifyRoute(nuevo, "qué bebidas tienen"), "catalog");
+  assert.equal(classifyRoute(nuevo, "dónde está mi pedido"), "search_order");
+  assert.equal(classifyRoute(nuevo, "quiero hablar con un asesor"), "human");
+  assert.equal(classifyRoute(nuevo, "tengo un reclamo"), "human");
+  assert.equal(classifyRoute(nuevo, "", true), "conversation", "ubicación");
+
+  const pagando = { ...createInitialState("+593987654321"), stage: "payment" as const };
+  assert.equal(classifyRoute(pagando, "quiero pagar con tarjeta"), "conversation", "antes del resumen, pagar es un dato del pedido");
+  assert.equal(classifyRoute(pagando, "confirmo"), "conversation");
+
+  const resumen = { ...createInitialState("+593987654321"), stage: "confirm" as const };
+  assert.equal(classifyRoute(resumen, "confirmo"), "checkout");
+  assert.equal(classifyRoute(resumen, "sí"), "checkout");
+  assert.equal(classifyRoute(resumen, "mejor quita el café"), "conversation");
+
+  const eligiendo = { ...createInitialState("+593987654321"), stage: "choosing" as const, pendingChoice: { kind: "product" as const, query: "cafe", quantity: 1, options: [] } };
+  assert.equal(classifyRoute(eligiendo, "2"), "conversation", "responder una opción no es ir al menú");
+});
+
+test("router y conversación coinciden: lo que el router manda a checkout, la conversación lo confirma", async () => {
+  const { deps, created } = fakeDeps();
+  const { state } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "efectivo"]);
+  assert.equal(classifyRoute(state, "confirmo"), "checkout");
+  const result = await handleTurn(state, { message: "confirmo" }, deps);
+  assert.equal(result.decision, "R7:orden_creada");
+  assert.equal(created.length, 1);
 });
 
 test("dos mensajes seguidos sin entender: deriva al número de soporte", async () => {

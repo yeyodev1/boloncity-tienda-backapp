@@ -174,6 +174,33 @@ export interface TurnResult {
   paymentLink?: string;
 }
 
+/** Rutas que usan las Rules del flow "Bienvenida" de BuilderBot para saltar a cada flow. */
+export type BuilderBotRoute = "conversation" | "catalog" | "checkout" | "search_order" | "human";
+
+/**
+ * Enrutador del flow "Bienvenida" (mismo esquema que Sorbito): SOLO decide a qué flow
+ * va el mensaje. No cambia la conversación ni llama a la IA, así responde en milisegundos
+ * y el flow de destino recibe el mensaje intacto.
+ *
+ * Usa las mismas reglas que handleTurn para que el destino nunca contradiga al router:
+ *   persona/reclamo → human · consultar pedido → search_order · menú → catalog
+ *   "confirmo" con el resumen ya mostrado → checkout · todo lo demás → conversation
+ */
+export function classifyRoute(state: BotState | null, message: string, hasLocation = false): BuilderBotRoute {
+  const text = String(message || "").trim();
+  if (hasLocation || extractMapsUrl(text) || !text) return "conversation";
+  if (wantsHuman(text)) return "human";
+  const stage = state?.stage;
+  if (wantsTracking(text) && !(stage === "confirm" && wantsCart(text))) return "search_order";
+  // Si el bot espera una elección ("1", "maduro", "sí"), la respuesta es parte del pedido.
+  if (state?.pendingChoice) return "conversation";
+  // "Confirmo" solo es checkout con el resumen ya mostrado. Antes de eso ("quiero pagar con tarjeta")
+  // es un dato del pedido y lo resuelve la conversación.
+  if ((stage === "confirm" && (wantsConfirm(text) || isYes(text))) || (stage === "ordered" && wantsConfirm(text))) return "checkout";
+  if (wantsMenu(text)) return "catalog";
+  return "conversation";
+}
+
 export function createInitialState(phone: string): BotState {
   return { phone, stage: "idle", cart: [], pendingChoice: null, choiceQueue: [] };
 }

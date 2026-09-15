@@ -21,7 +21,7 @@ import { isAvailableAt } from "../utils/productAvailability";
 import { loadCatalog, searchCatalog } from "../services/whatsappBot/catalog";
 import { aiExtract } from "../services/whatsappBot/extractor";
 import { extractOrderNumber } from "../services/whatsappBot/intents";
-import { BotDeps, BotState, createInitialState, handleTurn, LastOrder, nextStep, TurnResult } from "../services/whatsappBot/router";
+import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, nextStep, TurnResult } from "../services/whatsappBot/router";
 
 /**
  * Endpoints que llama BuilderBot. Toda la lógica de conversación vive en
@@ -371,6 +371,34 @@ function toBotResponse(result: TurnResult | null) {
   };
 }
 
+const ROUTE_INTENT: Record<BuilderBotRoute, string> = {
+  conversation: "conversar",
+  catalog: "menu",
+  checkout: "checkout",
+  search_order: "consultar_pedido",
+  human: "dudas",
+};
+
+/**
+ * Flow "Bienvenida" de BuilderBot: decide a qué flow va el mensaje (campo `route` para las Rules).
+ * Solo lee la sesión: no la modifica, no llama a la IA y no responde texto al cliente.
+ */
+export async function whatsappBotRouter(req: Request, res: Response) {
+  try {
+    const body = { ...req.query, ...req.body };
+    const phone = toE164(body.phone || body.from);
+    const session: any = phone ? await WhatsAppSession.findOne({ phone }).lean() : null;
+    const state = session?.state ? ({ ...createInitialState(phone), ...session.state } as BotState) : null;
+    const route = classifyRoute(state, readMessage(body), Boolean(readLocation(body)));
+    console.log(`[whatsapp-bot] router ${phone} → ${route} (paso ${state?.stage || "nuevo"})`);
+    res.status(200).json({ success: true, route, intencion: ROUTE_INTENT[route], step: state?.stage || "idle", telefonoSoporte: SUPPORT_PHONE, message: "" });
+  } catch (error) {
+    console.error("[whatsapp-bot] router falló", error);
+    // Ante la duda, a la conversación: ahí el cliente siempre recibe una respuesta.
+    res.status(200).json({ success: true, route: "conversation", intencion: "conversar", step: "idle", telefonoSoporte: SUPPORT_PHONE, message: "" });
+  }
+}
+
 /** Punto de entrada principal: todos los flujos de BuilderBot pueden llamar aquí. */
 export async function whatsappBotBrain(req: Request, res: Response) {
   try {
@@ -434,19 +462,27 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
     const phone = toE164(req.body?.phone);
     const session = phone ? await WhatsAppSession.findOne({ phone }) : null;
     const state = session?.state as BotState | undefined;
-    if (!session || !state) return res.status(200).json({ success: false, message: "Aún no tengo tu pedido. Dime qué te gustaría pedir" });
+    const base = { intencion: "conversar", telefonoSoporte: SUPPORT_PHONE };
+    if (!session || !state) return res.status(200).json({ ...base, success: false, message: "Aún no tengo tu pedido. Dime qué te gustaría pedir" });
     if (state.stage === "ordered" && state.lastOrderNumber) {
-      return res.status(200).json({ success: true, message: `Tu pedido ${state.lastOrderNumber} ya está registrado${state.lastPaymentLink ? `\nPágalo aquí: ${state.lastPaymentLink}` : ""}`, orderNumber: state.lastOrderNumber, paymentLink: state.lastPaymentLink || "" });
+      return res.status(200).json({
+        ...base,
+        intencion: "orden_creada",
+        success: true,
+        message: `Tu pedido ${state.lastOrderNumber} ya está registrado${state.lastPaymentLink ? `\nPágalo aquí: ${state.lastPaymentLink}` : ""}`,
+        orderNumber: state.lastOrderNumber,
+        paymentLink: state.lastPaymentLink || "",
+      });
     }
     if (state.stage !== "confirm") {
       const next = await nextStep({ ...createInitialState(phone), ...state }, buildDeps());
-      return res.status(200).json({ success: false, message: next.question, step: state.stage });
+      return res.status(200).json({ ...base, success: false, message: next.question, step: state.stage });
     }
     const result = await runTurn({ phone, message: "confirmo" });
     res.status(200).json({ ...toBotResponse(result), success: result?.decision === "R7:orden_creada" || result?.decision === "R7:ya_confirmado" });
   } catch (error) {
     console.error("[whatsapp-bot] checkout falló", error);
-    res.status(200).json({ success: false, message: "No pude crear tu pedido en este momento. Escribe *confirmo* otra vez en un minuto" });
+    res.status(200).json({ success: false, intencion: "conversar", telefonoSoporte: SUPPORT_PHONE, message: "No pude crear tu pedido en este momento. Escribe *confirmo* otra vez en un minuto" });
   }
 }
 

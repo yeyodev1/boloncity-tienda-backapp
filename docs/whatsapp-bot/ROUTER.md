@@ -99,6 +99,35 @@ correo. En tarjeta eso ocurre cuando se confirma el pago (igual que la web).
 
 > El cobro automático de la deuda por ausencia todavía no está implementado (ver PLAN.md, Fase 2c). Hoy solo se muestra el aviso.
 
+## Configuración de BuilderBot (producción, esquema tipo Sorbito)
+
+Base: `https://api.boloncity.com/api/orders/whatsapp-bot`. En todos los nodos HTTP: método `POST`, header
+`Content-Type: application/json`, Body con campos (RAW apagado) y **Tiempo de espera 0**.
+Variables de BuilderBot: `{body}` mensaje, `{from}` teléfono, `{history}` historial, `{name}` nombre.
+
+```
+Mensaje ─► BIENVENIDA ─► POST /router ─► Rules por `route`
+                                          ├─ conversation → agente que obtiene datos ─► POST /brain
+                                          ├─ catalog      → Catálogo Productos       ─► POST /catalog
+                                          ├─ checkout     → checkout link de pago    ─► POST /checkout
+                                          ├─ search_order → consultar orden          ─► POST /search-order
+                                          └─ human        → Soporte humano           ─► texto + silenciar
+Ubicación ─► envian ubicacion nativa ─► POST /location
+```
+
+| Flow | Endpoint | Body | Mensaje al cliente | Rules |
+|---|---|---|---|---|
+| Bienvenida (GENERAL) | `/router` | rawMessage `{body}` · phone `{from}` · history `{history}` · name `{name}` | **Enviar al cliente APAGADO** | `route` = `conversation` → agente que obtiene datos · `catalog` → Catálogo Productos · `checkout` → checkout link de pago · `search_order` → consultar orden · `human` → Soporte humano |
+| agente que obtiene datos | `/brain` | rawMessage `{body}` · phone `{from}` · name `{name}` | `{message}` | `intencion` = `dudas` → Soporte humano |
+| Catálogo Productos | `/catalog` | rawMessage `{body}` · phone `{from}` | `{message}` | — |
+| checkout link de pago | `/checkout` | phone `{from}` | `{message}` | — |
+| consultar orden | `/search-order` | rawMessage `{body}` · phone `{from}` | `{message}` | — |
+| envian ubicacion nativa (UBICACIÓN) | `/location` | phone `{from}` · latitude · longitude (variables de ubicación del **@**) | `{message}` | `intencion` = `dudas` → Soporte humano |
+| Soporte humano (nuevo) | — | — | Texto con wa.me/593993157333 | Luego **Silenciar** 60 min |
+
+Los flows de destino no necesitan palabras clave: solo se llega a ellos desde las Rules. El flow "ELEGIR METODO DE
+PAGO" ya no hace falta (la conversación pregunta tarjeta o efectivo).
+
 ## Endpoints para BuilderBot
 
 Todos responden HTTP 200 con
