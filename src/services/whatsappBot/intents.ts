@@ -23,7 +23,8 @@ export const wantsReorder = test(
   /\b(lo mismo (de|que) (la )?(ultima|otra) vez|lo de (la )?(ultima|otra) vez|lo de siempre|lo mismo de siempre|repetir (mi |el )?(ultimo )?pedido|repite (mi |el )?(ultimo )?pedido|mi ultimo pedido|pedido anterior|lo mismo que antes|repetir|lo mismo)\b/
 );
 
-export const wantsMenu = test(/\b(menu|carta|que (tienen|venden|hay)|catalogo|productos|opciones|recomienda|recomiendas|recomendacion)\b/);
+// "qué tienen", "qué bebidas tienen", "qué tienen de dulce": hasta dos palabras entre "qué" y el verbo.
+export const wantsMenu = test(/\b(menu|carta|que (\w+ ){0,2}(tienen|venden|hay)|que (tienen|venden|hay)( \w+){0,3}|catalogo|productos|opciones|recomienda|recomiendas|recomendacion)\b/);
 
 export const wantsCart = test(/\b(mi carrito|que llevo|que tengo|resumen|mi pedido actual|como va (mi )?pedido|ver (el )?pedido|total)\b/);
 
