@@ -349,6 +349,23 @@ function isNotAnAddress(message: string) {
   return /\bdireccion\b/.test(normalized) && !looksLikeAddress(normalized.replace(/\bdireccion\b/g, " "));
 }
 
+/**
+ * En el paso de dirección: "me llamo Diego Reyes" (o el nombre pelado, cuando la IA lo leyó como nombre) es el
+ * NOMBRE del cliente, no la dirección de entrega. El motorizado recibía "Delivery a: me llamo Diego Reyes".
+ * Una dirección de verdad ("Victor Emilio Estrada 123 y Guayacanes, casa blanca") nunca cae aquí: siempre le
+ * sobran palabras que no son el nombre.
+ */
+export function isCustomerNameNotAddress(message: string, name?: string) {
+  const text = normalizeText(message).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  if (/^(me llamo|mi nombre es|soy|a nombre de|de parte de|el nombre es)\s+\S/.test(text) && !looksLikeAddress(text)) return true;
+  if (!name) return false;
+  const nameWords = new Set(normalizeText(name).replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean));
+  if (!nameWords.size) return false;
+  // El mensaje es el nombre y nada más ("Diego Reyes").
+  return text.split(" ").every((word) => nameWords.has(word));
+}
+
 /** "no", "incorrecto", "todo está mal", "hay un error": un rechazo sin decir qué cambiar. */
 function isBareRejection(message: string) {
   const text = normalizeText(message).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
@@ -385,6 +402,31 @@ function describeLastOrder(order: LastOrder) {
 
 // ─── Reglas ──────────────────────────────────────────────────────────────────
 
+/** Las disculpas de "no te entendí": se quitan si el turno sí aplicó algo (ver finish). */
+const APOLOGY = /^(No te entendí bien|Perdón, no te entendí|Perdona, no te cacho|Perdona, sigo sin cacharte)/;
+
+/**
+ * Todo lo que un turno puede aplicarle al pedido. Si esta foto cambia durante el turno, el bot entendió algo
+ * aunque la regla haya terminado en "no entendido" (ej. el local se elige dentro de finish).
+ */
+function applicableSnapshot(state: BotState) {
+  return JSON.stringify([
+    state.cart,
+    state.choiceQueue,
+    state.deliveryType,
+    state.deliveryAddress,
+    state.deliveryCoordinates,
+    state.branchId,
+    state.customerName,
+    state.customerEmail,
+    state.paymentMethod,
+    state.billingPreference,
+    state.billingName,
+    state.billingDocNumber,
+    state.notes,
+  ]);
+}
+
 export async function handleTurn(previous: BotState, input: TurnInput, deps: BotDeps): Promise<TurnResult> {
   const state: BotState = { ...previous, cart: [...(previous.cart || [])], choiceQueue: [...(previous.choiceQueue || [])] };
   let message = String(input.message || "").trim();
@@ -396,6 +438,8 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
 
   // El menú ya cierra con "Dime qué se te antoja": no se repite la pregunta de "¿qué te gustaría pedir?".
   let skipIdleQuestion = false;
+  // Foto de lo que el turno puede aplicar al pedido: si algo de esto cambió, el bot SÍ entendió (ver APOLOGY).
+  const appliedBefore = applicableSnapshot(state);
   const finish = async (decision: string, route: Route = "conversation", extra: Partial<TurnResult> = {}): Promise<TurnResult> => {
     // Cualquier turno que el bot sí entendió reinicia el contador para derivar a una persona.
     if (!decision.startsWith("R11")) state.misunderstood = 0;
@@ -414,7 +458,16 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     }
     const next = await nextStep(state, deps);
     const question = skipIdleQuestion && state.stage === "idle" ? "" : next.question;
-    let reply = [...notes, question].filter(Boolean).join("\n\n");
+    // El bot no se disculpa por un turno que SÍ aplicó algo (tipo de entrega, dirección, local, nombre, correo,
+    // pago, productos). En producción se vio "No te entendí bien 🙈" junto con "¿me mandas tu ubicación?" o con la
+    // dirección ya guardada: la disculpa sobraba. El local se elige dentro de este mismo finish (pickBranch), por
+    // eso la comparación se hace aquí y no donde se arma la disculpa.
+    const applied = applicableSnapshot(state) !== appliedBefore;
+    if (applied) state.misunderstood = 0;
+    const shown = applied ? notes.filter((note) => !APOLOGY.test(note.trim())) : notes;
+    let reply = [...shown, question].filter(Boolean).join("\n\n");
+    // Nunca una respuesta vacía por haber quitado la disculpa.
+    if (!reply) reply = [...notes, question].filter(Boolean).join("\n\n");
     if (decision === "R10:saludo" && state.stage === "idle" && !/^hola/i.test(reply)) reply = `¡Hola! 👋 Qué gusto tenerte por Boloncity\n\n${reply}`;
     const resolvedRoute = next.route || route;
     const intent: Intent = resolvedRoute === "catalog" || decision === "R9:menu" ? "menu" : "conversar";
@@ -547,6 +600,17 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return { state, reply: await deps.trackOrder(state.phone, message), route: "tracking", intent: "consultar_pedido", step: state.stage, decision: "R3:consultar_pedido" };
   }
 
+  // R4 · "mejor que sean 3" mientras se elige el producto: es una CANTIDAD, no un "no te entendí". Se guarda para
+  // lo que se está eligiendo (antes se respondía "Perdona, no te cacho 🙈" y el carrito quedaba en 1).
+  if (state.pendingChoice?.kind === "product") {
+    const cantidad = quantityOnlyRequest(message);
+    if (cantidad) {
+      state.pendingChoice = { ...state.pendingChoice, quantity: cantidad };
+      notes.push(`Dale, que sean ${cantidad} 👍`);
+      return finish("R4:cantidad_en_eleccion", "choice");
+    }
+  }
+
   // R4 · Respuesta a una elección pendiente (opciones de producto, repetir pedido, sucursal, misma dirección).
   if (state.pendingChoice) {
     const resolved = await resolvePendingChoice(state, message, deps, notes);
@@ -626,6 +690,28 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return finish("R10:delivery_repetido", "location");
   }
 
+  // El cliente ESCRIBE la dirección cuando el bot le pidió el pin ("Victor Emilio Estrada 123 y Guayacanes, casa
+  // blanca de dos pisos"). El bot SÍ entendió: se guarda como referencia de entrega y se vuelve a pedir el pin sin
+  // disculparse (antes respondía "No te entendí bien 🙈"). Las coordenadas siguen siendo obligatorias: sin ellas no
+  // se puede cotizar el envío ni saber qué local atiende.
+  if (
+    state.stage === "location" &&
+    state.deliveryType === "delivery" &&
+    !state.deliveryCoordinates &&
+    !state.deliveryAddress &&
+    !extractMapsUrl(message) &&
+    looksLikeAddress(message) &&
+    meaningfulTokens(message).length >= 4
+  ) {
+    // "2 colas bien frias" también trae dígitos: si el texto es del menú, no es una dirección.
+    const asProduct = await deps.search(message, state.branchId);
+    if (asProduct.kind === "none" && !asProduct.suggestions.length) {
+      state.deliveryAddress = message.slice(0, 200);
+      notes.push(`Anoté la dirección: ${state.deliveryAddress} ✅\nPara cotizarte el envío igual necesito el pin 📍`);
+      return finish("R10:direccion_escrita", "location");
+    }
+  }
+
   // R8 · Ver el carrito. Lo que está a medias (esperando que elija) también se cuenta: si no, el cliente
   // que pidió algo mientras había una pregunta abierta lee "tu carrito está vacío" y cree que lo perdió.
   const pendientes = pendingItemsLabel(state);
@@ -686,9 +772,14 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     !extraction.customerEmail &&
     message.length >= 5
   ) {
-    if (!isNotAnAddress(message)) {
+    if (isCustomerNameNotAddress(message, extraction.customerName || state.customerName)) {
+      // "me llamo Diego Reyes" en el paso de la dirección: es su nombre (ya quedó anotado), no la dirección de
+      // entrega. Antes se guardaba crudo y el resumen decía "Delivery a: me llamo Diego Reyes".
+      notes.push("Ese es tu nombre 😊 Ahora sí, la dirección de entrega 👇");
+    } else if (!isNotAnAddress(message)) {
       state.deliveryAddress = message.slice(0, 200);
       state.previousDeliveryAddress = undefined;
+      notes.push(`Anoté la dirección: ${state.deliveryAddress} ✅`);
     } else if (isAddressReference(message) && state.previousDeliveryAddress) {
       // "la misma" después de "la dirección está mal": se vuelve a la dirección que tenía (se ve en el resumen).
       state.deliveryAddress = state.previousDeliveryAddress;
@@ -768,6 +859,40 @@ const CONTROL_WORDS = new Set([
   "gracias", "y", "de", "mas", "bien", "va", "ser", "sera", "seria", "pero", "ahora", "hacer", "haz", "hazlo", "cambia", "cambialo",
 ]);
 
+/** Palabras que acompañan a una cantidad ("mejor que sean 3") y que no nombran ningún producto. */
+const QUANTITY_CONTEXT_WORDS = new Set([
+  "mejor", "que", "q", "sean", "sea", "seran", "son", "serian", "seria", "ser", "ponme", "pon", "quiero", "dame", "hazlo",
+  "haz", "hazme", "anota", "anotame", "en", "total", "ahora", "porfa", "porfavor", "favor", "gracias", "y", "de", "a", "me",
+  "no", "si", "mas", "entonces", "ya", "pero",
+]);
+
+const WORD_NUMBERS: Record<string, number> = { un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10 };
+
+/** Palabras que dejan claro que el número es una CANTIDAD y no la opción de la lista ("que sean 3" vs "3"). */
+const QUANTITY_MARKERS = new Set(["sean", "sea", "seran", "son", "serian", "seria", "total"]);
+
+/**
+ * "mejor que sean 3": el mensaje SOLO cambia la cantidad (no nombra productos ni elige de la lista). Con una
+ * elección abierta el bot respondía "Perdona, no te cacho 🙈" y la cantidad se perdía; un número suelto ("3") sigue
+ * siendo la opción 3 de la lista.
+ */
+export function quantityOnlyRequest(message: string): number | null {
+  const words = normalizeText(message).replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length < 2) return null;
+  let quantity: number | null = null;
+  for (const word of words) {
+    const value = /^\d{1,2}$/.test(word) ? Number(word) : WORD_NUMBERS[word] || 0;
+    if (value) {
+      if (quantity !== null) return null;
+      quantity = value;
+      continue;
+    }
+    if (!QUANTITY_CONTEXT_WORDS.has(word)) return null;
+  }
+  if (!quantity || quantity < 1 || quantity > 20) return null;
+  return words.some((word) => QUANTITY_MARKERS.has(word)) ? quantity : null;
+}
+
 /** ¿El mensaje solo trae palabras de control ("quiero delivery a mi casa", "no, mejor para retirar")? */
 function onlyControlWords(message: string) {
   const words = normalizeText(message).split(" ").filter(Boolean);
@@ -823,8 +948,46 @@ function stageQuestionHint(state: BotState) {
 /** Lo que el cliente pidió y todavía está esperando que elija ("un café", "el de queso verde"). */
 function pendingItemsLabel(state: BotState) {
   // Solo lo que está en cola: lo que el bot pregunta en este mismo mensaje ya se ve abajo.
-  const pending = state.choiceQueue.map((item) => item.query).filter(Boolean);
+  const pending = state.choiceQueue.map((item) => cleanQueryLabel(item.query)).filter(Boolean);
   return pending.length ? `\n\nY me falta preguntarte por: ${pending.join(", ")} 👇` : "";
+}
+
+/**
+ * Adjetivos de CÓMO lo quiere el cliente, no de QUÉ producto es: no se repiten al preguntar
+ * ("¿Cuál colita bien fria quieres?" sonaba a que el bot se burlaba). Ver cleanQueryLabel.
+ */
+const PREFERENCE_WORDS = new Set([
+  "bien", "muy", "super", "bn", "porfa", "porfavor", "favor",
+  "fria", "frio", "frias", "frios", "friita", "friito", "heladita", "helado", "helada", "heladito", "fresca", "fresco",
+  "caliente", "calientita", "calientito", "calentita", "calentito", "tibia", "tibio",
+  "grande", "grandes", "pequena", "pequeno", "chiquita", "chiquito", "chica", "chico",
+]);
+
+/**
+ * El nombre del producto tal como se le muestra al cliente en una pregunta: sin los adjetivos de cómo lo quiere
+ * ("una colita bien fria" → "colita"). Si al quitarlos no queda nada, se deja el texto original.
+ */
+export function cleanQueryLabel(query: string) {
+  const words = String(query || "").trim().split(/\s+/).filter(Boolean);
+  const kept = words.filter((word) => !PREFERENCE_WORDS.has(normalizeText(word)));
+  return kept.length ? kept.join(" ") : String(query || "").trim();
+}
+
+/**
+ * ¿Las dos consultas hablan del MISMO producto? Sirve para no anotar dos veces lo que el cliente dijo una sola vez
+ * ("colita" vs "colita bien fria"): se quitan los adjetivos de cómo lo quiere y los tokens con significado tienen
+ * que ser LOS MISMOS.
+ *
+ * Ojo: no basta con que uno contenga al otro. "una cola y una cola zero" son DOS bebidas distintas ("cola" ⊂
+ * "cola zero") y con la inclusión el segundo producto se descartaba en silencio: el cliente pedía dos y le llegaba
+ * una sola, sin aviso.
+ */
+export function sameProductQuery(a: string, b: string) {
+  const left = meaningfulTokens(cleanQueryLabel(a));
+  const right = meaningfulTokens(cleanQueryLabel(b));
+  if (!left.length || !right.length) return false;
+  const key = (tokens: string[]) => [...new Set(tokens)].sort().join(" ");
+  return key(left) === key(right);
 }
 
 /** ¿Esto parece el nombre de un producto y no una muletilla ("mejor", "para retirar")? */
@@ -849,11 +1012,11 @@ async function addSearchedItem(state: BotState, query: string, quantity: number,
     return true;
   }
   if (result.suggestions.length) {
-    notes.push(`Mmm, no encontré "${query}" tal cual 🙈`);
+    notes.push(`Mmm, no encontré "${cleanQueryLabel(query)}" tal cual 🙈`);
     state.pendingChoice = { kind: "product", query, quantity, options: result.suggestions.map(toOption) };
     return true;
   }
-  notes.push(`Uy, no tenemos "${query}" en el menú 🙈`);
+  notes.push(`Uy, no tenemos "${cleanQueryLabel(query)}" en el menú 🙈`);
   return false;
 }
 
@@ -984,6 +1147,10 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
       // repetía la lista tal cual y el producto aparecía recién un turno después (el carrito
       // incluso se veía vacío en "qué llevo").
       const held = state.pendingChoice;
+      // El cliente nombró el MISMO producto dos veces en un mensaje ("una colita bien fria": la IA devuelve
+      // "colita" y "colita bien fria"). Ya se le está preguntando por él: no se anota otra vez, o el bot decía
+      // "Apenas cerremos esto te pregunto por eso" y preguntaba por eso mismo en el mismo mensaje.
+      if (held.kind === "product" && sameProductQuery(held.query, item.query)) continue;
       state.pendingChoice = null;
       const added = looksLikeProductQuery(item.query) && (await addSearchedItem(state, item.query, item.quantity, deps, notes, true));
       state.pendingChoice = held;
@@ -996,7 +1163,7 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
       const found = looksLikeProductQuery(item.query) ? await deps.search(item.query, state.branchId) : null;
       if (found && (found.kind !== "none" || found.suggestions.length)) {
         state.choiceQueue.push(item);
-        notes.push(`Anotado lo de "${item.query}" 📝 Apenas cerremos esto te pregunto por eso`);
+        notes.push(`Anotado lo de "${cleanQueryLabel(item.query)}" 📝 Apenas cerremos esto te pregunto por eso`);
         changed = true;
       }
       continue;
@@ -1172,7 +1339,7 @@ async function chooseWithAi<T extends { name: string; price?: number }>(
   deps: BotDeps
 ): Promise<T | null> {
   if (!deps.chooseOption || options.length < 2) return null;
-  const question = choice.kind === "branch" ? "¿En qué local lo retiras?" : choice.label ? `Opciones de ${choice.label}` : `¿Cuál ${choice.query} quieres?`;
+  const question = choice.kind === "branch" ? "¿En qué local lo retiras?" : choice.label ? `Opciones de ${choice.label}` : `¿Cuál ${cleanQueryLabel(choice.query)} quieres?`;
   try {
     const index = await deps.chooseOption({ message, question, options: options.map((option) => ({ name: option.name, price: option.price })) });
     return index && index >= 1 && index <= options.length ? options[index - 1] : null;
@@ -1496,7 +1663,7 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
         const differences = choice.options.map((option, index) => `${index + 1}. ${prettyName(distinctiveLabel(option, choice.options, index))} ${money(option.price)}`).join("\n");
         return { question: `Uy, tengo varias parecidas 😅 ¿cuál prefieres?\n${differences}\n\nDime cuál y te la agrego`, route: "choice" };
       }
-      const ask = choice.label ? `Estas son nuestras opciones de ${choice.label} 😋` : `¿Cuál ${choice.query} quieres?`;
+      const ask = choice.label ? `Estas son nuestras opciones de ${choice.label} 😋` : `¿Cuál ${cleanQueryLabel(choice.query)} quieres?`;
       return { question: `${ask}\n${optionsList(choice.options)}\n\nDime cuál prefieres 😊`, route: "choice" };
     }
     if (choice.kind === "reorder") {

@@ -19,9 +19,10 @@ import axios from "axios";
 import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
 import { classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
-import { botResponseRoute, isDuplicateTurn, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
+import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
+import { WhatsAppSession } from "../models/WhatsAppSession";
 import { isBotPath } from "../app";
-import { BotDeps, BotState, classifyRoute, createInitialState, handleTurn, LastOrder, TurnResult } from "../services/whatsappBot/router";
+import { BotDeps, BotState, classifyRoute, cleanQueryLabel, createInitialState, handleTurn, LastOrder, sameProductQuery, TurnResult } from "../services/whatsappBot/router";
 
 const MENU: CatalogProduct[] = menuSeedItems
   .filter((item) => item.price > 0)
@@ -1517,6 +1518,167 @@ test("dos nodos HTTP de BuilderBot con el mismo mensaje = un solo turno", async 
   assert.equal(isDuplicateTurn(sesion, "abc", 25000, 25000, "brain"), false);
   // Mismo endpoint respondiendo OTRA pregunta: sigue siendo un mensaje nuevo (VR-04 protegido).
   assert.equal(isDuplicateTurn({ ...sesion, state: { stage: "choosing" }, lastStageBefore: "choosing|zzz" }, "abc", 2200, 2200, "assistant"), false);
+});
+
+test("DN-01: el turno del OTRO nodo HTTP con el MISMO texto no se procesa dos veces", async () => {
+  // Producción: un nodo manda rawMessage={body} y el otro solo history={history}. Misma burbuja = mismo texto,
+  // o el nodo de {history} sin texto legible (hash vacío).
+  const hash = turnHash("la zero", null, null);
+  const vacio = turnHash("", null, null);
+  const sesion = { lastMessageHash: hash, lastReply: "respuesta", lastMessageAt: new Date(1000), lastStageBefore: "choosing|aaa", lastEndpoint: "brain", state: { stage: "choosing" } };
+  assert.equal(isDuplicateTurn(sesion, hash, 2200, 2200, "assistant"), true, "otro nodo, mismo texto, segundos después: misma burbuja");
+  assert.equal(isDuplicateTurn(sesion, vacio, 2200, 2200, "assistant"), true, "el nodo de {history} sin texto legible no trae nada nuevo");
+  // Pasada la ventana ya es una burbuja nueva aunque venga por el otro nodo.
+  assert.equal(isDuplicateTurn(sesion, hash, 30000, 30000, "assistant"), false);
+  // Dos burbujas DE VERDAD del cliente llegan por el MISMO endpoint: se procesan las dos.
+  assert.equal(isDuplicateTurn({ ...sesion, lastMessageHash: "otro" }, hash, 2200, 2200, "brain"), false, "mismo nodo, texto nuevo: se procesa");
+  // Sin endpoint guardado (sesión vieja) la defensa no inventa duplicados.
+  assert.equal(isDuplicateTurn({ ...sesion, lastEndpoint: "" }, "OTRO-hash", 2200, 2200, "assistant"), false);
+  assert.equal(isOtherHttpNode({ endpoint: "brain", endpointBefore: "assistant", lastAt: 1000, now: 2000 }), true);
+  assert.equal(isOtherHttpNode({ endpoint: "brain", endpointBefore: "brain", lastAt: 1000, now: 2000 }), false);
+});
+
+test("DN-04: el pin (/location) y el menú (/catalog) NUNCA son el 'otro nodo': son pasos del mismo flow", async () => {
+  // El cliente manda el pin a los 3 s de que el bot se lo pide: con la ventana de 20 s se descartaba y el
+  // delivery quedaba imposible (el turno tragado ni siquiera escribe la sesión: el bucle duraba 20 s).
+  const pin = turnHash("", { lat: -2.1709, lng: -79.9224 }, null);
+  const sesion = { lastMessageHash: turnHash("a domicilio", null, null), lastReply: "Mándame tu ubicación desde el clip 📎", lastMessageAt: new Date(1000), lastStageBefore: "location|aaa", lastEndpoint: "brain", state: { stage: "location" } };
+  assert.equal(isDuplicateTurn(sesion, pin, 4000, 4000, "location"), false, "el pin se procesa aunque llegue a los 3 s");
+  assert.equal(isOtherHttpNode({ endpoint: "location", endpointBefore: "brain", lastAt: 1000, now: 4000 }), false);
+  const menu = { ...sesion, lastMessageHash: turnHash("hola", null, null), lastReply: "¡Hola! 👋", lastStageBefore: "idle|aaa", state: { stage: "idle" } };
+  assert.equal(isDuplicateTurn(menu, turnHash("quiero ver el menu", null, null), 2000, 2000, "catalog"), false, "el menú se procesa");
+  assert.equal(isOtherHttpNode({ endpoint: "catalog", endpointBefore: "brain", lastAt: 1000, now: 2000 }), false);
+});
+
+test("DN-05: con los dos nodos en orden alternado, la burbuja NUEVA no recibe la respuesta vieja", async () => {
+  // Burbuja 1 la atendió /brain; la burbuja 2 llega primero por /assistant con OTRO texto: es un mensaje nuevo.
+  const sesion = { lastMessageHash: turnHash("hola, quiero un bolon mixto", null, null), lastReply: "¿Cuál colita quieres?", lastMessageAt: new Date(1000), lastStageBefore: "choosing|aaa", lastEndpoint: "brain", state: { stage: "choosing" } };
+  assert.equal(isDuplicateTurn(sesion, turnHash("la zero", null, null), 1700, 1700, "assistant"), false, "texto nuevo por el otro nodo: es la burbuja siguiente");
+});
+
+test("DN-02: lastEndpoint está en el schema de la sesión (si no, Mongoose lo descarta y la defensa nunca se activa)", async () => {
+  assert.ok(WhatsAppSession.schema.path("lastEndpoint"), "falta lastEndpoint en models/WhatsAppSession.ts");
+  const guardado: any = turnRecord(createInitialState("+593900120001"), { state: createInitialState("+593900120001"), reply: "hola", route: "conversation", intent: "conversar", step: "idle", decision: "R10:saludo" } as TurnResult, "abc", new Date(1000), "brain");
+  assert.equal(guardado.lastEndpoint, "brain");
+});
+
+test("DN-03: VR-04 sigue viva con la defensa de dos nodos (dos '1' seguidos por el MISMO endpoint)", async () => {
+  const { deps } = fakeDeps();
+  const start = createInitialState("+593900120002");
+  const t0 = 2_000_000;
+  const hash1 = turnHash("1", null, null);
+  const pedido = await handleTurn(start, { message: "2 tigrillos y una coca cola" }, deps);
+  let session: any = turnRecord(start, pedido, turnHash("2 tigrillos y una coca cola", null, null), new Date(t0), "brain");
+  assert.equal(isDuplicateTurn(session, hash1, t0 + 1000, t0 + 1000, "brain"), false);
+  const tigrillo = await handleTurn(session.state, { message: "1" }, deps);
+  session = turnRecord(session.state, tigrillo, hash1, new Date(t0 + 1500), "brain");
+  assert.equal(isDuplicateTurn(session, hash1, t0 + 3500, t0 + 3500, "brain"), false, "otra pregunta por el mismo nodo: se procesa");
+  const cola = await handleTurn(session.state, { message: "1" }, deps);
+  assert.equal(cola.state.cart.length, 2, "se agregó la coca cola");
+});
+
+test("AP-01: el bot NO se disculpa cuando el turno sí aplicó algo (nombre del local en un mensaje que no entendió)", async () => {
+  const { deps } = fakeDeps();
+  const { state } = await chat(deps, ["una humita", "retiro"]);
+  // El local se elige dentro de finish(): antes el mensaje salía con "No te entendí bien 🙈" y el local YA elegido.
+  const elegido = await handleTurn(state, { message: "bla bla urdesa bla" }, deps);
+  assert.equal(elegido.state.branchId, "b-urdesa", "sí se entendió el local");
+  assert.doesNotMatch(elegido.reply, /No te entendí bien|Perdón, no te entendí/, elegido.reply);
+});
+
+test("AP-02: sin aplicar nada, la disculpa sigue saliendo", async () => {
+  const { deps } = fakeDeps();
+  const { state } = await chat(deps, ["una humita"]);
+  const nada = await handleTurn(state, { message: "asd qwe zxc" }, deps);
+  assert.match(nada.decision, /^R1[01]/, nada.decision);
+  assert.match(nada.reply, /No te entendí|no te entendí/, nada.reply);
+});
+
+test("AP-03: la dirección escrita cuando se pidió el pin se anota y no se pide perdón", async () => {
+  const { deps } = fakeDeps();
+  const { state } = await chat(deps, ["una humita", "delivery"]);
+  assert.equal(state.stage, "location");
+  const direccion = await handleTurn(state, { message: "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos" }, deps);
+  assert.equal(direccion.decision, "R10:direccion_escrita");
+  assert.equal(direccion.state.deliveryAddress, "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos");
+  assert.doesNotMatch(direccion.reply, /No te entendí bien/, direccion.reply);
+  assert.match(direccion.reply, /pin 📍/);
+});
+
+test("PR-01: la pregunta nombra el producto limpio, sin los adjetivos de cómo lo quiere", async () => {
+  assert.equal(cleanQueryLabel("colita bien fria"), "colita");
+  assert.equal(cleanQueryLabel("cafe bien caliente"), "cafe");
+  assert.equal(cleanQueryLabel("una cola grande"), "una cola");
+  assert.equal(cleanQueryLabel("bien fria"), "bien fria", "si no queda nada se deja el texto original");
+  assert.equal(cleanQueryLabel("bolon mixto de verde"), "bolon mixto de verde");
+});
+
+test("PR-02: no se anota 'te pregunto por eso' de algo que se está preguntando en el MISMO mensaje", async () => {
+  const { deps } = fakeDeps();
+  // La IA a veces devuelve el mismo producto dos veces ("colita" y "colita bien fria"): una sola pregunta.
+  const extract: Extractor = async () => ({
+    items: [
+      { query: "bolon mixto de verde", quantity: 1 },
+      { query: "colita bien fria", quantity: 1 },
+      { query: "colita", quantity: 1 },
+    ],
+    remove: [], setQuantity: [], source: "ai",
+  } as any);
+  const conIa = fakeDeps({ extract }).deps;
+  const turno = await handleTurn(createInitialState("+593900120003"), { message: "un bolon mixto de verde y una colita bien fria" }, conIa);
+  assert.doesNotMatch(turno.reply, /te pregunto por eso/, turno.reply);
+  assert.match(turno.reply, /¿Cuál colita quieres\?/, turno.reply);
+  assert.doesNotMatch(turno.reply, /bien fria/, "no se repite el adjetivo del cliente");
+  assert.equal(turno.state.choiceQueue.length, 0, "no queda nada en cola: era el mismo producto");
+  assert.ok(sameProductQuery("colita bien fria", "colita"));
+  assert.equal(sameProductQuery("colita", "bolon mixto"), false);
+  void deps;
+});
+
+test("PR-03: dos productos DISTINTOS no se descartan como si fueran el mismo ('una cola y una cola zero')", async () => {
+  const extract: Extractor = async () => ({
+    items: [
+      { query: "cola", quantity: 1 },
+      { query: "cola zero", quantity: 1 },
+    ],
+    remove: [], setQuantity: [], source: "ai",
+  } as any);
+  const turno = await handleTurn(createInitialState("+593900120004"), { message: "quiero una cola y una cola zero" }, fakeDeps({ extract }).deps);
+  // La segunda bebida NO se descarta en silencio: como es exacta se agrega ya (antes el pedido salía con una sola).
+  assert.equal(turno.state.cart.length + turno.state.choiceQueue.length, 1, JSON.stringify(turno.state.cart));
+  assert.equal(turno.state.cart[0]?.name, "COCA COLA ZERO", JSON.stringify(turno.state.cart));
+  assert.ok(turno.state.pendingChoice, "y sigue abierta la pregunta por la otra cola");
+  assert.equal(sameProductQuery("cola", "cola zero"), false);
+  assert.equal(sameProductQuery("bolon", "bolon de queso"), false);
+  assert.ok(sameProductQuery("colita bien fria", "colita"), "el mismo producto con adjetivos sigue siendo uno solo");
+});
+
+test("CANT-01: 'mejor que sean 3' con una elección abierta cambia la cantidad, no pide perdón", async () => {
+  const { deps } = fakeDeps();
+  const { state } = await chat(deps, ["quiero un bolon bien grande de chicharron"]);
+  assert.ok(state.pendingChoice, "hay una elección abierta");
+  const cantidad = await handleTurn(state, { message: "mejor que sean 3" }, deps);
+  assert.equal(cantidad.decision, "R4:cantidad_en_eleccion", cantidad.decision);
+  assert.doesNotMatch(cantidad.reply, /no te cacho|No te entendí/i, cantidad.reply);
+  const elegido = await handleTurn(cantidad.state, { message: "verde" }, deps);
+  assert.equal(elegido.state.cart[0]?.quantity, 3, JSON.stringify(elegido.state.cart));
+  // Un número suelto sigue siendo la OPCIÓN de la lista, no una cantidad.
+  const opcion = await handleTurn(state, { message: "3" }, deps);
+  assert.notEqual(opcion.decision, "R4:cantidad_en_eleccion");
+});
+
+test("DIR-01: en el paso de dirección, 'me llamo Diego Reyes' es el nombre, no la dirección de entrega", async () => {
+  const { deps } = fakeDeps();
+  const { state } = await chat(deps, ["quiero una humita", "me lo mandan a la casa", { location: { lat: -2.1709, lng: -79.9224 } }]);
+  assert.equal(state.stage, "address");
+  const nombre = await handleTurn(state, { message: "me llamo Diego Reyes" }, deps);
+  assert.equal(nombre.state.deliveryAddress, undefined, `se guardó como dirección: ${nombre.state.deliveryAddress}`);
+  assert.equal(nombre.state.customerName, "Diego Reyes");
+  assert.match(nombre.reply, /direccion|dirección/i, nombre.reply);
+  // La dirección de verdad sí se guarda y se acusa recibo.
+  const direccion = await handleTurn(nombre.state, { message: "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos" }, deps);
+  assert.equal(direccion.state.deliveryAddress, "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos");
+  assert.match(direccion.reply, /Anoté la dirección/, direccion.reply);
 });
 
 (async () => {
