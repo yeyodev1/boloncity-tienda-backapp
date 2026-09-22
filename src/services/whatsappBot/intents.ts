@@ -482,3 +482,81 @@ export function parseQuantityChange(message: string) {
   if (second) return { query: second[1].trim(), quantity: toNumber(second[2]) };
   return null;
 }
+
+// ─── Sucursal cerrada: programar o irse con otra abierta ─────────────────────
+
+/**
+ * DETECTOR QUE LEE LA NEGACIÓN.
+ *
+ * En el paso `closed` el cliente decide a dónde va su pedido y cuánto paga de envío, así que una
+ * frase negada NO puede contar como si la hubiera pedido: "ahorita no puedo, prográmalo" no es
+ * "ahorita", y "la otra no, gracias" no es "la otra" (antes mudaba el pedido a la otra sucursal y
+ * le cambiaba el envío sin que el cliente lo eligiera).
+ *
+ * Se mira cada coincidencia de la frase y se descarta si:
+ *   a) la sigue un "no" ("ahorita no", "hoy no", "la otra no gracias", "mañana no");
+ *   b) la antecede un "no/nunca/tampoco" pegado, solo o con un verbo de querer en medio
+ *      ("no quiero la otra", "no me mandes la otra", "mejor no la otra", "de la otra no").
+ * El "no" lejano NO niega: en "no, ahorita no, déjalo para mañana" ese primer "no" no puede
+ * tumbar el "para mañana" del final. Si alguna coincidencia queda en pie, la intención es real.
+ */
+const NEGATED_AFTER = /^ (?:no+|nop|nel|nunca|tampoco|mejor no)\b/;
+const NEGATED_BEFORE = /\b(?:no+|nop|nel|nunca|tampoco)\s*(?:me|le|lo|la|se)?\s*(?:quiero|queria|quisiera|deseo|gusta|gustaria|sirve|va|vale|manda|mandas|mande|mandes|mandar|des|pongas|es|sea|sean|necesito|prefiero)?\s*(?:de\s+)?(?:el|la|los|las|un|una)?\s*$/;
+
+const testUnnegated = (pattern: RegExp) => {
+  const global = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
+  return (message: string) => {
+    const text = normalizeText(message);
+    for (const match of text.matchAll(global)) {
+      const start = match.index ?? 0;
+      const before = text.slice(0, start);
+      const after = text.slice(start + match[0].length);
+      if (NEGATED_AFTER.test(after) || NEGATED_BEFORE.test(before)) continue;
+      return true;
+    }
+    return false;
+  };
+};
+
+/**
+ * "prográmalo", "dale para mañana", "déjalo programado", "lo quiero mañana a primera hora".
+ * Solo se consulta en el paso `closed`, donde el bot acaba de ofrecer programar: fuera de ahí
+ * "mañana" puede ser cualquier cosa.
+ */
+const SCHEDULE_PATTERN = /\b(programa|programalo|programala|programar|programado|programada|programame|agenda|agendalo|agendar|agendame|dejalo programado|lo programamos|para manana|manana|manana mismo|manana temprano|primera hora|cuando abran|cuando abra|apenas abran|apenas abra|desde las|a las 7|a las siete|espero a manana|el otro dia|otro dia|luego|despues)\b/;
+export const wantsSchedule = testUnnegated(SCHEDULE_PATTERN);
+
+/** "mejor ahora", "lo quiero ya", "ahorita mismo": no quiere esperar a la próxima apertura. */
+const NOW_PATTERN = /\b(ahora|ahorita|ya mismo|lo quiero ya|de una vez|hoy|hoy mismo|no puedo esperar|urgente|lo antes posible)\b/;
+export const wantsNow = testUnnegated(NOW_PATTERN);
+
+/**
+ * URGENCIA EXPLÍCITA: "no puedo esperar hasta mañana", "lo necesito urgente", "ahorita mismo".
+ * Le gana a "prográmalo" cuando el mensaje dice las dos cosas, porque nombra la espera para
+ * rechazarla ("no puedo esperar HASTA MAÑANA" no es pedir que se programe para mañana).
+ */
+const URGENT_PATTERN = /\b(no puedo esperar|no aguanto|no quiero esperar|urgente|lo antes posible|ya mismo|lo quiero ya|ahorita mismo|ahora mismo)\b/;
+export const wantsNowUrgently = testUnnegated(URGENT_PATTERN);
+
+/**
+ * "que me lo mande la otra", "la que esté abierta", "la de Avalon", "otro local".
+ * Quiere que lo atienda la sucursal ABIERTA que se le ofreció, no esperar a mañana.
+ */
+const OTHER_BRANCH_PATTERN = /\b(la otra|el otro|otra sucursal|otro local|otra tienda|la que este abierta|el que este abierto|la abierta|la que esta abierta|el que esta abierto|que me lo mande la otra|mandenmelo de la otra|desde la otra|cambia de sucursal|cambiar de sucursal|cambia de local|cambiar de local)\b/;
+export const wantsOtherOpenBranch = testUnnegated(OTHER_BRANCH_PATTERN);
+
+/**
+ * LO CONTRARIO: el cliente NOMBRA la opción para RECHAZARLA ("la otra no, gracias", "no quiero la otra",
+ * "ahorita no"). No elige nada, pero tampoco está hablando de productos: sin esto, "no quiero la otra"
+ * llegaba a la extracción y se leía como "quita un producto" (en producción vació el carrito).
+ * Se sigue mostrando la pregunta del local cerrado para que decida.
+ */
+const mentionsOtherOpenBranch = test(OTHER_BRANCH_PATTERN);
+const mentionsNow = test(NOW_PATTERN);
+export const rejectsClosedOption = (message: string) =>
+  (mentionsOtherOpenBranch(message) && !wantsOtherOpenBranch(message)) || (mentionsNow(message) && !wantsNow(message) && !wantsSchedule(message));
+
+/** "¿a qué hora abren?", "hasta qué hora atienden", "qué horario tienen". */
+export const asksOpeningHours = test(
+  /\b(a que hora (abren|abre|atienden|atiende|empiezan)|desde que hora|hasta que hora|que horario|cual es el horario|horario de atencion|cuando abren|cuando abre|a que hora cierran|hasta cuando atienden)\b/
+);

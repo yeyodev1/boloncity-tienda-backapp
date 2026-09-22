@@ -249,6 +249,48 @@ compatibilidad con los flujos actuales.
   Así una Rule `route = checkout` → flow "checkout link de pago" nunca crea una orden con un "gracias". Además `/checkout`,
   si recibe el mensaje, solo confirma si es una confirmación.
 
+## Qué sucursal atiende y qué pasa si está cerrada
+
+**Gana la sucursal más CERCANA que cubra la dirección, esté abierta o cerrada.** El estado abierto/cerrado NO
+decide quién atiende: antes se priorizaban las abiertas y a un cliente del centro (Centro a 1,6 km) le tocaba
+Avalon Plaza a 14,1 km con $12,21 de envío. Se cotizan las 3 más cercanas y, además, hasta 2 abiertas más
+cercanas, para poder ofrecer una alternativa que atienda ya (`quoteBotLocation`).
+
+Con la sucursal cerrada el bot **no corta la conversación**: dice el horario real y ofrece los dos caminos, sin
+decidir por el cliente (paso `closed`):
+
+1. **Programar** el pedido para la próxima apertura ("mañana miércoles 23 a las 07:00").
+2. Si hay otra sucursal **abierta** que también cubra, que se lo mande esa — diciendo su envío si cambia. En
+   retiro, el equivalente es elegir otro local abierto (la lista marca cuáles atienden ahorita).
+
+El cliente responde hablando normal: "prográmalo", "dale para mañana", "mejor ahora", "que me lo mande la otra",
+"¿a qué hora abren?" (esta última repite el horario y no cuenta como "no entendido"). Los detectores están en
+`intents.ts` (`wantsSchedule`, `wantsNow`, `wantsOtherOpenBranch`, `asksOpeningHours`); Gemini solo desempata.
+
+Los horarios NUNCA se inventan: salen de `branchOperational.service` (`getNextOpening`, `validateScheduledTime`)
+sobre los `openingHours` de Mongo. Elegir la sucursal abierta deja `preferredBranchId` en el estado, así una
+recotización por cambio de pago no devuelve al cliente a la sucursal cerrada. Cambiar de sucursal o de modalidad
+borra lo programado.
+
+### El pedido programado NO se despacha solo
+
+`createBotOrder` guarda `scheduledFor` con **las mismas reglas que `POST /api/orders`**: fecha válida,
+estrictamente futura y dentro del horario de esa sucursal (`validateScheduledTime`). Y despacha **igual que la
+web**:
+
+| | Inmediato | Programado |
+|---|---|---|
+| Picker (efectivo + delivery) | al crear | **no** |
+| RunFood (efectivo) | al crear | **no** |
+| Meta (efectivo) | al crear | al crear |
+| Correo | "Recibimos tu pedido" | "Pedido programado para &lt;fecha larga&gt;" |
+
+Un pedido programado **entra al POS y pide motorizado cuando una persona lo mueve desde el panel**: RunFood al
+pasarlo a "En preparación" y Picker a "Listas para recolección" (`updateOrderStatus`). **No existe un cron que lo
+haga solo** — `vercel.json` apunta a `/api/cron/payment-reminders`, ruta que no existe, y `scheduler.service.ts`
+solo activa y desactiva productos. Es exactamente lo que hace hoy el checkout web; ver
+`docs/runfood/verificacion-flujo.md`.
+
 ## Probar en vivo sin crear órdenes
 
 ```

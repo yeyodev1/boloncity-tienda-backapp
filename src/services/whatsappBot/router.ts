@@ -30,6 +30,12 @@ import {
   wantsPaymentLink,
   wantsReorder,
   wantsTracking,
+  wantsSchedule,
+  wantsNow,
+  wantsNowUrgently,
+  wantsOtherOpenBranch,
+  rejectsClosedOption,
+  asksOpeningHours,
 } from "./intents";
 
 /**
@@ -76,6 +82,29 @@ export interface BranchOption {
   branchId: string;
   name: string;
   address?: string;
+  /** ¿Está atendiendo ahorita? Se usa para marcar los locales abiertos y ofrecer alternativa. */
+  open?: boolean;
+  nextOpening?: OpeningWindow | null;
+}
+
+/**
+ * Próxima ventana de atención de una sucursal, tal como se la dice al cliente. `at` es el instante exacto
+ * (ISO con offset) que se guarda en `scheduledFor`; `label` ya viene en palabras ("mañana miércoles 23").
+ * Nunca se inventa: sale de los horarios de Mongo (branchOperational.service).
+ */
+export interface OpeningWindow {
+  at: string;
+  opensAt: string;
+  closesAt: string;
+  label: string;
+}
+
+/** Sucursal ABIERTA que también cubre la dirección: se ofrece como alternativa a programar. */
+export interface OpenAlternative {
+  branchId: string;
+  branchName: string;
+  deliveryFee: number;
+  distance: number;
 }
 
 export interface LastOrder {
@@ -141,6 +170,27 @@ export interface BotState {
   savedDeliveryLocation?: { coords: { lat: number; lng: number }; mapsUrl: string };
   /** Última intención enviada a BuilderBot; se reusa si BuilderBot reintenta el mismo mensaje. */
   lastIntent?: Intent;
+  /**
+   * PEDIDO PROGRAMADO. `scheduledFor` es el instante exacto de la próxima apertura de la sucursal
+   * (ISO con offset, el mismo formato que manda el checkout web) y `scheduledLabel` cómo se le dijo al
+   * cliente ("mañana miércoles 23 a las 07:00"). Se limpian si cambia la sucursal o la modalidad.
+   */
+  scheduledFor?: string;
+  scheduledLabel?: string;
+  /** Sucursal que el cliente eligió a mano (la abierta que se le ofreció): manda sobre la más cercana. */
+  preferredBranchId?: string;
+  /** Otra sucursal ABIERTA que cubre la dirección, de la última cotización. */
+  openAlternative?: OpenAlternative | null;
+  /** Lo que se le ofreció con la sucursal cerrada, para entender su respuesta ("programar" / "la otra"). */
+  closedOffer?: {
+    branchId: string;
+    branchName?: string;
+    nextOpeningAt?: string;
+    nextOpeningLabel?: string;
+    opensAt?: string;
+    closesAt?: string;
+    alternative?: OpenAlternative | null;
+  } | null;
 }
 
 export interface Quote {
@@ -153,7 +203,19 @@ export interface Quote {
 }
 
 export type LocationQuote =
-  | { covered: true; branchId: string; branchName: string; deliveryFee: number; distance: number }
+  | {
+      covered: true;
+      branchId: string;
+      branchName: string;
+      deliveryFee: number;
+      distance: number;
+      /** ¿La sucursal que gana está atendiendo ahorita? Gana la más CERCANA que cubra, abierta o cerrada. */
+      open?: boolean;
+      /** Cuándo vuelve a abrir esa sucursal (para ofrecer programar el pedido). */
+      nextOpening?: OpeningWindow | null;
+      /** Otra sucursal ABIERTA que también cubre, para ofrecerla si la que gana está cerrada. */
+      openAlternative?: OpenAlternative | null;
+    }
   | { covered: false; reason: string };
 
 export interface BotDeps {
@@ -161,9 +223,13 @@ export interface BotDeps {
   catalog(branchId?: string): Promise<CatalogProduct[]>;
   lastOrder(phone: string): Promise<LastOrder | null>;
   resolveMapsUrl(url: string): Promise<{ lat: number; lng: number } | null>;
-  quoteLocation(coords: { lat: number; lng: number }, paymentMethod?: "card" | "cash"): Promise<LocationQuote>;
+  /**
+   * `preferBranchId` fuerza a que gane ESA sucursal si cubre la dirección: es la que el cliente eligió
+   * a mano cuando la más cercana estaba cerrada. Sin ella gana siempre la más cercana que cubra.
+   */
+  quoteLocation(coords: { lat: number; lng: number }, paymentMethod?: "card" | "cash", preferBranchId?: string): Promise<LocationQuote>;
   pickupBranches(): Promise<BranchOption[]>;
-  branchStatus(branchId: string): Promise<{ open: boolean; message?: string }>;
+  branchStatus(branchId: string): Promise<{ open: boolean; message?: string; branchName?: string; nextOpening?: OpeningWindow | null }>;
   quote(state: BotState): Promise<Quote | null>;
   createOrder(state: BotState): Promise<{ ok: true; orderNumber: string; total: number; paymentLink?: string } | { ok: false; message: string }>;
   trackOrder(phone: string, message: string): Promise<string>;
@@ -424,6 +490,8 @@ function applicableSnapshot(state: BotState) {
     state.billingName,
     state.billingDocNumber,
     state.notes,
+    // Programar el pedido es aplicar algo: sin esto el bot se disculpaba por un turno que sí entendió.
+    state.scheduledFor,
   ]);
 }
 
@@ -642,6 +710,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   // R6 · Vaciar el carrito / empezar de nuevo.
   if (wantsClearCart(message)) {
     Object.assign(state, { cart: [], pendingChoice: null, choiceQueue: [], stage: "idle" });
+    clearSchedule(state);
     notes.push("Listo, borré tu pedido 🧹 Empezamos de cero");
     return finish("R6:vaciar_carrito");
   }
@@ -731,20 +800,16 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return finish("R9:menu", "catalog");
   }
 
+  // Local cerrado: el cliente elige entre programar para la próxima apertura o irse con una sucursal
+  // abierta. Va ANTES del saludo porque "dale" o "ahora" responden a esa pregunta, no son cortesía.
+  if (state.stage === "closed") {
+    const decided = await handleClosedReply(state, message, deps, notes);
+    if (decided) return finish(`R10:${decided}`);
+  }
+
   // Saludos y cortesías ("hola", "buenas tardes", "gracias", "👍"): se responde con el paso actual.
   // No cuentan como "no entendido" (antes dos saludos seguidos derivaban a soporte).
   if (isSmallTalk(message)) return finish("R10:saludo");
-
-  // Local cerrado en retiro: "otro local", "retiro" o el nombre de otro local vuelve a ofrecer los locales.
-  if (state.stage === "closed" && state.deliveryType === "pickup") {
-    const text = normalizeText(message);
-    const named = matchBranchInMessage(message, await deps.pickupBranches());
-    const wantsOther = /\b(otro|otra) (local|sucursal|lugar)\b|\bcambi\w* (de |el )?(local|sucursal)\b/.test(text) || detectDeliveryType(message) === "pickup";
-    if ((named && named.branchId !== state.branchId) || wantsOther) {
-      Object.assign(state, { branchId: undefined, branchName: undefined, pendingChoice: null });
-      return finish("R10:cambiar_local");
-    }
-  }
 
   // R10 · Respuesta corta y directa a la pregunta del paso actual ("1", "efectivo", "Ana Pérez", la cédula).
   if (await applyDirectAnswer(state, message, deps, notes)) return finish("R10:respuesta_al_paso");
@@ -1248,6 +1313,8 @@ async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps
 }
 
 async function setDeliveryType(state: BotState, type: "delivery" | "pickup", deps: BotDeps, notes: string[]) {
+  // Cambiar de modalidad cambia (o borra) la sucursal: lo programado para la anterior ya no vale.
+  if (state.deliveryType !== type) clearSchedule(state);
   state.deliveryType = type;
   // "¿En qué local lo retiras?" no aplica a delivery, ni "¿a la misma dirección?" a retiro: la pregunta se descarta.
   if ((type === "delivery" && state.pendingChoice?.kind === "branch") || (type === "pickup" && state.pendingChoice?.kind === "reuse_location")) {
@@ -1275,11 +1342,15 @@ async function applyLocation(
   mapsUrl: string,
   deps: BotDeps,
   notes: string[],
-  { silent = false }: { silent?: boolean } = {}
+  { silent = false, keepPreferred = false }: { silent?: boolean; keepPreferred?: boolean } = {}
 ) {
-  const quote = await deps.quoteLocation(coords, state.paymentMethod);
+  // Una ubicación NUEVA vuelve a decidir qué sucursal atiende: la elección manual anterior no se arrastra.
+  if (!keepPreferred) state.preferredBranchId = undefined;
+  const quote = await deps.quoteLocation(coords, state.paymentMethod, state.preferredBranchId);
   if (!quote.covered) {
     Object.assign(state, { deliveryCoordinates: undefined, deliveryGoogleMapsUrl: undefined, deliveryFee: undefined, branchId: undefined, branchName: undefined });
+    clearSchedule(state);
+    state.openAlternative = null;
     if (state.deliveryType === "delivery") state.deliveryType = undefined;
     // El motivo de Picker/web habla de «Retiro en tienda» (botón de la web): en WhatsApp se dice en una frase.
     const reason = /tienda|sucursal m[aá]s cercana/i.test(quote.reason || "") || !quote.reason ? "Uy, hasta esa ubicación no llegamos con delivery 😔" : quote.reason;
@@ -1295,7 +1366,10 @@ async function applyLocation(
     deliveryDistance: quote.distance,
     branchId: quote.branchId,
     branchName: quote.branchName,
+    openAlternative: quote.openAlternative ?? null,
   });
+  // Cambiar de sucursal invalida lo programado: cada local tiene su propio horario.
+  if (branchChanged) clearSchedule(state);
   if (!silent) notes.push(`¡Listo! Te atiende la sucursal ${quote.branchName} 🛵 El delivery te cuesta ${money(quote.deliveryFee)}`);
   if (branchChanged) await revalidateCartForBranch(state, deps, notes);
   return true;
@@ -1311,7 +1385,7 @@ const paymentLabel = (method: "card" | "cash") => (method === "cash" ? "pagando 
 async function requoteForPayment(state: BotState, deps: BotDeps, notes: string[]) {
   if (state.deliveryType !== "delivery" || !state.deliveryCoordinates || !state.paymentMethod) return;
   const before = state.deliveryFee;
-  const covered = await applyLocation(state, state.deliveryCoordinates, state.deliveryGoogleMapsUrl || "", deps, notes, { silent: true });
+  const covered = await applyLocation(state, state.deliveryCoordinates, state.deliveryGoogleMapsUrl || "", deps, notes, { silent: true, keepPreferred: true });
   if (covered && before != null && state.deliveryFee != null && Math.round(before * 100) !== Math.round(state.deliveryFee * 100)) {
     notes.push(`Ojo: el envío ${paymentLabel(state.paymentMethod)} cuesta ${money(state.deliveryFee)}, no ${money(before)} como te dije 🙏`);
   }
@@ -1593,8 +1667,191 @@ function stripBranchWords(query: string, branches: BranchOption[]) {
   return removed ? tail.join(" ") : query;
 }
 
+/** ¿El pedido ya quedó programado para la sucursal que lo atiende? Entonces el horario no lo frena. */
+function isScheduledForBranch(state: BotState) {
+  return Boolean(state.scheduledFor && state.branchId && state.closedOffer?.branchId === state.branchId);
+}
+
+/**
+ * LO PROGRAMADO CADUCA SOLO.
+ *
+ * Una sesión de anoche puede quedar programada para hoy a las 07:00 y el cliente escribir "confirmo"
+ * a las 10:00. Esa hora YA PASÓ: la orden no se puede crear ("Esa hora ya pasó 🙈") y, como el pedido
+ * seguía marcado como programado, el chequeo de horario se saltaba y el resumen volvía a mostrar
+ * "🗓️ Programado para…" — cada "confirmo" repetía el mismo error, sin salida.
+ *
+ * Al caducar se borra la programación y el pedido vuelve al camino normal: si el local está ABIERTO
+ * sigue como pedido inmediato; si está cerrado, el chequeo de horario de abajo vuelve a ofrecer
+ * programarlo para la PRÓXIMA apertura.
+ */
+function expireStaleSchedule(state: BotState) {
+  if (!state.scheduledFor) return;
+  const at = new Date(state.scheduledFor).getTime();
+  if (Number.isNaN(at) || at > Date.now()) return;
+  clearSchedule(state);
+}
+
+/**
+ * Sucursal cerrada: se dice el horario REAL y se ofrecen los DOS caminos, sin decidir por el cliente.
+ *   a) programar el pedido para la próxima apertura;
+ *   b) si hay otra sucursal ABIERTA que lo pueda atender, irse con esa (diciendo su envío si cambia).
+ * Los horarios y los precios salen de `deps` (Mongo / Picker): aquí no se inventa ninguno.
+ */
+async function closedQuestion(
+  state: BotState,
+  status: { open: boolean; message?: string; branchName?: string; nextOpening?: OpeningWindow | null },
+  deps: BotDeps
+): Promise<string> {
+  const name = status.branchName || state.branchName || "La sucursal";
+  const next = status.nextOpening || null;
+  const alternative = state.deliveryType === "delivery" ? state.openAlternative || null : null;
+  const openBranches =
+    state.deliveryType === "pickup" ? (await deps.pickupBranches()).filter((branch) => branch.open && branch.branchId !== state.branchId) : [];
+
+  state.closedOffer = {
+    branchId: state.branchId!,
+    branchName: name,
+    nextOpeningAt: next?.at,
+    nextOpeningLabel: next?.label,
+    opensAt: next?.opensAt,
+    closesAt: next?.closesAt,
+    alternative,
+  };
+
+  // Sin horario configurado y sin alternativa no hay nada que ofrecer: queda el aviso de siempre.
+  if (!next && !alternative && !openBranches.length) {
+    return status.message || `${name} está cerrada ahorita 😴 Te esperamos apenas abramos`;
+  }
+
+  const head = next
+    ? `${name} está cerrada ahorita 😴 Atiende de ${next.opensAt} a ${next.closesAt}, y vuelve a abrir ${next.label} a las ${next.opensAt}`
+    : `${name} está cerrada ahorita 😴`;
+
+  const options: string[] = [];
+  const hints: string[] = [];
+  if (next) {
+    options.push(`${options.length + 1}. Te lo *programo* para ${next.label} a las ${next.opensAt} 🗓️`);
+    hints.push("*programar*");
+  }
+  if (alternative) {
+    const feeNote =
+      state.deliveryFee != null && Math.round(alternative.deliveryFee * 100) !== Math.round(state.deliveryFee * 100)
+        ? ` — ojo que el envío desde ahí cuesta ${money(alternative.deliveryFee)}, no ${money(state.deliveryFee)}`
+        : ` — el envío te cuesta ${money(alternative.deliveryFee)}`;
+    options.push(`${options.length + 1}. Te lo manda *${alternative.branchName}*, que sí está abierta ahorita 🛵${feeNote}`);
+    hints.push("*la otra*");
+  }
+  if (openBranches.length) {
+    options.push(`${options.length + 1}. Lo retiras en otro local abierto ahorita: ${openBranches.map((branch) => branch.name).join(", ")} 🏠`);
+    hints.push("*otro local*");
+  }
+
+  return `${head}\n\n¿Cómo prefieres?\n${options.join("\n")}\n\nDime ${hints.join(" o ")} y seguimos 🙌`;
+}
+
+/**
+ * Respuesta del cliente con la sucursal cerrada. Reglas primero: "prográmalo", "dale para mañana",
+ * "mejor ahora", "que me lo mande la otra", "¿a qué hora abren?", o el número de la opción.
+ * Devuelve el nombre de la decisión, o null si el mensaje no hablaba de esto.
+ */
+async function handleClosedReply(state: BotState, message: string, deps: BotDeps, notes: string[]): Promise<string | null> {
+  const offer = state.closedOffer;
+  if (!offer || offer.branchId !== state.branchId) return null;
+  const text = normalizeText(message);
+  const numbered = /^#?([1-3])$/.test(text) ? Number(text.replace("#", "")) : 0;
+  // Las opciones se numeran en el mismo orden en que se imprimieron (ver closedQuestion).
+  let index = 0;
+  const scheduleNumber = offer.nextOpeningAt ? (index += 1) : 0;
+  const alternativeNumber = offer.alternative ? (index += 1) : 0;
+  const otherBranchNumber = state.deliveryType === "pickup" ? (index += 1) : 0;
+
+  // "¿a qué hora abren?": el bot ya lo dijo, se repite el aviso sin contarlo como "no entendido".
+  if (asksOpeningHours(message)) return "horario";
+
+  // PROGRAMAR LE GANA A "AHORITA". El cliente puede decir las dos cosas en un mismo mensaje
+  // ("ahorita no puedo, prográmalo", "hoy no, mejor mañana"): si pide programar EXPLÍCITAMENTE,
+  // eso manda. Antes el "ahorita/hoy" (aunque viniera negado) mudaba el pedido a la otra sucursal
+  // y le cambiaba el envío sin que él la hubiera elegido.
+  // …salvo cuando la urgencia es explícita ("no puedo esperar hasta mañana"): ahí el "mañana"
+  // se nombra para rechazarlo, no para programar.
+  const urgent = wantsNowUrgently(message);
+  const asksSchedule = !urgent && wantsSchedule(message);
+  const asksNow = !asksSchedule && wantsNow(message);
+  const schedules =
+    Boolean(offer.nextOpeningAt) &&
+    (asksSchedule || (!asksNow && ((scheduleNumber > 0 && numbered === scheduleNumber) || (isYes(message) && !offer.alternative && !otherBranchNumber))));
+  if (schedules) {
+    state.scheduledFor = offer.nextOpeningAt;
+    state.scheduledLabel = `${offer.nextOpeningLabel} a las ${offer.opensAt}`;
+    notes.push(`¡Listo! Tu pedido queda programado para ${state.scheduledLabel} 🗓️ Seguimos con los datos y te lo dejo listo 👇`);
+    return "programar";
+  }
+
+  const alternative = offer.alternative;
+  const picksAlternative =
+    alternative &&
+    (wantsOtherOpenBranch(message) ||
+      asksNow ||
+      (alternativeNumber > 0 && numbered === alternativeNumber) ||
+      // Nombrar la sucursal para DESCARTARLA ("Avalon no") no la elige (igual que al elegir local en finish).
+      Boolean(!negatedPhrase(message) && matchBranchInMessage(message, [{ branchId: alternative.branchId, name: alternative.branchName }])));
+  if (picksAlternative && alternative && state.deliveryCoordinates) {
+    const before = state.deliveryFee;
+    state.preferredBranchId = alternative.branchId;
+    clearSchedule(state);
+    await applyLocation(state, state.deliveryCoordinates, state.deliveryGoogleMapsUrl || "", deps, notes, { silent: true, keepPreferred: true });
+    if (state.branchId === alternative.branchId) {
+      const feeChanged = before != null && state.deliveryFee != null && Math.round(before * 100) !== Math.round(state.deliveryFee * 100);
+      notes.push(
+        `Dale, te atiende ${state.branchName} que está abierta ahorita 🛵 El envío te cuesta ${money(state.deliveryFee || 0)}${
+          feeChanged ? ` (te había dicho ${money(before!)} desde ${offer.branchName})` : ""
+        }`
+      );
+    } else {
+      // La alternativa dejó de cubrir la dirección entre un mensaje y otro: se vuelve a mostrar el aviso.
+      state.preferredBranchId = undefined;
+      notes.push("Uy, esa sucursal ya no te puede atender ahorita 😔");
+    }
+    return "otra_sucursal";
+  }
+
+  // Retiro: "otro local" / el nombre de otro local vuelve a ofrecer la lista (marcando cuáles están abiertos).
+  if (state.deliveryType === "pickup") {
+    const named = negatedPhrase(message) ? null : matchBranchInMessage(message, await deps.pickupBranches());
+    const wantsOther =
+      wantsOtherOpenBranch(message) ||
+      asksNow ||
+      (otherBranchNumber > 0 && numbered === otherBranchNumber) ||
+      /\b(otro|otra) (local|sucursal|lugar)\b|\bcambi\w* (de |el )?(local|sucursal)\b/.test(text) ||
+      detectDeliveryType(message) === "pickup";
+    if ((named && named.branchId !== state.branchId) || wantsOther) {
+      Object.assign(state, { branchId: undefined, branchName: undefined, pendingChoice: null });
+      clearSchedule(state);
+      return "cambiar_local";
+    }
+  }
+
+  // Dijo que NO a una de las opciones ("la otra no, gracias", "ahorita no"): no eligió nada, pero
+  // tampoco habló de productos. Se repite la pregunta del local cerrado. Sin esto el mensaje llegaba
+  // a la extracción y "no quiero la otra" se leía como quitar un producto (vaciaba el carrito).
+  if (rejectsClosedOption(message)) {
+    notes.push(`Dale, entonces seguimos con ${offer.branchName} 🙌`);
+    return "sigue_cerrada";
+  }
+
+  return null;
+}
+
+/** Lo programado vale para UNA sucursal y su horario: si cambia el local o la modalidad, se borra. */
+function clearSchedule(state: BotState) {
+  state.scheduledFor = undefined;
+  state.scheduledLabel = undefined;
+  state.closedOffer = null;
+}
+
 async function pickBranch(state: BotState, branch: BranchOption, deps: BotDeps, notes: string[]) {
   state.pendingChoice = null;
+  if (state.branchId !== branch.branchId) clearSchedule(state);
   state.branchId = branch.branchId;
   state.branchName = branch.name;
   notes.push(`¡Perfecto! Lo retiras en ${branch.name} 🏠`);
@@ -1675,7 +1932,14 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
     if (choice.kind === "reuse_location") {
       return { question: `¿Te lo mandamos a la misma dirección de la vez pasada? 📍\n${choice.address}\n\nDime si te sirve esa misma o mándame otra ubicación`, route: "choice" };
     }
-    return { question: `¿En qué local lo retiras? 🏠\n${optionsList(choice.options)}\n\nDime cuál te queda mejor 😊`, route: "choice" };
+    // Se marca cuál está atendiendo ahorita para que pueda elegir uno abierto en vez de programar.
+    const anyStatus = choice.options.some((option) => option.open !== undefined);
+    const list = anyStatus
+      ? choice.options
+          .map((option, index) => `${index + 1}. ${prettyName(option.name)}${option.address ? ` · ${option.address}` : ""}${option.open ? " · abierto ahora ✅" : " · cerrado 😴"}`)
+          .join("\n")
+      : optionsList(choice.options);
+    return { question: `¿En qué local lo retiras? 🏠\n${list}\n\nDime cuál te queda mejor 😊`, route: "choice" };
   }
 
   if (state.stage === "ordered") return { question: "" };
@@ -1724,12 +1988,16 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
     return nextStep(state, deps);
   }
 
-  // Apenas se sabe qué local atiende se revisa el horario: no se le piden más datos a alguien que no va a poder pedir.
-  if (state.branchId) {
+  // Apenas se sabe qué local atiende se revisa el horario. Si está cerrado NO se corta la conversación:
+  // se le ofrece programar el pedido para la próxima apertura o irse con otra sucursal abierta, y el
+  // cliente decide. Un pedido ya programado para ESA sucursal sigue su curso normal.
+  expireStaleSchedule(state);
+  if (state.branchId && !isScheduledForBranch(state)) {
     const status = await deps.branchStatus(state.branchId);
     if (!status.open) {
+      clearSchedule(state);
       state.stage = "closed";
-      return { question: status.message || `${state.branchName || "La sucursal"} está cerrada ahorita 😴 Te esperamos apenas abramos` };
+      return { question: await closedQuestion(state, status, deps) };
     }
   }
 
@@ -1801,6 +2069,8 @@ export function formatSummary(state: BotState, quote: Quote) {
     ),
     block(
       delivery,
+      // Pedido programado: se dice para cuándo queda, con las mismas palabras que se usaron al ofrecerlo.
+      state.scheduledFor && state.scheduledLabel && `🗓️ Programado para ${state.scheduledLabel}`,
       payment,
       `A nombre de: ${state.customerName} · ${state.customerEmail}`,
       state.billingPreference === "invoice" && `Factura: ${state.billingName} · ${state.billingDocNumber}`,
@@ -1826,11 +2096,18 @@ async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult>
   state.stage = "ordered";
   state.lastOrderNumber = result.orderNumber;
   state.lastPaymentLink = result.paymentLink;
-  const reply =
-    state.paymentMethod === "card"
-      ? `✅ Listo, tu pedido ${result.orderNumber} quedó creado por ${money(result.total)}\n\nPágalo aquí y la cocina se pone de una:\n${result.paymentLink}`
+  // Un pedido programado NO se está preparando ahora: la cocina lo toma cuando abre el local.
+  const scheduled = state.scheduledFor && state.scheduledLabel ? `🗓️ Programado para ${state.scheduledLabel}` : "";
+  const reply = scheduled
+    ? state.paymentMethod === "card"
+      ? `✅ Listo, tu pedido ${result.orderNumber} quedó por ${money(result.total)}\n${scheduled}\n\nPágalo aquí y queda todo listo para esa hora:\n${result.paymentLink}`
       : state.deliveryType === "delivery"
-      ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nYa lo estamos preparando 🫓 Ten el efectivo listo para el motorizado`
-      : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nTe esperamos en ${state.branchName} 🏠 Pagas en efectivo al retirar`;
+      ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n${scheduled}\n\nLo preparamos apenas abra ${state.branchName} y te lo mandamos 🛵 Ten el efectivo listo para el motorizado`
+      : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n${scheduled}\n\nTe esperamos en ${state.branchName} a esa hora 🏠 Pagas en efectivo al retirar`
+    : state.paymentMethod === "card"
+    ? `✅ Listo, tu pedido ${result.orderNumber} quedó creado por ${money(result.total)}\n\nPágalo aquí y la cocina se pone de una:\n${result.paymentLink}`
+    : state.deliveryType === "delivery"
+    ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nYa lo estamos preparando 🫓 Ten el efectivo listo para el motorizado`
+    : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nTe esperamos en ${state.branchName} 🏠 Pagas en efectivo al retirar`;
   return { state, reply, route: "checkout", intent: "orden_creada", step: "ordered", decision: "R7:orden_creada", orderNumber: result.orderNumber, paymentLink: result.paymentLink };
 }
