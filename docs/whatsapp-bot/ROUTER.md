@@ -250,3 +250,16 @@ ofrecerse como "lo mismo de la última vez" (hasta que la sesión expire, 24 h s
 
 `BOT_TEST_PHONE=593995254965` (solo fuera de producción) hace que todos los mensajes usen ese teléfono. Es para probar
 por Telegram, donde `{from}` es el id del chat. Quitarla al conectar WhatsApp.
+
+## Flow tipo Sorbito: un solo nodo con `{history}`
+
+Igual que Sorbito de Verdad: el flow "agente que obtiene datos" (o "Inicio de conversación") tiene UN nodo HTTP.
+
+- `POST https://api.boloncity.com/api/orders/whatsapp-bot/assistant` (o `/brain`, es lo mismo)
+- Header `Content-Type: application/json`, Body con campos (RAW apagado): `history = {history}`, `phone = {from}`
+- Respuesta: **Enviar al cliente ON** con `{message}`
+- **Sin Rules.** Ninguna Rule puede apuntar al mismo flow: crea un bucle (pasó el 2026-09-22 contra producción)
+
+Si no llega `rawMessage`, el backend toma **el último mensaje del cliente** dentro de `{history}` (arreglo de
+`{ role, content }`, ese arreglo como JSON, o texto con líneas `user:` / `assistant:`). Si además se manda
+`rawMessage = {body}`, se usa ese. El estado del pedido vive en Mongo (`WhatsAppSession`), no en el historial.

@@ -117,12 +117,79 @@ function appendHistory(session: any, role: "user" | "assistant", content: string
  * guardado como dirección de entrega).
  */
 function readMessage(body: any) {
-  const text = [body?.rawMessage, body?.rawMess, body?.body, body?.message, body?.mensaje].map(clean).find(Boolean) || "";
+  const text = rawText(body);
   return /^_event_\w*__/i.test(text) ? "" : text.slice(0, 1500);
 }
 
+/** Texto crudo del mensaje: el campo del body o, si BuilderBot solo manda `{history}`, lo último que dijo el cliente. */
+function rawText(body: any) {
+  return [body?.rawMessage, body?.rawMess, body?.body, body?.message, body?.mensaje].map(clean).find(Boolean) || latestUserMessage(body?.history);
+}
+
+const ASSISTANT_ROLES = /^(assistant|model|bot|system|asistente|ia|ai)$/i;
+const ROLE_LINE = /^\s*(user|usuario|cliente|human|humano|customer|assistant|asistente|model|bot|system|ia|ai)\s*:\s*(.*)$/i;
+
+function historyContent(value: any): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(historyContent).filter(Boolean).join("\n").trim();
+  for (const key of ["text", "content", "message", "body", "value"]) {
+    if (typeof value?.[key] === "string") return value[key].trim();
+  }
+  return "";
+}
+
+function historyArray(value: any): any[] {
+  if (Array.isArray(value)) return value;
+  for (const key of ["messages", "history", "conversation", "data"]) {
+    if (Array.isArray(value?.[key])) return value[key];
+  }
+  return [];
+}
+
+/**
+ * Último mensaje del CLIENTE dentro de `{history}` (flow tipo Sorbito: el nodo HTTP manda solo history + from).
+ * Acepta un arreglo de mensajes ({ role, content }), ese arreglo como JSON en texto, o texto con líneas
+ * "user: …" / "assistant: …". Texto sin roles: se toma la última línea.
+ */
+export function latestUserMessage(history: unknown): string {
+  if (history == null) return "";
+  let value: any = history;
+  if (typeof value === "string") {
+    const text = clean(value);
+    if (!text) return "";
+    try {
+      value = JSON.parse(text);
+    } catch {
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (lines.some((line) => ROLE_LINE.test(line))) {
+        let last = "";
+        let current: { assistant: boolean; parts: string[] } | null = null;
+        for (const line of lines) {
+          const match = line.match(ROLE_LINE);
+          if (match) {
+            if (current && !current.assistant) last = current.parts.join("\n");
+            current = { assistant: ASSISTANT_ROLES.test(match[1]), parts: [match[2]] };
+          } else if (current) current.parts.push(line);
+        }
+        if (current && !current.assistant) last = current.parts.join("\n");
+        return last.trim();
+      }
+      return lines[lines.length - 1] || "";
+    }
+  }
+  const items = historyArray(value);
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const role = String(item?.role ?? item?.sender ?? item?.type ?? "user");
+    if (ASSISTANT_ROLES.test(role)) continue;
+    const content = historyContent(item?.content ?? item?.parts ?? item?.text ?? item?.body ?? item);
+    if (content) return content;
+  }
+  return "";
+}
+
 function readEvent(body: any): "location" | "media" | null {
-  const text = [body?.rawMessage, body?.rawMess, body?.body, body?.message].map(clean).find(Boolean) || "";
+  const text = rawText(body);
   const match = text.match(/^_event_(\w*?)__/i);
   if (!match) return null;
   return /location|ubicacion/i.test(match[1]) ? "location" : "media";

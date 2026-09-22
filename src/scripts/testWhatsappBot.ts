@@ -18,7 +18,7 @@ import axios from "axios";
 import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
 import { classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
-import { isDuplicateTurn, isRetry, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
+import { isDuplicateTurn, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
 import { isBotPath } from "../app";
 import { BotDeps, BotState, classifyRoute, createInitialState, handleTurn, LastOrder, TurnResult } from "../services/whatsappBot/router";
 
@@ -1145,6 +1145,22 @@ test("F3: en el paso de dirección 'la misma' / 'no se' / 'otra direccion' no se
   const real = await handleTurn(wrong.state, { message: "casa verde, junto al parque" }, deps);
   assert.equal(real.state.deliveryAddress, "casa verde, junto al parque");
   assert.equal(real.state.previousDeliveryAddress, undefined);
+});
+
+test("flow tipo Sorbito: el mensaje sale del {history} cuando no llega rawMessage", async () => {
+  const lastIsHumitas = [
+    [{ role: "assistant", content: "Hola, ¿qué deseas?" }, { role: "user", content: "quiero 2 humitas" }],
+    JSON.stringify([{ role: "user", content: "hola" }, { role: "assistant", content: "Hola!" }, { role: "user", content: "quiero 2 humitas" }]),
+    { messages: [{ role: "user", content: "hola" }, { role: "user", content: "quiero 2 humitas" }] },
+    "user: hola\nassistant: ¿Qué te gustaría pedir?\nuser: quiero 2 humitas",
+    "Cliente: hola\nAsistente: dime\nCliente: quiero 2 humitas",
+    "quiero 2 humitas",
+  ];
+  for (const history of lastIsHumitas) assert.equal(latestUserMessage(history), "quiero 2 humitas", JSON.stringify(history));
+  assert.equal(latestUserMessage("user: una humita\ny un cafe\nassistant: listo"), "una humita\ny un cafe");
+  for (const empty of [undefined, null, "", "{history}", [], [{ role: "assistant", content: "hola" }]]) {
+    assert.equal(latestUserMessage(empty), "", JSON.stringify(empty));
+  }
 });
 
 (async () => {
