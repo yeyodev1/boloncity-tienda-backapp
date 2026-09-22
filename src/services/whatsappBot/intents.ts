@@ -140,7 +140,44 @@ export function isPlainConfirmation(message: string) {
 }
 export const isNo = test(/^(no+|nop|nel|mejor no|negativo|todavia no|aun no|no gracias)\b/);
 
-export const wantsHuman = test(
+/**
+ * Palabras de un cliente que quiere COMPRAR. Nunca se deriva a una persona por ellas: este bot existe
+ * para tomar el pedido ("hola quisiera comprar" terminaba en soporte).
+ */
+const WANTS_TO_BUY = /\b(comprar|compro|pedir|ordenar|orden(ar|e)?|hacer un pedido|quiero un|quiero dos|quisiera|me das|dame|vender|venden|tienen|cuanto cuesta|precio|menu)\b/;
+
+const isComplaint = test(
+  new RegExp(
+    [
+      "\\b(reclamo|queja|quejarme|estafa|estafaron|pesimo|nadie (me )?responde|mal servicio|maltrato)\\b",
+      "\\b(llego|vino|vinieron|llegaron) (todo |muy |bien )?(frio|fria|frios|frias|mal|malo|mala|tarde|incompleto|incompleta|equivocado|equivocada|crudo|cruda|feo|fea|dañado|danado)\\b",
+      "\\bno (me )?(ha )?(llego|llega|llegado) (mi |el )?(pedido|orden|comida|delivery|motorizado)\\b",
+      "\\b(devolucion|devuelvan|reembolso|reembolsen|me cobraron|cobro doble|cobraron doble|cobrado dos veces)\\b",
+    ].join("|")
+  )
+);
+
+/** Pide explícitamente una persona: "quiero hablar con una persona", "pásame un asesor". */
+const asksForPerson = test(
+  new RegExp(
+    [
+      "\\b(hablar|comunicarme|contactar|hablo|me pasas|pasame|pasenme|quiero|necesito) (con )?(un |una |el |la )?(humano|humana|persona|asesor|asesora|agente|encargado|encargada|operador|operadora|alguien)\\b",
+      "\\b(atencion al cliente|servicio al cliente)\\b",
+    ].join("|")
+  )
+);
+
+/**
+ * Solo pasan a una persona los RECLAMOS y quien pide explícitamente hablar con alguien. Un cliente que
+ * quiere comprar siempre se queda en la conversación, aunque use palabras parecidas.
+ */
+export function wantsHuman(message: string) {
+  if (isComplaint(message)) return true;
+  return asksForPerson(message) && !WANTS_TO_BUY.test(normalizeText(message));
+}
+
+/** @deprecated se mantiene para no romper llamadas viejas; equivale a wantsHuman. */
+export const wantsSupport = test(
   new RegExp(
     [
       "\\b(humano|asesor|agente|una persona|hablar con alguien|atencion al cliente|soporte|reclamo|queja|estafa|pesimo|nadie (me )?responde)\\b",

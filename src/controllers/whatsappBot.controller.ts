@@ -174,7 +174,14 @@ export function latestUserMessage(history: unknown): string {
         if (current && !current.assistant) last = current.parts.join("\n");
         return last.trim();
       }
-      return lines[lines.length - 1] || "";
+      // Varias líneas sin decir quién habló: no se puede saber cuál es del cliente y cuál del bot (la
+      // última línea llegó a ser "human", de un nodo Texto de BuilderBot, y derivaba a soporte).
+      // Mejor no adivinar: el flow debe mandar también rawMessage = {body}.
+      if (lines.length > 1) {
+        console.warn(`[whatsapp-bot] {history} llegó sin roles y con ${lines.length} líneas: agrega rawMessage={body} al nodo HTTP. Muestra: ${text.slice(-200)}`);
+        return "";
+      }
+      return lines[0] || "";
     }
   }
   const items = historyArray(value);
