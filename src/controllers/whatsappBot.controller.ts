@@ -88,7 +88,7 @@ function isResetKeyword(message: string) {
   return message.toLowerCase().normalize("NFD").replace(/[^a-z]/g, "") === "reiniciatodo";
 }
 
-const RESET_REPLY = "Listo, reinicié todo 🔄 Empezamos de cero. ¿Qué te gustaría pedir hoy?";
+const RESET_REPLY = "Listo, reinicié todo 🔄 Empezamos de cero, dime qué se te antoja";
 
 /** Las órdenes viejas guardaron el teléfono en formatos distintos: se buscan todos. */
 function phoneVariants(value: unknown) {
@@ -280,7 +280,7 @@ async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMet
     .sort((a, b) => a.distance - b.distance)
     .slice(0, MAX_BRANCHES_TO_QUOTE);
   const settings = await getOrCreateSettings();
-  let lastReason = "Todavía no llegamos a esa dirección con delivery";
+  let lastReason = "Uy, hasta esa dirección todavía no llegamos con delivery 😔";
   // Se cotizan en paralelo (cada una puede tardar hasta 8 s en Picker) y gana la más cercana que cubre.
   const quotes = await Promise.all(
     candidates.map(({ branch }) =>
@@ -307,14 +307,14 @@ async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMet
 
 async function branchStatus(branchId: string) {
   const branch = await Branch.findById(branchId);
-  if (!branch || !branch.isActive) return { open: false, message: "Esa sucursal no está disponible. Escribe *otro local* para elegir otra o *delivery* para que te lo llevemos" };
+  if (!branch || !branch.isActive) return { open: false, message: "Uy, ese local no está disponible ahorita 😔 Escribe *otro local* para elegir otro, o *delivery* y te lo llevamos" };
   if (isOpen(branch)) return { open: true };
   const availability = getBranchAvailability(branch);
   return {
     open: false,
     message: availability.nextOpening
-      ? `${branch.name} está cerrada en este momento. Abre ${describeOpeningDay(availability.nextOpening.at, branch.timezone)} a las ${availability.nextOpening.opensAt}. Escríbenos desde esa hora y te tomamos el pedido`
-      : `${branch.name} no tiene horario de atención configurado`,
+      ? `${branch.name} está cerrada ahorita 😴 Abre ${describeOpeningDay(availability.nextOpening.at, branch.timezone)} a las ${availability.nextOpening.opensAt}. Escríbenos desde esa hora y te tomamos el pedido`
+      : `${branch.name} no tiene horario de atención por ahora 😔 Prueba con otro local o escríbenos en un rato`,
   };
 }
 
@@ -353,16 +353,16 @@ async function createBotOrder(state: BotState) {
   const branch = state.branchId
     ? await Branch.findOne({ _id: state.branchId, isActive: true, isArchived: { $ne: true } }).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
     : null;
-  if (!branch) throw new Error("No pudimos asignar una sucursal a tu pedido");
-  if (!isOpen(branch)) throw new Error(`${branch.name} está cerrada en este momento`);
+  if (!branch) throw new Error("No pude asignarle un local a tu pedido 🙏 Dime de nuevo si lo quieres por delivery o para retirar");
+  if (!isOpen(branch)) throw new Error(`Uy, ${branch.name} acaba de cerrar 😴 Te esperamos apenas abramos`);
 
   const isDelivery = state.deliveryType === "delivery";
   let deliveryCostCents = 0;
   let deliveryDistance = 0;
   if (isDelivery) {
-    if (!state.deliveryCoordinates) throw new Error("Falta tu ubicación para el delivery");
+    if (!state.deliveryCoordinates) throw new Error("Me falta tu ubicación para el delivery 📍 Mándamela desde el clip 📎 de WhatsApp");
     const quote = await quoteDelivery({ branch, lat: state.deliveryCoordinates.lat, lng: state.deliveryCoordinates.lng, paymentMethod: state.paymentMethod === "cash" ? "CASH" : "CARD" });
-    if (!quote.covered) throw new Error(quote.reason || "Todavía no llegamos a esa dirección con delivery");
+    if (!quote.covered) throw new Error(quote.reason || "Uy, hasta esa dirección todavía no llegamos con delivery 😔");
     deliveryDistance = quote.distance;
     deliveryCostCents = Math.round(quote.deliveryFee * 100);
     if (deliveryCostCents <= 0) deliveryCostCents = (await getOrCreateSettings()).deliveryPricePerKm || 150;
@@ -389,8 +389,8 @@ async function createBotOrder(state: BotState) {
       };
     })
     .filter(Boolean) as Array<{ product: any; name: string; price: number; quantity: number; image: string; pointsValue: number }>;
-  if (unavailable.length) throw new Error(`Ya no está disponible: ${unavailable.join(", ")}. Dime si lo cambio por otra cosa`);
-  if (!orderItems.length) throw new Error("Tu pedido está vacío");
+  if (unavailable.length) throw new Error(`Se nos acabó: ${unavailable.join(", ")} 😕 Dime si lo cambio por otra cosa`);
+  if (!orderItems.length) throw new Error("Tu pedido está vacío 🙂 Dime qué se te antoja y lo armamos");
 
   const settings = await getOrCreateSettings();
   const subtotalCents = Math.round(orderItems.reduce((sum, item) => sum + item.price * item.quantity, 0) * 100);
@@ -483,7 +483,7 @@ async function createOrderWithLock(state: BotState) {
     { $set: { checkoutLockUntil: new Date(now.getTime() + 45_000) } },
     { new: true }
   ).lean();
-  if (!locked) return { ok: false as const, message: "Ya estoy creando tu pedido, dame unos segundos" };
+  if (!locked) return { ok: false as const, message: "Ya estoy creando tu pedido, dame unos segunditos 🙏" };
   // Otra request ya creó la orden de este resumen: se devuelve la misma, nunca una segunda.
   const saved: any = locked.state;
   if (saved?.stage === "ordered" && saved.lastOrderNumber) {
@@ -499,7 +499,7 @@ async function createOrderWithLock(state: BotState) {
     return { ok: true as const, orderNumber: order.orderNumber, total: order.total / 100, paymentLink };
   } catch (error) {
     console.error("[whatsapp-bot] no se pudo crear la orden", error instanceof Error ? error.message : error);
-    return { ok: false as const, message: error instanceof Error && error.message ? error.message : "No pude crear tu pedido" };
+    return { ok: false as const, message: error instanceof Error && error.message ? error.message : "No pude crear tu pedido 🙏 ¿Lo intentamos de nuevo?" };
   } finally {
     // La orden creada se anota en la sesión en el MISMO update que suelta el candado: aunque el guardado del
     // turno fallara después, ningún "confirmo" posterior crea otra orden para este resumen.
@@ -711,8 +711,8 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
   }
 }
 
-const NO_PHONE_MESSAGE = `No pude identificar tu número de WhatsApp. Escríbenos al ${SUPPORT_PHONE} y te ayudamos`;
-const ERROR_MESSAGE = "Tuve un problema procesando tu mensaje. ¿Me lo repites?";
+const NO_PHONE_MESSAGE = `No logré leer tu número de WhatsApp 🙏 Escríbenos al ${SUPPORT_PHONE} y te ayudamos enseguida`;
+const ERROR_MESSAGE = "Dame un segundito 🙏 Se me cruzaron los cables con ese mensaje, ¿me lo repites?";
 
 function toBotResponse(result: TurnResult | null) {
   if (!result) {
@@ -824,7 +824,7 @@ export async function whatsappBotLocation(req: Request, res: Response) {
     res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "conversar" });
   } catch (error) {
     console.error("[whatsapp-bot] location falló", error);
-    res.status(200).json(errorResponse("No pude leer tu ubicación. ¿Me la compartes de nuevo?", { route: "location" }));
+    res.status(200).json(errorResponse("Mmm, no pude leer esa ubicación 🙈 ¿Me la compartes de nuevo desde el clip 📎?", { route: "location" }));
   }
 }
 
@@ -840,13 +840,13 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
     if (!phone) return res.status(200).json({ ...base, success: false, message: NO_PHONE_MESSAGE });
     const session: any = await WhatsAppSession.findOne({ phone }).lean();
     const state = session?.state as BotState | undefined;
-    if (!session || !state) return res.status(200).json({ ...base, success: false, message: "Aún no tengo tu pedido. Dime qué te gustaría pedir" });
+    if (!session || !state) return res.status(200).json({ ...base, success: false, message: "Todavía no tengo tu pedido 🙂 Dime qué se te antoja y lo armamos" });
     if (state.stage === "ordered" && state.lastOrderNumber) {
       return res.status(200).json({
         ...base,
         intencion: "orden_creada",
         success: true,
-        message: `Tu pedido ${state.lastOrderNumber} ya está registrado${state.lastPaymentLink ? `\nPágalo aquí: ${state.lastPaymentLink}` : ""}`,
+        message: `Tu pedido ${state.lastOrderNumber} ya está registrado ✅${state.lastPaymentLink ? `\nPágalo aquí: ${state.lastPaymentLink}` : ""}`,
         orderNumber: state.lastOrderNumber,
         paymentLink: state.lastPaymentLink || "",
       });
@@ -866,7 +866,7 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
     res.status(200).json({ ...toBotResponse(result), success: Boolean(result?.orderNumber) });
   } catch (error) {
     console.error("[whatsapp-bot] checkout falló", error);
-    res.status(200).json(errorResponse("No pude crear tu pedido en este momento. Escribe *confirmo* otra vez en un minuto"));
+    res.status(200).json(errorResponse("Dame un segundito 🙏 No pude crear tu pedido ahorita. Escribe *confirmo* otra vez en un minuto"));
   }
 }
 
@@ -890,7 +890,7 @@ const STATUS_LABELS: Record<string, string> = {
 async function trackOrderForPhone(phone: string, message: string, requested = "") {
   const orderNumber = requested || extractOrderNumber(message);
   if (isLid(phone)) {
-    return { success: false, message: `No puedo ver tu número de WhatsApp para buscar tus pedidos. Escríbenos al ${SUPPORT_PHONE} con tu número de pedido` } as { success: boolean; message: string; order?: any; trackingLink?: string };
+    return { success: false, message: `No logro ver tu número de WhatsApp para buscar tus pedidos 🙏 Escríbenos al ${SUPPORT_PHONE} con tu número de pedido` } as { success: boolean; message: string; order?: any; trackingLink?: string };
   }
   const order: any = await Order.findOne({ customerPhone: { $in: phoneVariants(phone) }, ...(orderNumber ? { orderNumber } : {}) })
     .sort({ createdAt: -1 })
@@ -899,20 +899,20 @@ async function trackOrderForPhone(phone: string, message: string, requested = ""
     return {
       success: false,
       message: orderNumber
-        ? `No encuentro el pedido ${orderNumber} asociado a este número. Si lo hiciste con otro teléfono, escríbenos al ${SUPPORT_PHONE}`
-        : `No encuentro pedidos con este número. Si lo hiciste con otro teléfono, escríbenos al ${SUPPORT_PHONE}`,
+        ? `No encuentro el pedido ${orderNumber} con este número 🙈 Si lo hiciste desde otro teléfono, escríbenos al ${SUPPORT_PHONE} y lo buscamos`
+        : `No encuentro pedidos con este número 🙈 Si lo hiciste desde otro teléfono, escríbenos al ${SUPPORT_PHONE} y lo buscamos`,
     };
   }
   const trackingLink = order.picker?.smrURL || "";
   const unpaidCard = order.paymentMethod === "card" && order.status === "pending";
   const lines = [
-    `Pedido ${order.orderNumber}`,
+    `*Pedido ${order.orderNumber}*`,
     `Estado: ${STATUS_LABELS[order.status] || order.status}${order.picker?.statusText ? ` · ${order.picker.statusText}` : ""}`,
     `${order.deliveryType === "pickup" ? "Retiro en" : "Sucursal"}: ${order.branch?.name || "Por confirmar"}`,
     order.items.map((item: any) => `${item.quantity} x ${item.name}`).join("\n"),
     `Total: $${(order.total / 100).toFixed(2)} · ${order.paymentMethod === "card" ? "Tarjeta" : "Efectivo"}`,
-    unpaidCard ? `Aún no registramos el pago. Puedes pagarlo aquí: ${botPaymentLink(order)}` : "",
-    trackingLink ? `Sigue tu delivery en vivo: ${trackingLink}` : "",
+    unpaidCard ? `Todavía no nos llega el pago 💳 Puedes pagarlo aquí: ${botPaymentLink(order)}` : "",
+    trackingLink ? `Sigue a tu motorizado en vivo aquí 🛵\n${trackingLink}` : "",
   ].filter(Boolean);
   return { success: true, message: lines.join("\n"), order, trackingLink };
 }
@@ -940,7 +940,7 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("[whatsapp-bot] track falló", axios.isAxiosError(error) ? error.message : error);
-    res.status(200).json({ success: false, route: "tracking", intencion: "consultar_pedido", message: `No pude consultar tu pedido en este momento. Intenta en un minuto o escríbenos al ${SUPPORT_PHONE}` });
+    res.status(200).json({ success: false, route: "tracking", intencion: "consultar_pedido", message: `Dame un segundito 🙏 No pude consultar tu pedido ahorita. Inténtalo en un minuto o escríbenos al ${SUPPORT_PHONE}` });
   }
 }
 
@@ -965,7 +965,7 @@ export async function whatsappBotSearchOrder(req: Request, res: Response) {
     console.error("[whatsapp-bot] search-order falló", error);
     res.status(200).json({
       success: false,
-      message: `No pude consultar tu pedido en este momento. Intenta en un minuto o escríbenos al ${SUPPORT_PHONE}`,
+      message: `Dame un segundito 🙏 No pude consultar tu pedido ahorita. Inténtalo en un minuto o escríbenos al ${SUPPORT_PHONE}`,
       intencion: "consultar_pedido",
       telefonoSoporte: SUPPORT_PHONE,
       _intent: "consultar_pedido",
