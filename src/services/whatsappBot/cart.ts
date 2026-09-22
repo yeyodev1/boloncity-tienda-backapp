@@ -7,7 +7,8 @@ export interface CartItem {
   quantity: number;
 }
 
-const MAX_QUANTITY = 50;
+/** Tope de unidades por producto en un pedido de WhatsApp. */
+export const MAX_QUANTITY = 50;
 
 function clampQuantity(value: unknown) {
   return Math.max(1, Math.min(Math.round(Number(value) || 1), MAX_QUANTITY));

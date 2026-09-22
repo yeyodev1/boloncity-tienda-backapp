@@ -1,20 +1,30 @@
-import { addToCart, CartItem, findInCart, removeFromCart, setCartQuantity } from "./cart";
-import { CatalogProduct, listCategories, normalizeText, pickOption, SearchResult, tokenSimilarity, meaningfulTokens } from "./catalog";
+import { addToCart, CartItem, findInCart, MAX_QUANTITY, removeFromCart, setCartQuantity } from "./cart";
+import { CatalogProduct, displayCategoryName, findCategory, listCategories, normalizeText, pickOption, SearchResult, tokenSimilarity, meaningfulTokens } from "./catalog";
 import { Extraction, Extractor } from "./extractor";
 import {
   detectDeliveryType,
   detectPaymentMethod,
   extractDocNumber,
   extractMapsUrl,
+  extractOrderNumber,
+  hasDocLikeNumber,
   isNo,
+  classifyConfirmReply,
+  isGreeting,
+  isNotAName,
+  isQuestion,
+  isSmallTalk,
   isYes,
   looksLikeBareName,
   titleCase,
+  titleCaseName,
   wantsCart,
   wantsClearCart,
+  wantsToWait,
   wantsConfirm,
   wantsHuman,
   wantsMenu,
+  wantsPaymentLink,
   wantsReorder,
   wantsTracking,
 } from "./intents";
@@ -80,7 +90,7 @@ export interface LastOrder {
 }
 
 export type PendingChoice =
-  | { kind: "product"; query: string; quantity: number; options: ProductOption[] }
+  | { kind: "product"; query: string; quantity: number; options: ProductOption[]; /** Categoría mostrada ("Bebidas"), para preguntar natural. */ label?: string }
   | { kind: "reorder"; order: LastOrder }
   | { kind: "reuse_location"; address: string; coords: { lat: number; lng: number }; mapsUrl: string }
   | { kind: "branch"; options: BranchOption[] };
@@ -98,6 +108,8 @@ export interface BotState {
   deliveryCoordinates?: { lat: number; lng: number };
   deliveryGoogleMapsUrl?: string;
   deliveryAddress?: string;
+  /** Dirección borrada con "la dirección está mal" / "otra dirección": "la misma" en el paso de dirección la recupera. */
+  previousDeliveryAddress?: string;
   deliveryFee?: number;
   deliveryDistance?: number;
   customerName?: string;
@@ -113,6 +125,8 @@ export interface BotState {
   reuseLocationOffered?: boolean;
   lastOrderNumber?: string;
   lastPaymentLink?: string;
+  /** Ubicación compartida antes de cambiar a retiro: si vuelve a delivery se reusa y se recotiza. */
+  savedDeliveryLocation?: { coords: { lat: number; lng: number }; mapsUrl: string };
   /** Última intención enviada a BuilderBot; se reusa si BuilderBot reintenta el mismo mensaje. */
   lastIntent?: Intent;
 }
@@ -150,9 +164,17 @@ export interface TurnInput {
   message: string;
   senderName?: string;
   location?: { lat: number; lng: number } | null;
+  /** Llegó un evento de ubicación (flow "envian ubicacion nativa") pero sin coordenadas legibles. */
+  locationInvalid?: boolean;
+  /** Llegó un audio, imagen o documento (BuilderBot manda "_event_media__…" / "_event_voice_note__…"). */
+  unsupportedMedia?: boolean;
 }
 
-export type Route = "conversation" | "catalog" | "choice" | "location" | "checkout" | "tracking" | "human";
+/**
+ * `checkout` SOLO cuando la orden existe (se creó en este turno o ya estaba creada): una Rule route=checkout de
+ * BuilderBot nunca debe crear una orden con un "gracias". El resumen que espera "confirmo" sale como `summary`.
+ */
+export type Route = "conversation" | "catalog" | "choice" | "location" | "summary" | "checkout" | "tracking" | "human";
 
 /**
  * Intención en una sola palabra, para que BuilderBot enrute con sus Rules.
@@ -191,14 +213,124 @@ export function classifyRoute(state: BotState | null, message: string, hasLocati
   if (hasLocation || extractMapsUrl(text) || !text) return "conversation";
   if (wantsHuman(text)) return "human";
   const stage = state?.stage;
-  if (wantsTracking(text) && !(stage === "confirm" && wantsCart(text))) return "search_order";
+  // "¿cuánto se demora?" mientras se pide la dirección habla del delivery que está armando, no de un pedido viejo.
+  if (state && isAddressQuestion(state, text)) return "conversation";
+  if (wantsTracking(text) && !isConfirmStageReply(stage, text) && !(state && isPendingOrderQuestion(state, text))) return "search_order";
   // Si el bot espera una elección ("1", "maduro", "sí"), la respuesta es parte del pedido.
   if (state?.pendingChoice) return "conversation";
   // "Confirmo" solo es checkout con el resumen ya mostrado. Antes de eso ("quiero pagar con tarjeta")
   // es un dato del pedido y lo resuelve la conversación.
-  if ((stage === "confirm" && (wantsConfirm(text) || isYes(text))) || (stage === "ordered" && wantsConfirm(text))) return "checkout";
+  // "sí, pero agrégale un café" NO es checkout: trae un cambio que debe aplicar la conversación.
+  // "gracias" / "ya" tampoco: la conversación vuelve a mostrar el resumen. Misma función que R7 (classifyConfirmReply).
+  if ((stage === "confirm" && classifyConfirmReply(text) === "confirm") || (stage === "ordered" && confirmsPlacedOrder(text))) return "checkout";
   if (wantsMenu(text)) return "catalog";
   return "conversation";
+}
+
+/**
+ * En el resumen, "confirmo mi pedido", "ver el resumen" o "gracias" hablan de ESTE pedido: no son una consulta
+ * de un pedido anterior aunque digan "mi pedido". Lo usan classifyRoute y R3.
+ */
+function isConfirmStageReply(stage: Stage | undefined, message: string) {
+  // "cancela mi pedido" / "ya no quiero mi pedido" en el resumen vacían ESTE pedido (R6), no consultan uno anterior
+  // (antes ganaba isPendingOrderQuestion: "Apenas lo confirmes…").
+  return stage === "confirm" && (wantsCart(message) || wantsClearCart(message) || classifyConfirmReply(message) !== "other");
+}
+
+/**
+ * En el resumen (pedido armado pero SIN confirmar), "¿cuánto se demora?", "¿a qué hora llega?", "¿dónde está mi
+ * pedido?" o "¿ya lo enviaron?" hablan de ESTE pedido: todavía no existe una orden que rastrear. Se responde que
+ * falta confirmar y se reimprime el resumen (antes iba a R3: "No encuentro pedidos" + número de soporte).
+ * Con un número de orden explícito ("ORD-00012", "pedido 12") sí es una consulta de un pedido anterior (R3).
+ */
+function isPendingOrderQuestion(state: BotState, message: string) {
+  if (state.stage !== "confirm" || state.pendingChoice || extractOrderNumber(message)) return false;
+  const text = normalizeText(message);
+  if (/\b(agrega\w*|anade\w*|quita\w*|saca\w*|cambia\w*|pon|ponle|ponme)\b/.test(text)) return false;
+  return (
+    wantsTracking(message) ||
+    /\b(demora|demoran|demorara|tarda|tardan|tardara|cuanto tiempo|a que hora|cuando (llega|llegan|llegara|esta|estara|sale)|esta listo|estara listo|ya (lo |la )?(enviaron|mandaron|salio|sale|viene)|lo (enviaron|mandaron))\b/.test(text)
+  );
+}
+
+/** Respuesta a isPendingOrderQuestion: no se inventan minutos, se dice que falta confirmar. */
+function pendingOrderAnswer(state: BotState) {
+  const timing =
+    state.deliveryType === "pickup"
+      ? `Apenas lo confirmes, ${state.branchName ? `el local ${state.branchName}` : "el local"} empieza a prepararlo; el tiempo depende de cuántos pedidos tenga la cocina`
+      : "Apenas lo confirmes, la cocina lo prepara; el tiempo depende de la cocina y del tráfico. Cuando salga, escribe *mi pedido* y te paso el seguimiento";
+  return `Tu pedido todavía no está enviado. ${timing} 👇`;
+}
+
+/**
+ * En el resumen de un delivery: "cambia la dirección a calle 8 casa 2", "mi dirección es …", "la dirección está mal,
+ * es Urdesa calle 8". Devuelve la dirección nueva o "" (antes decía "No vi ningún cambio" y la dejaba igual).
+ */
+function addressCorrection(state: BotState, message: string) {
+  if (state.deliveryType !== "delivery" || !state.deliveryAddress || state.pendingChoice || isQuestion(message)) return "";
+  // "a"/"por" solo cuentan después de un verbo de cambio: "la dirección está bien, cambia el pago a efectivo" no es una dirección.
+  const match =
+    message.match(/\b(?:cambi\w*|correg\w*|corrig\w*|actualiz\w*|pon\w*)\b.*?direcci[oó]n\b.*?(?:\ba\b|\bpor\b|\bes\b|:)\s*(.+)$/iu) ||
+    message.match(/direcci[oó]n\b.*?\b(?:mal|equivocad\w*|incorrect\w*)\b.*?(?:\bes\b|:)\s*(.+)$/iu) ||
+    message.match(/direcci[oó]n\b\s*(?:correcta\s*)?(?:es|:)\s*(.+)$/iu);
+  const address = (match?.[1] || "").replace(/^[\s,.;:]+|[\s.]+$/g, "").trim();
+  return looksLikeAddress(address) ? address.slice(0, 200) : "";
+}
+
+/**
+ * Una dirección tiene un número o una palabra de dirección ("calle", "mz", "villa", "urdesa"…). "correcta", "la misma",
+ * "efectivo" o "mi pedido" no lo son (antes reemplazaban la dirección de entrega).
+ */
+function looksLikeAddress(text: string) {
+  const normalized = normalizeText(text);
+  if (normalized.length < 5 || /^(la misma|igual|correcta|bien|esta bien|efectivo|tarjeta|mi pedido)\b/.test(normalized)) return false;
+  // "la que te di, pero ponme 2 humitas" / "la de antes y 1 cafe": habla de la dirección anterior o trae un cambio del
+  // pedido; el dígito es una cantidad, no un número de casa (antes reemplazaba la dirección y se perdían las humitas).
+  if (isAddressReference(normalized) || ORDER_CHANGE_WORDS.test(normalized)) return false;
+  return (
+    /\d/.test(normalized) ||
+    /\b(calle|av|avenida|mz|manzana|villa|solar|urb|urbanizacion|cdla|ciudadela|coop|cooperativa|edificio|edif|piso|dpto|departamento|km|sector|barrio|esquina|entre|frente|diagonal|junto|urdesa|kennedy|alborada|samborondon|ceibos|garzota|sauces|centro)\b/.test(normalized)
+  );
+}
+
+/** Verbos que cambian el pedido: con ellos el texto no es (solo) una dirección. */
+const ORDER_CHANGE_WORDS = /\b(pon|ponme|ponle|ponga|pongan|agreg\w*|anad\w*|aumenta\w*|quita\w*|quitale|saca\w*|dame|quiero|quisiera|tambien)\b/;
+
+/**
+ * "la misma", "igual que antes", "la que te di", "la de siempre", "la anterior": se refiere a una dirección ya dada,
+ * no es una dirección nueva.
+ */
+function isAddressReference(text: string) {
+  const normalized = normalizeText(text).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  return /^(igual|mismo|misma)\b/.test(normalized) || /\b(la misma|el mismo|lo mismo|misma direccion|igual (que|a|q) (antes|la anterior|la otra|siempre|la de antes)|igual que la (anterior|de antes|otra)|es igual|(la|el) (que|q) (te|le|les|ya te|ya le) (di|dije|pase|mande|envie|escribi|puse)|la (que|q) (ya )?(tienes|tienen|tenias|esta|estaba|puse)|la de (siempre|antes|la vez pasada|la otra vez|arriba|ahorita)|la anterior|la registrada|ya te la di|ya la di|ya te dije)\b/.test(
+    normalized,
+  );
+}
+
+/**
+ * En el paso de dirección: "la misma", "no sé", "otra dirección", "igual que antes" no son la dirección de entrega
+ * (antes se guardaba cualquier texto de 5 letras y el resumen decía "Delivery a: la misma").
+ */
+function isNotAnAddress(message: string) {
+  const normalized = normalizeText(message).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  if (isAddressReference(normalized)) return true;
+  if (/^(no se|nose|no lo se|no sabria|ni idea|no recuerdo|no me acuerdo|no tengo|ninguna|nada|no|nop|si|ok|okey|dale|listo|claro|espera|un momento)\b/.test(normalized) && !looksLikeAddress(normalized)) return true;
+  // "otra dirección", "cambiar la dirección", "la dirección está mal": habla de la dirección sin darla.
+  return /\bdireccion\b/.test(normalized) && !looksLikeAddress(normalized.replace(/\bdireccion\b/g, " "));
+}
+
+/** "no", "incorrecto", "todo está mal", "hay un error": un rechazo sin decir qué cambiar. */
+function isBareRejection(message: string) {
+  const text = normalizeText(message).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  return (
+    /^(?:(?:no+|nop|todo|esta|estan|eso|asi|el|la|pedido|resumen|mal|incorrect[ao]s?|equivocad[ao]s?|hay|un|error|gracias)(?: |$))+$/.test(text) &&
+    /\b(no+|nop|mal|incorrect[ao]s?|equivocad[ao]s?|error)\b/.test(text)
+  );
+}
+
+/** Pregunta hecha en el paso de dirección ("¿cuánto cuesta el envío?"). "¿dónde está MI pedido?" no cuenta: es R3. */
+function isAddressQuestion(state: BotState, message: string) {
+  return state.stage === "address" && !state.deliveryAddress && isQuestion(message) && !/\b(mi|el|la) (pedido|orden)\b/.test(normalizeText(message));
 }
 
 export function createInitialState(phone: string): BotState {
@@ -225,25 +357,71 @@ function describeLastOrder(order: LastOrder) {
 
 export async function handleTurn(previous: BotState, input: TurnInput, deps: BotDeps): Promise<TurnResult> {
   const state: BotState = { ...previous, cart: [...(previous.cart || [])], choiceQueue: [...(previous.choiceQueue || [])] };
-  const message = String(input.message || "").trim();
+  let message = String(input.message || "").trim();
   const notes: string[] = [];
 
-  if (!state.customerName && input.senderName && !/boloncity/i.test(input.senderName)) {
-    state.customerName = titleCase(input.senderName);
-  }
+  // El nombre del perfil de WhatsApp solo se usa si parece un nombre ("Ana Pérez"), no "~", "💕✨" ni "{name}".
+  const senderName = cleanSenderName(input.senderName);
+  if (!state.customerName && senderName) state.customerName = titleCaseName(senderName);
 
+  // El menú ya cierra con "Dime qué se te antoja": no se repite la pregunta de "¿qué te gustaría pedir?".
+  let skipIdleQuestion = false;
   const finish = async (decision: string, route: Route = "conversation", extra: Partial<TurnResult> = {}): Promise<TurnResult> => {
+    // Cualquier turno que el bot sí entendió reinicia el contador para derivar a una persona.
+    if (!decision.startsWith("R11")) state.misunderstood = 0;
+    // "para retirar en Kennedy": si el mensaje nombra un local, se toma directo en vez de listar los 8.
+    // Vale aunque quede una elección de producto pendiente ("¿cuál bolón mixto?"): el local ya quedó dicho.
+    if (message && state.deliveryType === "pickup" && !state.branchId && state.pendingChoice?.kind !== "reorder" && state.pendingChoice?.kind !== "reuse_location") {
+      const options = state.pendingChoice?.kind === "branch" ? state.pendingChoice.options : await deps.pickupBranches();
+      const named = matchBranchInMessage(message, options);
+      if (named) {
+        const pending = state.pendingChoice?.kind === "product" ? state.pendingChoice : null;
+        await pickBranch(state, named, deps, notes);
+        state.pendingChoice = pending;
+      }
+    }
     const next = await nextStep(state, deps);
-    const reply = [...notes, next.question].filter(Boolean).join("\n\n");
+    const question = skipIdleQuestion && state.stage === "idle" ? "" : next.question;
+    let reply = [...notes, question].filter(Boolean).join("\n\n");
+    if (decision === "R10:saludo" && state.stage === "idle" && !/^hola/i.test(reply)) reply = `¡Hola! 👋 Bienvenido a Boloncity\n\n${reply}`;
     const resolvedRoute = next.route || route;
-    const intent: Intent = resolvedRoute === "catalog" ? "menu" : "conversar";
+    const intent: Intent = resolvedRoute === "catalog" || decision === "R9:menu" ? "menu" : "conversar";
     return { state, reply, route: resolvedRoute, intent, step: state.stage, decision, ...extra };
   };
+
+  // Un audio, imagen o documento: el bot solo lee texto y ubicaciones.
+  if (input.unsupportedMedia && !input.location) {
+    notes.push("Por ahora solo puedo leer mensajes de texto y ubicaciones 🙏 Escríbeme lo que necesitas");
+    return finish("R0:media_no_soportada");
+  }
+
+  // Orden ya creada: "gracias", "👍", "el link no me abre" o "mejor en efectivo" hablan de ESA orden.
+  // No se reinicia el pedido ni se borra el link (antes el cliente perdía su link de pago).
+  if (state.stage === "ordered" && state.lastOrderNumber && message && !wantsTracking(message) && !confirmsPlacedOrder(message) && !wantsHuman(message)) {
+    const followUp = orderFollowUp(state, message, deps);
+    if (followUp) {
+      return {
+        state,
+        reply: followUp,
+        route: "checkout",
+        intent: "conversar",
+        step: state.stage,
+        decision: "R7:seguimiento_orden",
+        orderNumber: state.lastOrderNumber,
+        paymentLink: state.lastPaymentLink,
+      };
+    }
+  }
 
   // Una orden ya creada: si el cliente sigue escribiendo algo que no es consultar, arranca un pedido nuevo.
   // Se conserva quién es (nombre, correo, factura). La entrega se vuelve a preguntar: puede estar en otro
   // lugar; el bot igual ofrece "¿a la misma dirección?" desde su último pedido.
-  if (state.stage === "ordered" && message && !wantsTracking(message) && !wantsConfirm(message)) {
+  // "sí", "claro", "correcto" justo después de la orden (doble envío o reintento de BuilderBot) NO son un pedido
+  // nuevo: van a R7:ya_confirmado y se conserva el link (antes borraban la orden de la sesión).
+  if (state.stage === "ordered" && message && !wantsTracking(message) && !confirmsPlacedOrder(message) && !wantsHuman(message)) {
+    // "sí, y agrégale un café" con la orden ya creada: esa orden no se toca. Se avisa que arranca un pedido nuevo
+    // (antes empezaba otro en silencio y el cliente creía que había modificado el suyo).
+    if (state.lastOrderNumber) notes.push(`Tu pedido ${state.lastOrderNumber} ya está registrado y no se puede modificar. Empiezo un pedido nuevo 👇`);
     Object.assign(state, {
       stage: "idle",
       cart: [],
@@ -261,19 +439,23 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
       deliveryCoordinates: undefined,
       deliveryGoogleMapsUrl: undefined,
       deliveryAddress: undefined,
+      previousDeliveryAddress: undefined,
       deliveryFee: undefined,
       deliveryDistance: undefined,
+      savedDeliveryLocation: undefined,
     });
   }
 
   // R1 · Ubicación (nativa de WhatsApp o link de Google Maps). Gana sobre todo lo demás.
   const mapsUrl = extractMapsUrl(message);
-  if (input.location || mapsUrl) {
+  if (input.location || mapsUrl || input.locationInvalid) {
     const coords = input.location || (mapsUrl ? await deps.resolveMapsUrl(mapsUrl) : null);
     if (!coords) {
       notes.push("No pude leer esa ubicación. Compárteme tu ubicación desde el clip 📎 de WhatsApp o un enlace de Google Maps");
       return finish("R1:ubicacion_invalida", "location");
     }
+    // Una ubicación responde "¿en qué local lo retiras?" o "¿a la misma dirección?": el cliente eligió delivery aquí.
+    if (state.pendingChoice?.kind === "branch" || state.pendingChoice?.kind === "reuse_location") state.pendingChoice = null;
     await applyLocation(state, coords, mapsUrl || `https://www.google.com/maps/search/?api=1&query=${coords.lat},${coords.lng}`, deps, notes);
     return finish("R1:ubicacion", "location");
   }
@@ -292,15 +474,57 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     };
   }
 
+  // Paso de dirección: una pregunta ("¿cuánto cuesta el envío?", "cuánto se demora") NO es la dirección.
+  // Se responde lo que se sabe y se vuelve a pedir la dirección (antes la pregunta quedaba como dirección de entrega).
+  // "¿dónde está MI pedido?" sí es una consulta: la resuelve R3.
+  if (isAddressQuestion(state, message)) {
+    notes.push(await answerAddressQuestion(state, message, deps));
+    return finish("R10:pregunta_en_direccion");
+  }
+
+  // En el resumen, "¿cuánto se demora?" / "¿dónde está mi pedido?" hablan del pedido que aún no se confirma.
+  if (!isConfirmStageReply(state.stage, message) && isPendingOrderQuestion(state, message)) {
+    notes.push(pendingOrderAnswer(state));
+    return finish("R7:pregunta_en_resumen", "summary");
+  }
+
+  // En el resumen, "cambia la dirección a …": se corrige la dirección y se reimprime el resumen.
+  const newAddress = state.stage === "confirm" ? addressCorrection(state, message) : "";
+  if (newAddress) {
+    state.deliveryAddress = newAddress;
+    notes.push(`Listo, cambié la dirección a: ${newAddress}`);
+    return finish("R7:direccion_cambiada", "summary");
+  }
+  // "la dirección está mal" sin decir cuál es: se borra y el siguiente paso vuelve a pedirla.
+  if (
+    state.stage === "confirm" &&
+    state.deliveryType === "delivery" &&
+    state.deliveryAddress &&
+    !state.pendingChoice &&
+    // "cambia la dirección" / "la dirección está mal". No "la dirección está bien, cambia el pago".
+    /\b(?:(?:cambi\w*|correg\w*|corrig\w*) (?:la |mi )?direccion|direccion (?:esta |es )?(?:mal|equivocad[ao]|incorrect[ao])|otra direccion)\b/.test(normalizeText(message))
+  ) {
+    state.previousDeliveryAddress = state.deliveryAddress;
+    state.deliveryAddress = undefined;
+    return finish("R7:pedir_direccion");
+  }
+
   // R3 · Consulta de un pedido ya hecho.
-  if (wantsTracking(message) && !(state.stage === "confirm" && wantsCart(message))) {
+  if (wantsTracking(message) && !isConfirmStageReply(state.stage, message)) {
     return { state, reply: await deps.trackOrder(state.phone, message), route: "tracking", intent: "consultar_pedido", step: state.stage, decision: "R3:consultar_pedido" };
   }
 
   // R4 · Respuesta a una elección pendiente (opciones de producto, repetir pedido, sucursal, misma dirección).
   if (state.pendingChoice) {
     const resolved = await resolvePendingChoice(state, message, deps, notes);
-    if (resolved) {
+    // "no, mejor para retirar": el "no" descarta la opción y el resto del mensaje sigue por las demás reglas
+    // (antes se perdía la instrucción de retiro).
+    // "no quiero ninguno" / "no quiero ese": "quiero ese" no es un pedido nuevo (antes sumaba "No te entendí bien").
+    const rest = resolved === "producto_descartado" ? message.replace(/^\s*(?:(?:no+|nop|nel|negativo|mejor no|quiero|es[eoa]s?|ningun[oa]?(?: de es[oa]s)?)(?![\p{L}\p{N}])[\s,.;!]*)+/iu, "").trim() : "";
+    if (resolved && rest && !isSmallTalk(rest) && !isNo(rest)) {
+      await processChoiceQueue(state, deps, notes);
+      message = rest;
+    } else if (resolved) {
       await processChoiceQueue(state, deps, notes);
       return finish(`R4:eleccion_${resolved}`);
     }
@@ -325,8 +549,26 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return finish("R6:vaciar_carrito");
   }
 
-  // R7 · Confirmación del pedido (solo cuenta si el resumen ya se mostró).
-  if (wantsConfirm(message) || (state.stage === "confirm" && isYes(message))) {
+  // R7 · Confirmación del pedido (solo cuenta si el resumen ya se mostró). En el resumen solo confirma un "sí"
+  // sin nada más (classifyConfirmReply, la MISMA función que usa classifyRoute): "sí, pero agrégale un café"
+  // aplica el cambio y vuelve a mostrar el resumen; "gracias", "ya" o "nada más" no crean la orden.
+  const confirmReply = classifyConfirmReply(message);
+  // "no confirmo", "todavía no", "espera": aún no decide. No es "sin cambios" ni un rechazo.
+  if (state.stage === "confirm" && !state.pendingChoice && wantsToWait(message)) {
+    notes.push("Sin problema, cuando quieras escribe *confirmo* o dime qué cambiar. Tu pedido todavía no está enviado 👇");
+    return finish("R7:espera_en_resumen", "summary");
+  }
+  if (state.stage === "confirm" && confirmReply === "courtesy") {
+    notes.push("Tu pedido todavía no está enviado 👇");
+    return finish("R7:cortesia_en_resumen", "summary");
+  }
+  // "incorrecto", "todo está mal", "no": quiere cambiar algo pero no dijo qué. Se le pregunta sin tocar el pedido.
+  if (state.stage === "confirm" && !state.pendingChoice && isBareRejection(message)) {
+    notes.push("Dime qué quieres cambiar: productos, entrega, pago o tus datos. Tu pedido todavía no está enviado 👇");
+    return finish("R7:pedir_cambio", "summary");
+  }
+  const confirming = state.stage === "ordered" ? confirmsPlacedOrder(message) : confirmReply === "confirm";
+  if (confirming) {
     if (state.stage === "ordered" && state.lastOrderNumber) {
       notes.push(`Tu pedido ${state.lastOrderNumber} ya está registrado${state.lastPaymentLink ? `\nPuedes pagarlo aquí: ${state.lastPaymentLink}` : ""}`);
       return { state, reply: notes.join("\n\n"), route: "checkout", intent: "orden_creada", step: state.stage, decision: "R7:ya_confirmado", orderNumber: state.lastOrderNumber, paymentLink: state.lastPaymentLink };
@@ -336,20 +578,55 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return finish("R7:confirmo_incompleto");
   }
 
+  // Un número suelto ("1", "2") sin una lista abierta: responde a una lista vieja o es un error. En el resumen o
+  // cuando se espera la ubicación NO se manda a la IA (a veces lo leía como "que sea 1 humita" y cambiaba el carrito):
+  // se repite el paso sin tocar nada y sin sumar "no entendido".
+  if (!state.pendingChoice && (state.stage === "confirm" || state.stage === "location") && /^#?\d{1,3}$/.test(normalizeText(message))) {
+    if (state.stage === "confirm") notes.push("Tu pedido todavía no está enviado 👇");
+    return finish("R10:numero_suelto", state.stage === "confirm" ? "summary" : "location");
+  }
+
+  // Ya es delivery y falta la ubicación: "delivery" o "quiero delivery a mi casa" repiten lo que ya se sabe.
+  // Se vuelve a pedir la ubicación (antes no cambiaba nada y sumaba "no entendido").
+  if (state.stage === "location" && state.deliveryType === "delivery" && detectDeliveryType(message) === "delivery" && onlyControlWords(message)) {
+    notes.push("Perfecto, va por delivery 🛵");
+    return finish("R10:delivery_repetido", "location");
+  }
+
   // R8 · Ver el carrito.
   if (wantsCart(message) && state.cart.length) {
     notes.push(`Llevas:\n${state.cart.map(cartLine).join("\n")}`);
     return finish("R8:ver_carrito");
   }
+  // "¿qué llevo?" con el carrito vacío: se dice y se sigue con el paso (antes sumaba "no entendido" y derivaba).
+  if (wantsCart(message) && !state.cart.length && !wantsMenu(message)) {
+    notes.push("Tu carrito está vacío por ahora");
+    return finish("R8:carrito_vacio");
+  }
 
-  // R9 · Menú / qué tienen.
-  if (wantsMenu(message)) {
-    await showMenu(state, message, deps, notes);
+  // R9 · Menú / qué tienen. También el nombre suelto de una categoría ("bebidas", "jugos").
+  if (wantsMenu(message) || (await isBareCategory(state, message, deps))) {
+    skipIdleQuestion = await showMenu(state, message, deps, notes);
     return finish("R9:menu", "catalog");
   }
 
+  // Saludos y cortesías ("hola", "buenas tardes", "gracias", "👍"): se responde con el paso actual.
+  // No cuentan como "no entendido" (antes dos saludos seguidos derivaban a soporte).
+  if (isSmallTalk(message)) return finish("R10:saludo");
+
+  // Local cerrado en retiro: "otro local", "retiro" o el nombre de otro local vuelve a ofrecer los locales.
+  if (state.stage === "closed" && state.deliveryType === "pickup") {
+    const text = normalizeText(message);
+    const named = matchBranchInMessage(message, await deps.pickupBranches());
+    const wantsOther = /\b(otro|otra) (local|sucursal|lugar)\b|\bcambi\w* (de |el )?(local|sucursal)\b/.test(text) || detectDeliveryType(message) === "pickup";
+    if ((named && named.branchId !== state.branchId) || wantsOther) {
+      Object.assign(state, { branchId: undefined, branchName: undefined, pendingChoice: null });
+      return finish("R10:cambiar_local");
+    }
+  }
+
   // R10 · Respuesta corta y directa a la pregunta del paso actual ("1", "efectivo", "Ana Pérez", la cédula).
-  if (await applyDirectAnswer(state, message, deps)) return finish("R10:respuesta_al_paso");
+  if (await applyDirectAnswer(state, message, deps, notes)) return finish("R10:respuesta_al_paso");
 
   // R10 · Todo lo demás: se extraen datos del mensaje (IA con respaldo de reglas) y se aplican.
   const lastBotQuestion = stageQuestionHint(state);
@@ -357,19 +634,62 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   // Mientras se espera la dirección, un texto como "casa verde, junto al parque" NO debe buscarse como producto:
   // solo se agregan productos que coincidan exacto.
   const strict = state.stage === "address";
+  if (strict) {
+    // En el paso de dirección, el texto ES la dirección: la IA a veces lo pone en notes o billingAddress
+    // y el bot repetía la pregunta (y la dirección terminaba como "Indicaciones" del pedido).
+    extraction.notes = undefined;
+    extraction.billingAddress = undefined;
+  }
+  const cartBefore = JSON.stringify(state.cart);
   let answered = await applyExtraction(state, message, extraction, deps, notes, strict);
-  if (!answered && state.stage === "address" && message.length >= 5) {
-    state.deliveryAddress = message.slice(0, 200);
+  if (
+    state.stage === "address" &&
+    state.deliveryType === "delivery" &&
+    !state.deliveryAddress &&
+    !state.pendingChoice &&
+    JSON.stringify(state.cart) === cartBefore &&
+    !extraction.customerEmail &&
+    message.length >= 5
+  ) {
+    if (!isNotAnAddress(message)) {
+      state.deliveryAddress = message.slice(0, 200);
+      state.previousDeliveryAddress = undefined;
+    } else if (isAddressReference(message) && state.previousDeliveryAddress) {
+      // "la misma" después de "la dirección está mal": se vuelve a la dirección que tenía (se ve en el resumen).
+      state.deliveryAddress = state.previousDeliveryAddress;
+      state.previousDeliveryAddress = undefined;
+      notes.push(`Listo, dejo la dirección que tenías: ${state.deliveryAddress}`);
+    } else {
+      // "no sé", "otra dirección", "la misma" sin dirección anterior: no se guarda y se vuelve a pedir.
+      notes.push("Necesito la dirección escrita para el motorizado");
+    }
     answered = true;
   }
-  if (!answered && state.stage === "invoice_doc") {
-    notes.push("La cédula debe tener 10 dígitos o el RUC 13");
+  if (state.stage === "name" && !state.customerName && !answered && isNotAName(message)) {
+    // "retiro", "sí", "menú" en el paso del nombre: no es un nombre. Se vuelve a pedir sin sumar "no entendido".
+    notes.push("Necesito el nombre de la persona que hace el pedido (ej. *Ana Pérez*)");
+    answered = true;
+  }
+  if (state.stage === "invoice_doc" && !state.billingDocNumber && (hasDocLikeNumber(message) || !answered)) {
+    // El dígito verificador no cuadra: se avisa en vez de aceptarla (la factura del SRI fallaría).
+    notes.push(hasDocLikeNumber(message) ? "Ese número no es una cédula o RUC válido. Revísalo por favor" : "La cédula debe tener 10 dígitos o el RUC 13");
     answered = true;
   }
 
   if (!answered && state.pendingChoice) {
     // No eligió ni pidió nada nuevo: se repite la pregunta pendiente.
     return finish("R4:eleccion_repetida", "choice");
+  }
+  if (!answered && state.stage === "confirm") {
+    // En el resumen nada está a medias: un mensaje que no cambió nada ("okey dokey", un typo raro) vuelve a mostrar
+    // el resumen con la instrucción. No suma "no entendido" ni deriva a soporte con el pedido listo para enviar.
+    // Una pregunta que no sabemos responder no es "sin cambios": se da el contacto de soporte y el resumen.
+    if (isQuestion(message)) {
+      notes.push(`Esa duda te la resuelven al ${deps.supportPhone}. Tu pedido todavía no está enviado 👇`);
+      return finish("R7:duda_en_resumen", "summary");
+    }
+    notes.push("No vi ningún cambio en tu pedido 👇");
+    return finish("R7:resumen_sin_cambios", "summary");
   }
   if (!answered) {
     // Con el local cerrado no hay nada que entender: se repite solo el aviso de horario.
@@ -390,6 +710,49 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   }
   state.misunderstood = 0;
   return finish(`R10:${extraction.source}`);
+}
+
+/**
+ * Palabras de control de la entrega ("mejor", "delivery", "retiro", "para", "a mi casa"): no son productos.
+ * Antes "mejor para retirar" terminaba en `No tenemos "mejor" en el menú`.
+ */
+const CONTROL_WORDS = new Set([
+  "mejor", "delivery", "domicilio", "retiro", "retirar", "retiras", "recoger", "recojo", "pickup", "llevar", "para", "por", "a", "al", "en", "el", "la",
+  "lo", "mi", "casa", "local", "envio", "enviar", "quiero", "prefiero", "que", "sea", "entonces", "no", "si", "ok", "dale", "porfa", "favor",
+  "gracias", "y", "de", "mas", "bien", "va", "ser", "sera", "seria", "pero", "ahora", "hacer", "haz", "hazlo", "cambia", "cambialo",
+]);
+
+/** ¿El mensaje solo trae palabras de control ("quiero delivery a mi casa", "no, mejor para retirar")? */
+function onlyControlWords(message: string) {
+  const words = normalizeText(message).split(" ").filter(Boolean);
+  return words.length > 0 && words.every((word) => CONTROL_WORDS.has(word));
+}
+
+/** Respuesta a una pregunta hecha cuando el bot esperaba la dirección. Solo dice lo que el bot sabe de verdad. */
+async function answerAddressQuestion(state: BotState, message: string, deps: BotDeps) {
+  const text = normalizeText(message);
+  const branch = state.branchName ? ` (te atiende la sucursal ${state.branchName})` : "";
+  if (/\b(cuanto|cuanta|costo|cuesta|cuestan|precio|valor|cobran)\b/.test(text) && !/\b(demora|tarda|tiempo|minutos)\b/.test(text) && state.deliveryFee != null) {
+    // Picker cobra distinto en efectivo y en tarjeta: si el cliente todavía no eligió cómo paga (o pregunta por el
+    // otro método), se dicen los dos precios para que el resumen no lo sorprenda con otro valor.
+    const quoted = state.paymentMethod || "card";
+    const asked = detectPaymentMethod(message);
+    const other = asked === "card" || asked === "cash" ? asked : state.paymentMethod ? null : "cash";
+    if (other && other !== quoted && state.deliveryCoordinates) {
+      const alt = await deps.quoteLocation(state.deliveryCoordinates, other);
+      if (alt.covered && Math.round(alt.deliveryFee * 100) !== Math.round(state.deliveryFee * 100)) {
+        return `El delivery a la ubicación que me compartiste cuesta ${money(state.deliveryFee)} ${paymentLabel(quoted)} y ${money(alt.deliveryFee)} ${paymentLabel(other)}${branch}`;
+      }
+    }
+    return `El delivery a la ubicación que me compartiste cuesta ${money(state.deliveryFee)}${branch}`;
+  }
+  if (/\b(demora|demoran|tarda|tardan|tiempo|minutos|cuando llega)\b/.test(text)) {
+    return `El tiempo depende de la cocina y del tráfico. Cuando tu pedido salga, escribe *mi pedido* y te paso el link para seguir al motorizado en vivo`;
+  }
+  if (/\b(llegan|llega|hacen delivery|hacen envios|envian|cubren|reparten)\b/.test(text)) {
+    return `Sí llegamos a la ubicación que me compartiste${branch}. Si el pedido es para otro lugar, compárteme esa ubicación desde el clip 📎`;
+  }
+  return `Esa duda te la resuelven al ${deps.supportPhone}`;
 }
 
 /** Pista para la IA de qué respondería el cliente según el paso actual. */
@@ -414,11 +777,12 @@ async function addSearchedItem(state: BotState, query: string, quantity: number,
   // "hola", "ok", "gracias": sin palabras con significado no se busca ni se responde "no tenemos".
   const tokens = meaningfulTokens(query);
   if (!tokens.some((token) => token.length >= 4)) return false;
+  // "mejor", "para delivery", "retiro": palabras de control, no productos (sin "No tenemos …").
+  if (onlyControlWords(query)) return false;
   const result = await deps.search(query, state.branchId);
   if (strict && result.kind !== "exact") return false;
   if (result.kind === "exact") {
-    state.cart = addToCart(state.cart, { productId: result.product.productId, name: result.product.name, quantity });
-    notes.push(`Agregué ${quantity} x ${prettyName(result.product.name)} ${money(result.product.price * quantity)}`);
+    notes.push(addCapped(state, result.product, quantity));
     return true;
   }
   if (result.kind === "ambiguous") {
@@ -434,6 +798,21 @@ async function addSearchedItem(state: BotState, query: string, quantity: number,
   return false;
 }
 
+/**
+ * Agrega al carrito y devuelve el texto de lo que DE VERDAD se agregó: el carrito tiene tope de MAX_QUANTITY
+ * por producto ("108 bolones" agrega hasta 50 y lo avisa, antes decía "Agregué 108").
+ */
+function addCapped(state: BotState, product: { productId: string; name: string; price: number }, quantity: number) {
+  const before = state.cart.find((item) => item.productId === product.productId)?.quantity || 0;
+  state.cart = addToCart(state.cart, { productId: product.productId, name: product.name, quantity });
+  const added = (state.cart.find((item) => item.productId === product.productId)?.quantity || 0) - before;
+  const line = `Agregué ${added} x ${prettyName(product.name)} ${money(product.price * added)}`;
+  if (added >= quantity) return line;
+  return added > 0
+    ? `${line} (pediste ${quantity}, el máximo por producto es ${MAX_QUANTITY})`
+    : `Ya tienes el máximo de ${MAX_QUANTITY} x ${prettyName(product.name)} por pedido`;
+}
+
 const toOption = (product: CatalogProduct): ProductOption => ({ productId: product.productId, name: product.name, price: product.price });
 
 async function processChoiceQueue(state: BotState, deps: BotDeps, notes: string[]) {
@@ -445,6 +824,9 @@ async function processChoiceQueue(state: BotState, deps: BotDeps, notes: string[
 
 async function applyExtraction(state: BotState, message: string, extraction: Extraction, deps: BotDeps, notes: string[], strict = false) {
   let changed = false;
+  // Datos adelantados (lo que el bot todavía no preguntó): se guardan y se confirman con un acuse corto
+  // ("Anoté: efectivo ✅") para que el cliente sepa que no hace falta repetirlos.
+  const before = { paymentMethod: state.paymentMethod, customerName: state.customerName, customerEmail: state.customerEmail, billingDocNumber: state.billingDocNumber };
 
   // Transferencia: no se acepta, se ofrece tarjeta o efectivo.
   if (extraction.paymentMethod === "transfer") {
@@ -457,12 +839,13 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
   }
 
   if (extraction.deliveryType && extraction.deliveryType !== state.deliveryType) {
-    setDeliveryType(state, extraction.deliveryType);
+    await setDeliveryType(state, extraction.deliveryType, deps, notes);
     changed = true;
   }
 
-  if (extraction.customerName) {
-    state.customerName = titleCase(extraction.customerName);
+  // La IA a veces toma "retiro" o "tarjeta" como nombre cuando el bot preguntó "¿a nombre de quién?".
+  if (extraction.customerName && !isNotAName(extraction.customerName)) {
+    state.customerName = titleCaseName(extraction.customerName);
     changed = true;
   }
   if (extraction.customerEmail) {
@@ -481,7 +864,7 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
     changed = true;
   }
   if (extraction.billingName && state.billingPreference === "invoice") {
-    state.billingName = titleCase(extraction.billingName);
+    state.billingName = titleCaseName(extraction.billingName);
     changed = true;
   }
   if (extraction.notes) {
@@ -504,12 +887,25 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
     const item = findInCart(state.cart, change.query);
     if (item) {
       state.cart = setCartQuantity(state.cart, item.productId, change.quantity);
-      notes.push(change.quantity > 0 ? `Ahora son ${change.quantity} x ${prettyName(item.name)}` : `Quité ${prettyName(item.name)}`);
+      const now = state.cart.find((current) => current.productId === item.productId)?.quantity || 0;
+      notes.push(
+        change.quantity > 0
+          ? `Ahora son ${now} x ${prettyName(item.name)}${now < change.quantity ? ` (el máximo por producto es ${MAX_QUANTITY})` : ""}`
+          : `Quité ${prettyName(item.name)}`
+      );
       changed = true;
     } else {
       // No estaba en el carrito: se trata como producto nuevo.
       extraction.items.push({ query: change.query, quantity: change.quantity || 1 });
     }
+  }
+
+  // "para retirar en Boloncity Kennedy": el nombre del local no es un producto.
+  if (extraction.items.length) {
+    const branches = await deps.pickupBranches();
+    extraction.items = extraction.items
+      .map((item) => ({ ...item, query: stripBranchWords(item.query, branches) }))
+      .filter((item) => item.query && !isBranchPhrase(item.query, branches));
   }
 
   // Productos: el primero ambiguo abre una elección y los demás esperan en cola.
@@ -522,9 +918,16 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
     if (await addSearchedItem(state, item.query, item.quantity, deps, notes, strict)) changed = true;
   }
 
+  const acks: string[] = [];
+  if (state.paymentMethod && state.paymentMethod !== before.paymentMethod && state.stage !== "payment") acks.push(state.paymentMethod === "cash" ? "efectivo" : "tarjeta");
+  if (state.customerName && state.customerName !== before.customerName && state.stage !== "name") acks.push(`a nombre de ${state.customerName}`);
+  if (state.customerEmail && state.customerEmail !== before.customerEmail && state.stage !== "email") acks.push(state.customerEmail);
+  if (state.billingDocNumber && state.billingDocNumber !== before.billingDocNumber && state.stage !== "invoice_doc") acks.push(`cédula/RUC ${state.billingDocNumber}`);
+  if (acks.length) notes.push(`Anoté: ${acks.join(" · ")} ✅`);
+
   // Si el cliente cambió algo que afecta el precio del delivery, se recotiza.
-  if (changed && state.deliveryType === "delivery" && state.deliveryCoordinates && extraction.paymentMethod && extraction.paymentMethod !== "transfer") {
-    await applyLocation(state, state.deliveryCoordinates, state.deliveryGoogleMapsUrl || "", deps, [], { silent: true });
+  if (changed && extraction.paymentMethod && extraction.paymentMethod !== "transfer") {
+    await requoteForPayment(state, deps, notes);
   }
 
   return changed;
@@ -534,26 +937,27 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
  * Mensaje corto que responde exactamente lo que el bot preguntó. Solo mensajes cortos:
  * "2 humitas para llevar" en el paso de entrega trae productos y va por la extracción completa.
  */
-async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps) {
+async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps, notes: string[]) {
   const text = normalizeText(message);
   const short = text.split(" ").length <= 4;
   switch (state.stage) {
     case "delivery_type": {
       const type = text === "1" ? "delivery" : text === "2" ? "pickup" : short ? detectDeliveryType(message) : null;
       if (!type) return false;
-      setDeliveryType(state, type);
+      await setDeliveryType(state, type, deps, notes);
       return true;
     }
     case "payment": {
       const method = text === "1" ? "card" : text === "2" ? "cash" : short ? detectPaymentMethod(message) : null;
       if (method !== "card" && method !== "cash") return false;
       state.paymentMethod = method;
+      await requoteForPayment(state, deps, notes);
       return true;
     }
     case "name": {
       // "Ana Pérez" es un nombre; "humita" también parece uno, por eso se descarta si es un producto.
       if (!looksLikeBareName(message) || (await deps.search(message, state.branchId)).kind === "exact") return false;
-      state.customerName = titleCase(message);
+      state.customerName = titleCaseName(message);
       return true;
     }
     case "invoice_doc": {
@@ -562,22 +966,41 @@ async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps
       state.billingDocNumber = doc;
       return true;
     }
+    case "email": {
+      // Dio su nombre cuando se le pidió el correo ("Ana Pérez"): se toma como nombre del pedido.
+      if (!looksLikeBareName(message) || (await deps.search(message, state.branchId)).kind === "exact") return false;
+      state.customerName = titleCaseName(message);
+      return true;
+    }
     case "invoice_name":
-      if (!looksLikeBareName(message)) return false;
-      state.billingName = titleCase(message);
+      // Razón social: "Rosa Prueba SA" conserva la sigla (titleCaseName).
+      if (!/^[\p{L}.&\s]{2,80}$/u.test(message.trim()) || isNotAName(message)) return false;
+      state.billingName = titleCaseName(message);
       return true;
     default:
       return false;
   }
 }
 
-function setDeliveryType(state: BotState, type: "delivery" | "pickup") {
+async function setDeliveryType(state: BotState, type: "delivery" | "pickup", deps: BotDeps, notes: string[]) {
   state.deliveryType = type;
-  // Cambiar de modalidad invalida lo calculado para la otra.
+  // "¿En qué local lo retiras?" no aplica a delivery, ni "¿a la misma dirección?" a retiro: la pregunta se descarta.
+  if ((type === "delivery" && state.pendingChoice?.kind === "branch") || (type === "pickup" && state.pendingChoice?.kind === "reuse_location")) {
+    state.pendingChoice = null;
+  }
+  // Cambiar de modalidad invalida lo calculado para la otra. La ubicación compartida se guarda aparte: si el cliente
+  // vuelve a delivery (delivery → retiro → delivery) se reusa y se recotiza en vez de pedirla otra vez.
   if (type === "pickup") {
+    if (state.deliveryCoordinates) state.savedDeliveryLocation = { coords: state.deliveryCoordinates, mapsUrl: state.deliveryGoogleMapsUrl || "" };
     Object.assign(state, { deliveryCoordinates: undefined, deliveryGoogleMapsUrl: undefined, deliveryFee: undefined, deliveryDistance: undefined, branchId: undefined, branchName: undefined });
-  } else {
-    Object.assign(state, { branchId: state.deliveryCoordinates ? state.branchId : undefined, branchName: state.deliveryCoordinates ? state.branchName : undefined });
+    return;
+  }
+  Object.assign(state, { branchId: state.deliveryCoordinates ? state.branchId : undefined, branchName: state.deliveryCoordinates ? state.branchName : undefined });
+  const saved = state.savedDeliveryLocation;
+  if (!state.deliveryCoordinates && saved) {
+    state.savedDeliveryLocation = undefined;
+    notes.push("Uso la ubicación que me compartiste antes (si es otra, compárteme la nueva desde el clip 📎)");
+    await applyLocation(state, saved.coords, saved.mapsUrl, deps, notes);
   }
 }
 
@@ -593,7 +1016,9 @@ async function applyLocation(
   if (!quote.covered) {
     Object.assign(state, { deliveryCoordinates: undefined, deliveryGoogleMapsUrl: undefined, deliveryFee: undefined, branchId: undefined, branchName: undefined });
     if (state.deliveryType === "delivery") state.deliveryType = undefined;
-    notes.push(`${quote.reason}\nSi quieres, puedes retirarlo en el local`);
+    // El motivo de Picker/web habla de «Retiro en tienda» (botón de la web): en WhatsApp se dice en una frase.
+    const reason = /tienda|sucursal m[aá]s cercana/i.test(quote.reason || "") || !quote.reason ? "No llegamos con delivery a esa ubicación 😔" : quote.reason;
+    notes.push(`${reason}\n¿Prefieres retirarlo en el local? Escribe *retiro*`);
     return false;
   }
   const branchChanged = state.branchId !== quote.branchId;
@@ -609,6 +1034,22 @@ async function applyLocation(
   if (!silent) notes.push(`Perfecto, te atiende la sucursal ${quote.branchName}. El delivery cuesta ${money(quote.deliveryFee)}`);
   if (branchChanged) await revalidateCartForBranch(state, deps, notes);
   return true;
+}
+
+const paymentLabel = (method: "card" | "cash") => (method === "cash" ? "pagando en efectivo" : "pagando con tarjeta");
+
+/**
+ * Picker cobra distinto en efectivo y en tarjeta: al elegir o cambiar el pago en delivery se recotiza para que el
+ * resumen muestre lo que se cobrará. Si el envío cambia respecto a lo que se dijo al compartir la ubicación, se dice
+ * explícitamente (antes pasaba de $2.69 a $2.80 sin aviso).
+ */
+async function requoteForPayment(state: BotState, deps: BotDeps, notes: string[]) {
+  if (state.deliveryType !== "delivery" || !state.deliveryCoordinates || !state.paymentMethod) return;
+  const before = state.deliveryFee;
+  const covered = await applyLocation(state, state.deliveryCoordinates, state.deliveryGoogleMapsUrl || "", deps, notes, { silent: true });
+  if (covered && before != null && state.deliveryFee != null && Math.round(before * 100) !== Math.round(state.deliveryFee * 100)) {
+    notes.push(`El envío ${paymentLabel(state.paymentMethod)} cuesta ${money(state.deliveryFee)} (antes te dije ${money(before)})`);
+  }
 }
 
 /** Al fijar sucursal, se quitan del carrito los productos que ahí no se venden. */
@@ -633,8 +1074,7 @@ async function resolvePendingChoice(state: BotState, message: string, deps: BotD
       const picked = pickOption(message, choice.options);
       if (!picked) return null;
       state.pendingChoice = null;
-      state.cart = addToCart(state.cart, { productId: picked.productId, name: picked.name, quantity: choice.quantity });
-      notes.push(`Agregué ${choice.quantity} x ${prettyName(picked.name)} ${money(picked.price * choice.quantity)}`);
+      notes.push(addCapped(state, picked, choice.quantity));
       return "producto";
     }
     case "reorder": {
@@ -670,34 +1110,146 @@ async function resolvePendingChoice(state: BotState, message: string, deps: BotD
       return "misma_direccion_si";
     }
     case "branch": {
-      const picked = pickOption(message, choice.options);
+      // La lista de locales solo vale en retiro: si el pedido ya es delivery, un "1" no elige local (antes decía
+      // "lo retiras en Avalon" y dejaba el delivery con esa sucursal).
+      if (state.deliveryType !== "pickup") {
+        state.pendingChoice = null;
+        return null;
+      }
+      // "2", "Kennedy" o "retiro en Boloncity Kennedy".
+      const picked = pickOption(message, choice.options) || matchBranchInMessage(message, choice.options);
       if (!picked) return null;
-      state.pendingChoice = null;
-      state.branchId = picked.branchId;
-      state.branchName = picked.name;
-      notes.push(`Perfecto, lo retiras en ${picked.name}`);
-      await revalidateCartForBranch(state, deps, notes);
+      await pickBranch(state, picked, deps, notes);
       return "sucursal";
     }
   }
 }
 
+/** Productos que no se ofrecen sueltos al listar una categoría (syrups, agrandados, envases). */
+const NOT_LISTED = /\b(syrup|agrandar|envase|funda|contenedor|cubiertos|servilletas)\b/i;
+
+/** Devuelve true si mostró la lista de categorías (que ya termina con una pregunta). */
 async function showMenu(state: BotState, message: string, deps: BotDeps, notes: string[]) {
   const products = await deps.catalog(state.branchId);
   const categories = listCategories(products);
-  // "¿qué bebidas tienen?" → productos de esa categoría como opciones elegibles.
-  const tokens = meaningfulTokens(message).filter((token) => !["menu", "carta", "catalogo", "producto", "opcion", "recomienda", "recomiendas", "recomendacion"].includes(token));
-  const category = tokens.length
-    ? categories.find((entry) => meaningfulTokens(entry.name).some((name) => tokens.some((token) => tokenSimilarity(token, name) >= 0.85)))
-    : undefined;
+  // "¿qué bebidas tienen?" / "menú de jugos" → productos de esa categoría como opciones elegibles.
+  const category = findCategory(message, categories);
   if (category) {
-    const options = products.filter((product) => product.categoryNames.includes(category.name)).slice(0, 10).map(toOption);
-    state.pendingChoice = { kind: "product", query: category.name, quantity: 1, options };
-    return;
+    const options = products
+      .filter((product) => product.categoryNames.includes(category.name) && !NOT_LISTED.test(product.name))
+      .slice(0, 10)
+      .map(toOption);
+    if (options.length) {
+      state.pendingChoice = { kind: "product", query: category.name, quantity: 1, options, label: displayCategoryName(titleCase(category.name)) };
+      return false;
+    }
   }
   notes.push(
-    `Estas son nuestras categorías:\n${categories.map((entry) => `• ${titleCase(entry.name)}`).join("\n")}\n\nDime qué se te antoja (ej. "2 bolones mixtos y un café") o mira el menú con fotos: ${deps.menuUrl}`
+    `Estas son nuestras categorías:\n${categories.map((entry) => `• ${displayCategoryName(titleCase(entry.name))}`).join("\n")}\n\nDime qué se te antoja (ej. "2 bolones mixtos y un café") o mira el menú con fotos: ${deps.menuUrl}`
   );
+  return !state.cart.length;
+}
+
+/** "bebidas", "jugos", "tostadas": el mensaje es solo el nombre de una categoría. */
+async function isBareCategory(state: BotState, message: string, deps: BotDeps) {
+  const text = normalizeText(message);
+  if (!text || /\d/.test(text) || text.split(" ").length > 3) return false;
+  return Boolean(findCategory(message, listCategories(await deps.catalog(state.branchId)), { exactOnly: true }));
+}
+
+// ─── Sucursales ──────────────────────────────────────────────────────────────
+
+/** Palabras del nombre de un local que lo distinguen ("Boloncity Kennedy" → kennedy). */
+function branchTokens(name: string) {
+  return meaningfulTokens(name).filter((token) => token !== "boloncity" && token.length >= 3);
+}
+
+/** El local que nombra el mensaje ("retiro en Kennedy", "en la de Urdesa"). Solo si es uno solo. */
+export function matchBranchInMessage(message: string, branches: BranchOption[]): BranchOption | null {
+  const tokens = meaningfulTokens(message);
+  if (!tokens.length) return null;
+  const scored = branches
+    .map((branch) => {
+      const names = branchTokens(branch.name);
+      const hits = names.filter((name) => tokens.some((token) => tokenSimilarity(token, name) >= 0.85)).length;
+      return { branch, score: names.length ? hits / names.length : 0 };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+  if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) return null;
+  return scored[0].branch;
+}
+
+/** "en boloncity kennedy", "local urdesa": frase que solo nombra un local, no un producto. */
+function isBranchPhrase(query: string, branches: BranchOption[]) {
+  const generic = new Set(["boloncity", "local", "sucursal", "retiro", "retirar", "recoger", "tienda"]);
+  const tokens = meaningfulTokens(query);
+  if (!tokens.length) return false;
+  const branchWords = branches.flatMap((branch) => branchTokens(branch.name));
+  return tokens.every((token) => generic.has(token) || branchWords.some((word) => tokenSimilarity(token, word) >= 0.85));
+}
+
+/** "humita en boloncity samborondon" → "humita": quita el local que quedó pegado al final del producto. */
+function stripBranchWords(query: string, branches: BranchOption[]) {
+  const connectors = new Set(["en", "el", "la", "de", "del", "al", "a", "para", "boloncity", "local", "sucursal", "retiro", "retirar", "recoger", "tienda"]);
+  const branchWords = branches.flatMap((branch) => branchTokens(branch.name));
+  const words = normalizeText(query).split(" ").filter(Boolean);
+  const isBranchWord = (word: string) => connectors.has(word) || branchWords.some((name) => tokenSimilarity(meaningfulTokens(word)[0] || word, name) >= 0.85);
+  // Solo si de verdad nombra un local: "tostada de la casa" no se toca.
+  const tail = [...words];
+  let removed = false;
+  while (tail.length && isBranchWord(tail[tail.length - 1])) {
+    if (!connectors.has(tail[tail.length - 1])) removed = true;
+    tail.pop();
+  }
+  return removed ? tail.join(" ") : query;
+}
+
+async function pickBranch(state: BotState, branch: BranchOption, deps: BotDeps, notes: string[]) {
+  state.pendingChoice = null;
+  state.branchId = branch.branchId;
+  state.branchName = branch.name;
+  notes.push(`Perfecto, lo retiras en ${branch.name}`);
+  await revalidateCartForBranch(state, deps, notes);
+}
+
+/** Respuesta a lo que el cliente escribe DESPUÉS de crear la orden, si habla de esa orden. */
+/** Con la orden ya creada: "confirmo", "sí", "claro", "de una", "si está bien así" repiten la confirmación. */
+function confirmsPlacedOrder(message: string) {
+  return wantsConfirm(message) || classifyConfirmReply(message) === "confirm";
+}
+
+function orderFollowUp(state: BotState, message: string, deps: BotDeps): string | null {
+  const order = state.lastOrderNumber!;
+  const link = state.lastPaymentLink;
+  const method = detectPaymentMethod(message);
+  const short = normalizeText(message).split(" ").length <= 8;
+  if (wantsPaymentLink(message)) {
+    return link
+      ? `Aquí tienes el link de pago de tu pedido ${order}:\n${link}\n\nSi no te abre, cópialo y pégalo en el navegador. Si sigue sin funcionar, escríbenos al ${deps.supportPhone}`
+      : `Tu pedido ${order} es con pago en efectivo, no necesita link. Si necesitas algo más, escríbenos al ${deps.supportPhone}`;
+  }
+  if (method && short) {
+    if (link && method !== "card") {
+      return `Tu pedido ${order} ya quedó creado para pagar con tarjeta:\n${link}\n\nSi prefieres pagar ${method === "cash" ? "en efectivo" : "de otra forma"}, escríbenos al ${deps.supportPhone} y lo cambiamos`;
+    }
+    return `Tu pedido ${order} ya está registrado${link ? `\nPuedes pagarlo aquí: ${link}` : ""}`;
+  }
+  if (isGreeting(message)) {
+    return `¡Hola! 👋 Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nEscribe *mi pedido* para ver cómo va o dime qué se te antoja para hacer un pedido nuevo`;
+  }
+  if (isSmallTalk(message)) {
+    return `¡Gracias a ti! Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nSi quieres pedir algo más, dime qué se te antoja`;
+  }
+  return null;
+}
+
+/** Nombre del perfil de WhatsApp utilizable como nombre del pedido, o "" si no parece un nombre. */
+function cleanSenderName(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw || /^\{.*\}$/.test(raw) || /boloncity/i.test(raw)) return "";
+  const letters = raw.replace(/[^A-Za-zÁÉÍÓÚÑáéíóúñÜü\s]/g, " ").replace(/\s+/g, " ").trim();
+  return looksLikeBareName(letters) ? letters : "";
 }
 
 // ─── Siguiente paso ──────────────────────────────────────────────────────────
@@ -708,11 +1260,17 @@ async function showMenu(state: BotState, message: string, deps: BotDeps, notes: 
  * sucursal abierta → nombre → correo → pago → factura (si la pidió) → resumen.
  */
 export async function nextStep(state: BotState, deps: BotDeps): Promise<{ question: string; route?: Route }> {
+  // Una elección de local solo vale en retiro (y "¿a la misma dirección?" solo en delivery): si la modalidad
+  // cambió por otro camino, la pregunta vieja no se vuelve a mostrar.
+  if ((state.pendingChoice?.kind === "branch" && state.deliveryType !== "pickup") || (state.pendingChoice?.kind === "reuse_location" && state.deliveryType === "pickup")) {
+    state.pendingChoice = null;
+  }
   const choice = state.pendingChoice;
   if (choice) {
     state.stage = "choosing";
     if (choice.kind === "product") {
-      return { question: `¿Cuál ${choice.query} quieres?\n${optionsList(choice.options)}\n\nResponde con el número`, route: "choice" };
+      const ask = choice.label ? `Estas son nuestras opciones de ${choice.label}:` : `¿Cuál ${choice.query} quieres?`;
+      return { question: `${ask}\n${optionsList(choice.options)}\n\nResponde con el número`, route: "choice" };
     }
     if (choice.kind === "reorder") {
       return {
@@ -817,7 +1375,7 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
     return { question: "No pude calcular tu pedido. ¿Me repites qué te gustaría pedir?" };
   }
   state.stage = "confirm";
-  return { question: formatSummary(state, quote), route: "checkout" };
+  return { question: formatSummary(state, quote), route: "summary" };
 }
 
 export function formatSummary(state: BotState, quote: Quote) {
@@ -869,7 +1427,7 @@ async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult>
   }
   const result = await deps.createOrder(state);
   if (!result.ok) {
-    return { state, reply: `${result.message}\n\n${check.question}`, route: "checkout", intent: "conversar", step: state.stage, decision: "R7:error_creando" };
+    return { state, reply: `${result.message}\n\n${check.question}`, route: "summary", intent: "conversar", step: state.stage, decision: "R7:error_creando" };
   }
   state.stage = "ordered";
   state.lastOrderNumber = result.orderNumber;

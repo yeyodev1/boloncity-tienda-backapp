@@ -99,7 +99,8 @@ export function stem(word: string) {
 }
 
 function toToken(word: string) {
-  return stem(SYNONYMS[word] || word);
+  // "cafecitos" → cafecito → cafe: el sinónimo se busca también en singular.
+  return stem(SYNONYMS[word] || SYNONYMS[stem(word)] || word);
 }
 
 /** Tokens con significado: sin stopwords, sin números sueltos ni precios ("4.99", "$5.99"). */
@@ -287,10 +288,48 @@ export async function searchCatalog(query: string, branchId?: string) {
   return rankProducts(query, await loadCatalog(branchId));
 }
 
+/**
+ * Categorías internas del POS (grupos de cocina/caja, stock, empaques, adicionales): existen para operar,
+ * no para que el cliente elija. No se muestran en el menú del bot.
+ */
+const INTERNAL_CATEGORY = /^(cocina|caja|general)$|stockeable|agrandar|contenedor|desechable|empaque|adicional|jalea|^extra |extra para|congelado/;
+
+export function isCustomerCategory(name: string) {
+  return !INTERNAL_CATEGORY.test(normalizeText(name));
+}
+
+/** Nombre de categoría para mostrar al cliente (corrige erratas del POS como "Trigrillos"). */
+export function displayCategoryName(name: string) {
+  return name.replace(/\btrigrillo/gi, (match) => (match[0] === "T" ? "Tigrillo" : "tigrillo"));
+}
+
 export function listCategories(products: CatalogProduct[]) {
   const counts = new Map<string, number>();
   for (const product of products) {
-    for (const name of product.categoryNames) counts.set(name, (counts.get(name) || 0) + 1);
+    for (const name of product.categoryNames) {
+      if (isCustomerCategory(name)) counts.set(name, (counts.get(name) || 0) + 1);
+    }
   }
-  return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
+  return [...counts.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => displayCategoryName(a.name).localeCompare(displayCategoryName(b.name)));
+}
+
+/**
+ * La categoría que nombra el mensaje ("menú de jugos" → JUGOS, no JUGO DE BISTEC). Gana la que el mensaje
+ * cubre más completa; si empatan, la que tiene más productos. Con `exactOnly`, el mensaje debe ser solo
+ * el nombre de la categoría ("bebidas"), para no confundir un pedido con una consulta de menú.
+ */
+export function findCategory(message: string, categories: Array<{ name: string; count: number }>, { exactOnly = false } = {}) {
+  const ignore = new Set(["menu", "carta", "catalogo", "producto", "opcion", "recomienda", "recomiendas", "recomendacion", "ver", "muestrame", "mostrar"]);
+  const tokens = meaningfulTokens(message).filter((token) => !ignore.has(token));
+  if (!tokens.length) return undefined;
+  const scored = categories
+    .map((category) => {
+      const names = meaningfulTokens(category.name);
+      const covered = names.filter((name) => tokens.some((token) => tokenSimilarity(token, name) >= 0.85)).length;
+      const used = tokens.filter((token) => names.some((name) => tokenSimilarity(token, name) >= 0.85)).length;
+      return { category, coverage: names.length ? covered / names.length : 0, used };
+    })
+    .filter((item) => item.used > 0 && (!exactOnly || (item.coverage === 1 && item.used === tokens.length)))
+    .sort((a, b) => b.coverage - a.coverage || b.used - a.used || b.category.count - a.category.count);
+  return scored[0]?.category;
 }
