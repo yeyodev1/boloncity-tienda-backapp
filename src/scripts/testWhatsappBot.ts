@@ -14,6 +14,7 @@ process.env.GEMINI_API_KEY = "";
 import assert from "node:assert/strict";
 import { menuSeedItems } from "../seeds/menuItems";
 import { CatalogProduct, findCategory, listCategories, rankProducts } from "../services/whatsappBot/catalog";
+import { pickChoice } from "../services/whatsappBot/choice";
 import axios from "axios";
 import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
@@ -241,6 +242,283 @@ test("editar el carrito: quitar, cambiar cantidad y ver resumen", async () => {
   assert.match(results[2].reply, /Ahora son 3 x Humita/);
   assert.match(results[3].reply, /3 x Humita\n1 x Tostada Mixta/);
   assert.deepEqual(state.cart.map((item) => item.name), ["HUMITA", "TOSTADA MIXTA"]);
+});
+
+// ─── Elegir hablando normal (queja del dueño, 2026-09-22) ────────────────────
+
+/** La lista que el bot muestra para "un bolón de queso": verde, maduro, pintón, crunch. */
+const ELECCIONES_NATURALES: Array<[string, string]> = [
+  // La frase EXACTA de la queja: el bot repetía la lista en vez de entender "verde".
+  ["boon de queso verde porf avor, me encantaria", "BOLON QUESO VERDE"],
+  ["el verde", "BOLON QUESO VERDE"],
+  ["verde porfa", "BOLON QUESO VERDE"],
+  ["quiero el maduro", "BOLON MADURO QUESO"],
+  ["prefiero el maduro porfa", "BOLON MADURO QUESO"],
+  ["dame el crunch", "BOLON CRUNCH VERDE QUESO"],
+  ["mejor el crunch", "BOLON CRUNCH VERDE QUESO"],
+  ["el pinton", "BOLON PINTON DE QUESO"],
+  ["el pintón porfa, gracias", "BOLON PINTON DE QUESO"],
+  ["el verde pero que sea grande", "BOLON QUESO VERDE"],
+  // Diminutivos y muletillas mal escritas: el bot repetía la lista IDÉNTICA (queja del dueño).
+  ["el madurito porfa", "BOLON MADURO QUESO"],
+  ["kero el maduro", "BOLON MADURO QUESO"],
+  ["el verdecito", "BOLON QUESO VERDE"],
+  ["dame el crunchcito nomás", "BOLON CRUNCH VERDE QUESO"],
+  ["el primero", "BOLON QUESO VERDE"],
+  ["la segunda opción", "BOLON MADURO QUESO"],
+  ["el último", "BOLON CRUNCH VERDE QUESO"],
+  // Los números siguen funcionando para quien sí quiere responder con el número.
+  ["2", "BOLON MADURO QUESO"],
+  ["la 2", "BOLON MADURO QUESO"],
+  ["opción 2", "BOLON MADURO QUESO"],
+  ["#2", "BOLON MADURO QUESO"],
+];
+
+test("elección: el cliente responde hablando normal y se entiende (queja 2026-09-22)", async () => {
+  for (const [mensaje, esperado] of ELECCIONES_NATURALES) {
+    const { deps } = fakeDeps();
+    const { results, state } = await chat(deps, ["un bolón de queso", mensaje]);
+    assert.match(results[0].reply, /¿Cuál bolon de queso quieres/);
+    assert.deepEqual(
+      state.cart.map((item) => item.name),
+      [esperado],
+      `"${mensaje}" debía agregar ${esperado} y agregó [${state.cart.map((item) => item.name).join(", ")}] · ${results[1].reply.slice(0, 120)}`
+    );
+  }
+});
+
+test("elección: ninguna pregunta le pide al cliente responder con el número", async () => {
+  const { deps } = fakeDeps({ lastOrder: { orderNumber: "ORD-00777", createdAt: new Date(), items: [{ productId: byName("HUMITA").productId, name: "HUMITA", quantity: 1 }] } });
+  const { results } = await chat(deps, ["hola", "no", "un bolón de queso", "el verde", "para llevar", "urdesa"]);
+  for (const result of results) {
+    assert.doesNotMatch(result.reply, /con el número/i, `sigue pidiendo el número: ${result.reply.slice(0, 120)}`);
+    assert.doesNotMatch(result.reply, /Respóndeme con/i, `sigue sonando a formulario: ${result.reply.slice(0, 120)}`);
+  }
+  // La lista numerada se queda: ayuda a quien sí quiere responder con el número.
+  assert.match(results[2].reply, /1\. Bolon Queso Verde/);
+  assert.match(results[2].reply, /Dime cuál prefieres/);
+});
+
+test("elección: si sigue ambiguo se repregunta SOLO con lo que las diferencia", async () => {
+  const { deps } = fakeDeps();
+  const { results, state } = await chat(deps, ["un bolón de queso", "el de queso", "el maduro"]);
+  const repregunta = results[1].reply;
+  assert.match(repregunta, /parecidas/i, "debe repreguntar, no agregar a ciegas");
+  assert.doesNotMatch(repregunta, /Bolon Queso Verde/, "no repite el nombre completo, solo lo que las diferencia");
+  assert.match(repregunta, /1\. Verde/);
+  assert.equal(results[1].step, "choosing");
+  assert.deepEqual(state.cart.map((item) => item.name), ["BOLON MADURO QUESO"]);
+});
+
+test("elección: 'los dos' y 'uno de cada uno' agregan todas las opciones mostradas", async () => {
+  const dos = fakeDeps();
+  const { state } = await chat(dos.deps, ["una coca cola", "los dos porfa"]);
+  assert.deepEqual(state.cart.map((item) => item.name), ["COCA COLA ORIGINAL", "COCA COLA ZERO"]);
+  const cada = fakeDeps();
+  const { state: state2 } = await chat(cada.deps, ["una coca cola", "uno de cada uno"]);
+  assert.equal(state2.cart.length, 2);
+});
+
+test("ADV-NEG-1: 'el verde no' / 'el que no sea maduro' NUNCA agregan lo que el cliente rechazó", async () => {
+  const bolones = ["BOLON QUESO VERDE", "BOLON MADURO QUESO", "BOLON PINTON DE QUESO", "BOLON CRUNCH VERDE QUESO"];
+  const opciones = bolones.map((name) => ({ name, price: byName(name).price }));
+  const verde = pickChoice("el verde no", opciones);
+  assert.equal(verde.kind, "several", `'el verde no' no debe elegir una a ciegas: ${JSON.stringify(verde)}`);
+  assert.equal(verde.kind === "several" && verde.options.some((option) => /VERDE/.test(option.name)), false, "no puede quedar ninguna verde");
+  const maduro = pickChoice("el que no sea maduro", opciones);
+  assert.equal(maduro.kind === "several" && maduro.options.some((option) => /MADURO/.test(option.name)), false);
+
+  // Y en conversación: el carrito jamás termina con lo negado.
+  for (const [mensaje, rechazado] of [["el verde no", /VERDE/], ["el que no sea maduro", /MADURO/], ["cualquiera menos el pinton", /PINTON/], ["no quiero el maduro", /MADURO/]] as const) {
+    const { deps } = fakeDeps();
+    const { results, state } = await chat(deps, ["un bolón de queso", mensaje]);
+    assert.equal(state.cart.some((item) => rechazado.test(item.name)), false, `"${mensaje}" agregó lo que el cliente descartó: ${state.cart.map((i) => i.name).join(", ")}`);
+    assert.notEqual(results[1].reply, results[0].reply, `"${mensaje}" repite el mismo mensaje palabra por palabra`);
+  }
+  // Una bebida: "la zero no" tampoco agrega la zero.
+  const { deps } = fakeDeps();
+  const { state } = await chat(deps, ["una coca cola", "la zero no"]);
+  assert.equal(state.cart.some((item) => /ZERO/.test(item.name)), false);
+});
+
+test("ADV-NEG-2: 'urdesa no' descarta ese local en vez de fijarlo para el retiro", async () => {
+  const { deps } = fakeDeps();
+  const { results, state } = await chat(deps, ["una humita", "yo paso a retirarlo", "urdesa no"]);
+  assert.notEqual(state.branchId, "b-urdesa", `fijó justo el local que el cliente descartó: ${results[2].reply.slice(0, 140)}`);
+  assert.doesNotMatch(results[2].reply, /Lo retiras en Urdesa/);
+  assert.match(results[2].reply, /descartamos|Samborond/i, `debe seguir preguntando con los que quedan: ${results[2].reply.slice(0, 140)}`);
+});
+
+test("F1: 'cualquiera está bien' elige una y lo dice, en vez de repetir la lista", async () => {
+  const { deps } = fakeDeps();
+  const { results, state } = await chat(deps, ["un bolón de queso", "cualquiera esta bien"]);
+  assert.equal(state.cart.length, 1, `debía elegir una: ${results[1].reply.slice(0, 140)}`);
+  assert.match(results[1].reply, /Agregué 1 x Bolon/);
+});
+
+test("F1: el bot NUNCA repite la misma lista palabra por palabra (queja del dueño)", async () => {
+  const { deps } = fakeDeps();
+  const { results } = await chat(deps, ["un bolón de queso", "mmm no se jaja", "eeeh"]);
+  assert.notEqual(results[1].reply, results[0].reply, "repitió la lista idéntica");
+  assert.notEqual(results[2].reply, results[1].reply, "repitió la lista idéntica en el segundo intento");
+  assert.match(results[1].reply, /Perdona/);
+});
+
+test("F3: 'quita uno de los bolones, con uno basta' baja de 2 a 1 (no borra los dos)", async () => {
+  const { deps } = fakeDeps();
+  const { results, state } = await chat(deps, ["2 humitas y un café con leche", "quita uno de los humitas, con uno basta", "qué llevo"]);
+  const humita = state.cart.find((item) => item.name === "HUMITA");
+  assert.equal(humita?.quantity, 1, `debía quedar 1 humita y quedó ${humita?.quantity ?? 0} · ${results[1].reply.slice(0, 140)}`);
+  assert.match(results[2].reply, /1 x Humita/);
+});
+
+test("F2/F4: pedir un producto con una pregunta abierta lo agrega EN EL MISMO TURNO", async () => {
+  // F2: quitar y agregar en el mismo mensaje, con la pregunta del café todavía abierta.
+  const dos = fakeDeps();
+  const { results, state } = await chat(dos.deps, [
+    "quisiera un bolón de queso y un café",
+    "prefiero el crunch",
+    "ay no, mejor quita el bolon crunch y ponme el de queso verde",
+    "qué llevo",
+  ]);
+  assert.match(results[2].reply, /Quité Bolon Crunch Verde Queso/);
+  // En el MISMO turno reconoce lo que le pidieron: o lo agrega, o dice que lo anotó (nunca lo calla).
+  assert.match(results[2].reply, /Agregué 1 x Bolon Queso Verde|Anotado lo de "el de queso verde"/, `no reconoció el pedido: ${results[2].reply.slice(0, 200)}`);
+  // Y "qué llevo" no puede decir "está vacío" cuando hay algo a medias.
+  assert.doesNotMatch(results[3].reply, /carrito está vacío/, `le dice al cliente que perdió todo: ${results[3].reply.slice(0, 200)}`);
+  assert.match(results[3].reply, /Bolon Queso Verde|queso verde/i);
+
+  // Con la extracción de Gemini el producto llega completo ("bolon de queso verde") y se agrega en el turno.
+  const conIa = fakeDeps({ extract: async (message, context) => ({ ...(await heuristicExtract(message, context)), items: [{ query: "bolon de queso verde", quantity: 1 }], remove: ["bolon crunch"], source: "ai" as const }) });
+  const { results: rIa, state: sIa } = await chat(conIa.deps, ["quisiera un bolón de queso", "prefiero el crunch", "un café", "ay no, mejor quita el bolon crunch y ponme el de queso verde"]);
+  assert.match(rIa[3].reply, /Agregué 1 x Bolon Queso Verde/, `el producto exacto debía entrar en el turno: ${rIa[3].reply.slice(0, 200)}`);
+  assert.deepEqual(sIa.cart.map((item) => item.name), ["BOLON QUESO VERDE"]);
+
+  // F4: con la pregunta del local abierta, el pedido se reconoce en vez de repetir los locales tal cual.
+  const cuatro = fakeDeps();
+  const { results: r4, state: s4 } = await chat(cuatro.deps, ["una humita", "yo paso a retirarlo", "ah y agregame otra vez la humita porfa"]);
+  assert.match(r4[2].reply, /Agregué|Ahora son|Anotado/, `ignoró el pedido y repitió la lista: ${r4[2].reply.slice(0, 200)}`);
+  assert.equal(s4.cart.find((item) => item.name === "HUMITA")?.quantity, 2);
+});
+
+test("elección: nombrar otro producto no se fuerza a la lista mostrada", async () => {
+  const { deps } = fakeDeps();
+  const { results, state } = await chat(deps, ["un bolón de queso", "mejor un tigrillo mixto verde"]);
+  assert.equal(state.cart.some((item) => /BOLON/.test(item.name)), false, "no debe elegir un bolón que el cliente no eligió");
+  assert.match(results[1].reply, /Tigrillo Mixto Verde/, `debía pasar al producto nuevo: ${results[1].reply.slice(0, 160)}`);
+});
+
+test("elección de local: 'el de urdesa' / 'el más cercano' se entienden sin números", async () => {
+  const { deps } = fakeDeps();
+  const { results, state } = await chat(deps, ["una humita", "paso por ahí mejor", "el más cercano", "el de urdesa"]);
+  assert.equal(results[1].step, "choosing", "retiro pide el local");
+  assert.match(results[2].reply, /ubicación|sector/i, "'el más cercano' no se puede adivinar: se pide la ubicación o el sector");
+  assert.equal(state.branchId, "b-urdesa");
+});
+
+test("conversación completa hablando como persona: delivery, sin usar un número", async () => {
+  const { deps, created } = fakeDeps();
+  const { results, state } = await chat(deps, [
+    "buenas, quiero un bolón de queso",
+    "boon de queso verde porf avor, me encantaria",
+    "me lo mandan a la casa porfa",
+    { location: { lat: -2.15, lng: -79.9 } },
+    "Av. Las Monjas 123, casa verde junto al parque",
+    "Ana Pérez",
+    "ana@test.com",
+    "con tarjeta",
+    "confirmo",
+  ]);
+  assert.deepEqual(state.cart.map((item) => item.name), ["BOLON QUESO VERDE"]);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].deliveryType, "delivery");
+  assert.equal(created[0].paymentMethod, "card");
+  assert.match(results[results.length - 1].reply, /ORD-0099/);
+});
+
+test("el nombre dicho hablando ('me llamo Diego Reyes') no queda como 'Me Llamo Diego'", async () => {
+  const { deps, created } = fakeDeps();
+  const { state } = await chat(deps, [
+    "una humita",
+    "me lo mandan a la casa",
+    { location: { lat: -2.15, lng: -79.9 } },
+    "Av. Las Monjas 123, casa verde",
+    "me llamo Diego Reyes",
+    "diego@test.com",
+    "con tarjeta",
+    "confirmo",
+  ]);
+  assert.equal(state.customerName, "Diego Reyes");
+  assert.equal(created[0].customerName, "Diego Reyes");
+});
+
+test("conversación completa hablando como persona: retiro, sin usar un número", async () => {
+  const { deps, created } = fakeDeps();
+  const { state } = await chat(deps, [
+    "hola, quiero un tigrillo mixto verde",
+    "yo paso por ahí a recogerlo",
+    "el de samborondón",
+    "Luis Mora",
+    "luis@test.com",
+    "pago en efectivo cuando llegue",
+    "dale confirmo",
+  ]);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].deliveryType, "pickup");
+  assert.equal(created[0].branchId, "b-samborondon");
+  assert.equal(created[0].paymentMethod, "cash");
+  assert.equal(state.stage, "ordered");
+});
+
+test("otras preguntas con opciones se contestan hablando: repetir pedido y misma dirección", async () => {
+  const lastOrder: LastOrder = {
+    orderNumber: "ORD-00321",
+    createdAt: new Date(),
+    items: [{ productId: byName("HUMITA").productId, name: "HUMITA", quantity: 2 }],
+    customerName: "Ana Pérez",
+    customerEmail: "ana@test.com",
+    deliveryType: "delivery",
+    deliveryAddress: "Av. Las Monjas 123",
+    deliveryCoordinates: { lat: -2.15, lng: -79.9 },
+  };
+  const { deps } = fakeDeps({ lastOrder });
+  const { results, state } = await chat(deps, ["hola", "dale repite lo mismo", "me lo mandan a domicilio", "la misma de siempre"]);
+  assert.match(results[1].reply, /2 x Humita/);
+  assert.match(results[3].reply, /sucursal Urdesa/);
+  assert.equal(state.deliveryAddress, "Av. Las Monjas 123");
+});
+
+test("formas de decir delivery, retiro y pago que usa la gente", async () => {
+  const entregas: Array<[string, "delivery" | "pickup"]> = [
+    ["a domicilio", "delivery"],
+    ["me lo mandan", "delivery"],
+    ["que me lo traigan a la casa", "delivery"],
+    ["para llevar", "pickup"],
+    ["paso por ahí", "pickup"],
+    ["yo lo recojo", "pickup"],
+    ["me acerco al local", "pickup"],
+  ];
+  for (const [mensaje, esperado] of entregas) {
+    const { deps } = fakeDeps();
+    const { state } = await chat(deps, ["una humita", mensaje]);
+    assert.equal(state.deliveryType, esperado, `"${mensaje}" debía ser ${esperado}`);
+  }
+  const pagos: Array<[string, "card" | "cash"]> = [
+    ["con tarjeta", "card"],
+    ["mándame el link de pago", "card"],
+    ["efectivo", "cash"],
+    ["le pago al motorizado", "cash"],
+    ["en efectivo cuando llegue", "cash"],
+  ];
+  for (const [mensaje, esperado] of pagos) {
+    const { deps } = fakeDeps();
+    const { state } = await chat(deps, ["una humita", "a domicilio", { location: { lat: -2.15, lng: -79.9 } }, "Av. Las Monjas 123, casa verde", "Ana Pérez", "ana@test.com", mensaje]);
+    assert.equal(state.paymentMethod, esperado, `"${mensaje}" debía ser ${esperado}`);
+  }
+  // La transferencia sigue rechazándose.
+  const { deps } = fakeDeps();
+  const { last } = await chat(deps, ["una humita", "te hago una transferencia"]);
+  assert.match(last.reply, /no recibimos transferencias/);
 });
 
 test("varias ambigüedades en un mensaje: pregunta una por una sin perder productos", async () => {
@@ -1210,6 +1488,25 @@ test("a BuilderBot solo salen 5 rutas: conversation, catalog, checkout, search_o
   for (const message of mensajes) {
     assert.ok(PERMITIDAS.includes(classifyRoute(state, message)), `classifyRoute devolvió algo nuevo con "${message}"`);
   }
+});
+
+test("la cantidad dicha al elegir se respeta ('y verde quiero 3'), y un número solo sigue siendo la opción", async () => {
+  const { deps } = fakeDeps();
+  const casos: Array<[string, string, number]> = [
+    ["bolon de queso y verde quiero 3", "BOLON QUESO VERDE", 3],
+    ["ponme 2 del maduro", "BOLON MADURO QUESO", 2],
+    ["dame tres del verde porfa", "BOLON QUESO VERDE", 3],
+    ["el verde porfa", "BOLON QUESO VERDE", 1],
+  ];
+  for (const [texto, nombre, cantidad] of casos) {
+    const { state } = await chat(deps, ["quiero un bolon de queso", texto]);
+    const item = state.cart.find((producto) => producto.name === nombre);
+    assert.ok(item, `${texto} → no agregó ${nombre}`);
+    assert.equal(item?.quantity, cantidad, texto);
+  }
+  // "2" solo elige la opción 2: no son 2 unidades.
+  const { state } = await chat(deps, ["quiero un bolon de queso", "2"]);
+  assert.equal(state.cart[0]?.quantity, 1);
 });
 
 (async () => {

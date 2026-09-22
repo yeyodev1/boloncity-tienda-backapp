@@ -36,7 +36,7 @@ const STOPWORDS = new Set([
   "mis", "regalame", "necesito", "pideme", "pedir", "ordenar", "orden", "agrega", "agregame", "agregar", "anade", "anademe",
   "pon", "ponme", "tambien", "mas", "otro", "otra", "otros", "otras", "que", "sea", "sean", "solo", "nomas", "hola", "buenas",
   "buenos", "dias", "tardes", "noches", "gracias", "tipo", "algo", "tienen", "tiene", "hay", "vende", "venden", "llevar",
-  "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "docena",
+  "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "docena", "vez", "veces", "nuevo", "nueva",
 ]);
 
 /**
@@ -59,6 +59,10 @@ const SYNONYMS: Record<string, string> = {
   coke: "coca",
   gaseosa: "cola",
   cola: "cola",
+  colita: "cola",
+  colas: "cola",
+  bebida: "bebida",
+  refresco: "cola",
   tigrillos: "tigrillo",
   trigrillo: "tigrillo",
   bolo: "bolon",
@@ -126,8 +130,16 @@ function levenshtein(a: string, b: string) {
   return row[b.length];
 }
 
-/** Qué tan parecido es un token del cliente a un token del producto (0 = nada, 1 = igual). */
-export function tokenSimilarity(query: string, candidate: string) {
+/**
+ * Diminutivo ecuatoriano: "lechita" → "lech", "madurito" → "madur", "tostadita" → "tostad".
+ * Así "el con lechita" encuentra CAFE CON LECHE en vez de quedar como una palabra desconocida.
+ */
+export function undiminish(word: string) {
+  const match = word.match(/^(.*?)(?:ecit|cit|it)[oa]s?$/);
+  return match && match[1].length >= 3 ? match[1] : word;
+}
+
+function rawTokenSimilarity(query: string, candidate: string) {
   if (query === candidate) return 1;
   if (query.replace(/e$/, "") === candidate.replace(/e$/, "")) return 1;
   const shortest = Math.min(query.length, candidate.length);
@@ -136,6 +148,17 @@ export function tokenSimilarity(query: string, candidate: string) {
   if (shortest >= 5 && levenshtein(query, candidate) <= 1) return 0.85;
   if (shortest >= 8 && levenshtein(query, candidate) <= 2) return 0.7;
   return 0;
+}
+
+/** Qué tan parecido es un token del cliente a un token del producto (0 = nada, 1 = igual). */
+export function tokenSimilarity(query: string, candidate: string) {
+  const direct = rawTokenSimilarity(query, candidate);
+  if (direct) return direct;
+  // Diminutivo SOLO del lado del cliente: el nombre del producto se compara tal cual (si no,
+  // "mandan" se parecería a "manzanilla" y el bot ofrecería aguas aromáticas por un "me lo mandan").
+  const base = undiminish(query);
+  if (base === query) return 0;
+  return rawTokenSimilarity(base, candidate) * 0.95;
 }
 
 const MATCH_THRESHOLD = 0.7;

@@ -262,16 +262,27 @@ export const wantsFinalConsumer = test(/\b(consumidor final|sin factura|no neces
 
 export function detectDeliveryType(message: string): "delivery" | "pickup" | null {
   const text = normalizeText(message);
-  if (/\b(retiro|retirar|retiro en (el )?local|recoger|recojo|paso (a )?(retirar|recoger|buscar)|voy (al|a) local|en (el )?local|para llevar|pickup)\b/.test(text)) return "pickup";
-  if (/\b(delivery|domicilio|a mi casa|envio|enviar|envien|traigan|traer|motorizado|a domicilio)\b/.test(text)) return "delivery";
+  // Retiro dicho como lo dice la gente: "paso por ahí", "yo lo recojo", "me acerco", "para llevar".
+  if (
+    /\b(retiro|retirar|retirarlo|retirarla|recoger|recogerlo|recojo|recogo|pickup|para llevar|lo llevo|me lo llevo)\b/.test(text) ||
+    /\b(paso|pasare|pasaria|voy|ire|iria|me acerco|acerco|llego|llegare)\b.*\b(por (ahi|alla|el local|la tienda|ahi mismo)|a (retirar|recoger|buscar|recogerlo|retirarlo)|al local|a la tienda|por el pedido)\b/.test(text) ||
+    /\b(yo (paso|voy|lo recojo|lo retiro|me acerco))\b/.test(text) ||
+    /\b(en (el )?local|en la tienda|en el punto)\b/.test(text)
+  )
+    return "pickup";
+  // Delivery dicho como lo dice la gente: "me lo mandan", "que me lo traigan", "a la casa".
+  if (
+    /\b(delivery|domicilio|a domicilio|a mi casa|a la casa|hasta mi casa|hasta la casa|envio|enviar|envien|envienmelo|enviamelo|manden|mandenmelo|mandamelo|mandenme|me lo mandan|me lo envian|me lo traen|traigan|traiganmelo|traer|traemelo|motorizado|repartidor|que me lo (manden|traigan|envien))\b/.test(text)
+  )
+    return "delivery";
   return null;
 }
 
 export function detectPaymentMethod(message: string): "card" | "cash" | "transfer" | null {
   const text = normalizeText(message);
   if (/\b(transferencia|transfiero|deposito|depositar|banco|pichincha|produbanco|guayaquil|bolivariano|deuna|de una transferencia)\b/.test(text)) return "transfer";
-  if (/\b(tarjeta|credito|debito|link|payphone|en linea|online|visa|mastercard)\b/.test(text)) return "card";
-  if (/\b(efectivo|cash|billete|en persona|al recibir|contra entrega|al motorizado|al retirar)\b/.test(text)) return "cash";
+  if (/\b(tarjeta|tarjetita|credito|debito|link|enlace|payphone|en linea|online|visa|mastercard|por la web|con la tarje)\b/.test(text)) return "card";
+  if (/\b(efectivo|cash|billete|billetes|plata|en persona|al recibir|cuando (llegue|llegues|me lo entreguen)|contra entrega|contraentrega|al motorizado|al repartidor|al retirar|en la puerta|al entregar)\b/.test(text)) return "cash";
   return null;
 }
 
@@ -410,10 +421,55 @@ export function splitItemPhrases(message: string) {
     .filter((item) => item.query.length >= 3);
 }
 
-/** "quita el café", "sin la humita", "elimina el bolón". */
+/** Verbo de agregar que cierra lo que se quita y abre lo que se pide: "quita el crunch Y PONME el verde". */
+const ADD_VERB = "(?:mejor\\s+)?(?:ponme|pon|agrega(?:me)?|agregar|anade(?:me)?|sumale|dame|deme|quiero|quisiera|mandame)";
+
+/** "quita el café", "sin la humita", "elimina el bolón". Se corta antes de lo que el cliente pide a cambio. */
 export function parseRemoval(message: string) {
-  const match = normalizeText(message).match(/\b(?:quita(?:me)?|quitar|saca(?:me)?|sacar|elimina(?:r)?|borra(?:r)?|ya no quiero|no quiero)\s+(?:el|la|los|las|un|una)?\s*(.+)$/);
+  // Los artículos se cortan con límite de palabra: sin él, "quita UNO de los bolones" perdía la "n"
+  // y la búsqueda se hacía con "o de los bolones".
+  const match = normalizeText(message).match(/\b(?:quita(?:me)?|quitar|saca(?:me)?|sacar|elimina(?:r)?|borra(?:r)?|ya no quiero|no quiero)\s+(?:(?:el|la|los|las|un|una|uno|unos|unas)\s+(?:de\s+(?:el|la|los|las)\s+)?)?(.+)$/);
+  if (!match) return "";
+  const cut = match[1].match(new RegExp(`^(.*?)\\s+(?:y|pero|ademas|tambien|mas bien)?\\s*${ADD_VERB}\\b`));
+  // "quita uno de los bolones, con uno basta" → el producto es "los bolones": lo de "con uno basta"
+  // dice CUÁNTOS quedan (parseRemovalUnits), no qué producto es.
+  return (cut ? cut[1] : match[1]).replace(/\s+(?:con|deja(?:me|lo)?|solo|solamente)\s+(?:\d{1,2}|un|uno|una|dos|tres)\b.*$/, "").trim();
+}
+
+/**
+ * Lo que el cliente pide A CAMBIO en el mismo mensaje: "quita el bolón crunch y PONME el de queso verde".
+ * Sin esto el producto nuevo se perdía y aparecía recién un turno después, con el carrito en cero.
+ */
+export function additionAfterRemoval(message: string) {
+  const text = normalizeText(message);
+  // Solo lo que viene DESPUÉS de lo que se quita, y solo si hay un "y ponme…" de por medio.
+  const removalAt = text.search(/\b(?:quita|quitar|saca|sacar|elimina|borra|ya no quiero|no quiero)/);
+  const tail = removalAt >= 0 ? text.slice(removalAt) : text;
+  const match = tail.match(new RegExp(`\\b(?:y|pero|ademas|tambien|mas bien)\\s+${ADD_VERB}\\s+(.+)$`));
   return match ? match[1].trim() : "";
+}
+
+/**
+ * CUÁNTAS UNIDADES se quitan, cuando el cliente no quiere borrar el producto entero.
+ *
+ * "quita uno de los bolones, con uno basta" con 2 en el carrito = bajar a 1, NO borrar los dos.
+ * Devuelve `{ keep }` ("con uno basta", "déjame uno") o `{ remove }` ("quita uno"), o null si el
+ * cliente quiere sacar el producto completo. Es plata que el local deja de vender si se lee mal.
+ */
+export function parseRemovalUnits(message: string): { keep?: number; remove?: number } | null {
+  const text = normalizeText(message);
+  const NUM = "(\\d{1,2}|un|uno|una|dos|tres|cuatro|cinco)";
+  const toNumber = (value: string) => (/^\d+$/.test(value) ? Number(value) : NUMBER_WORDS[value] || 0);
+  // "con uno basta", "con 1 me basta", "con uno esta bien".
+  const enough = text.match(new RegExp(`\\bcon\\s+${NUM}\\s+(?:me\\s+)?(?:basta|alcanza|esta bien|es suficiente|suficiente|nomas|no mas)\\b`));
+  if (enough) return { keep: toNumber(enough[1]) };
+  // "déjame uno", "solo uno", "dejalo en uno", "quedate con uno".
+  const keep = text.match(new RegExp(`\\b(?:deja(?:me|lo)?|dejalo en|solo|solamente|unicamente|quedate con)\\s+${NUM}\\b`));
+  if (keep) return { keep: toNumber(keep[1]) };
+  // "quita uno", "saca 2 bolones", "quítame una".
+  const remove = text.match(new RegExp(`\\b(?:quita(?:me)?|quitar|saca(?:me)?|sacar|elimina(?:me)?|borra(?:me)?)\\s+${NUM}\\b`));
+  if (remove) return { remove: toNumber(remove[1]) };
+  return null;
 }
 
 /** "que sean 3 bolones", "cambia el café a 2", "mejor 2 cafés". */
