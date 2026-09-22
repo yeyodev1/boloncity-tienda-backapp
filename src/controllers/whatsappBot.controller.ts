@@ -286,8 +286,9 @@ async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMet
   const branches = await activeBranchesQuery().select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
   const candidates = branches
     .filter((branch) => branch.coordinates?.lat != null && branch.coordinates?.lng != null)
-    .map((branch) => ({ branch, distance: distanceKm(coords, { lat: branch.coordinates!.lat, lng: branch.coordinates!.lng }) }))
-    .sort((a, b) => a.distance - b.distance)
+    .map((branch) => ({ branch, distance: distanceKm(coords, { lat: branch.coordinates!.lat, lng: branch.coordinates!.lng }), open: isOpen(branch) }))
+    // Primero las ABIERTAS: de nada sirve la más cercana si está cerrada y el cliente tiene que esperar a mañana.
+    .sort((a, b) => Number(b.open) - Number(a.open) || a.distance - b.distance)
     .slice(0, MAX_BRANCHES_TO_QUOTE);
   const settings = await getOrCreateSettings();
   let lastReason = "Uy, hasta esa dirección todavía no llegamos con delivery 😔";
@@ -302,7 +303,10 @@ async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMet
       }))
     )
   );
-  for (const [index, { branch }] of candidates.entries()) {
+  // Dos vueltas: primero una abierta que cubra; si ninguna abierta cubre, se acepta una cerrada (el bot
+  // avisa el horario y guarda el pedido) en vez de decir que no hay cobertura.
+  const ordered = [...candidates.entries()].sort(([, a], [, b]) => Number(b.open) - Number(a.open));
+  for (const [index, { branch }] of ordered) {
     const quote: any = quotes[index];
     if (!quote.covered) {
       lastReason = quote.reason || lastReason;
