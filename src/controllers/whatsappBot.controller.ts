@@ -21,7 +21,10 @@ import { isAvailableAt } from "../utils/productAvailability";
 import { loadCatalog, searchCatalog } from "../services/whatsappBot/catalog";
 import { aiExtract } from "../services/whatsappBot/extractor";
 import { classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
-import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, nextStep, TurnResult } from "../services/whatsappBot/router";
+import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, nextStep, publicRoute, TurnResult } from "../services/whatsappBot/router";
+
+/** Las pruebas verifican con esto que ninguna ruta interna se escape hacia BuilderBot. */
+export const botResponseRoute = publicRoute;
 
 /**
  * Endpoints que llama BuilderBot. Toda la lógica de conversación vive en
@@ -732,7 +735,7 @@ function toBotResponse(result: TurnResult | null) {
     // "dudas" = el bot no puede resolverlo y hay que derivar al número de soporte.
     intencion: result.intent,
     telefonoSoporte: SUPPORT_PHONE,
-    route: result.route,
+    route: publicRoute(result.route),
     message: result.reply,
     step: result.step,
     decision: result.decision,
@@ -831,7 +834,7 @@ export async function whatsappBotLocation(req: Request, res: Response) {
     res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "conversar" });
   } catch (error) {
     console.error("[whatsapp-bot] location falló", error);
-    res.status(200).json(errorResponse("Mmm, no pude leer esa ubicación 🙈 ¿Me la compartes de nuevo desde el clip 📎?", { route: "location" }));
+    res.status(200).json(errorResponse("Mmm, no pude leer esa ubicación 🙈 ¿Me la compartes de nuevo desde el clip 📎?"));
   }
 }
 
@@ -933,12 +936,12 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
   try {
     const body = { ...req.query, ...req.body };
     const phone = readPhone(body);
-    if (!phone) return res.status(200).json({ success: false, route: "tracking", intencion: "consultar_pedido", message: NO_PHONE_MESSAGE });
+    if (!phone) return res.status(200).json({ success: false, route: "search_order", intencion: "consultar_pedido", message: NO_PHONE_MESSAGE });
     const message = readMessage(body);
     const result = await trackOrderForPhone(phone, message, requestedOrderNumber(body, message));
     res.status(200).json({
       success: result.success,
-      route: "tracking",
+      route: "search_order",
       intencion: "consultar_pedido",
       message: result.message,
       orderNumber: result.order?.orderNumber || "",
@@ -947,7 +950,7 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("[whatsapp-bot] track falló", axios.isAxiosError(error) ? error.message : error);
-    res.status(200).json({ success: false, route: "tracking", intencion: "consultar_pedido", message: `Dame un segundito 🙏 No pude consultar tu pedido ahorita. Inténtalo en un minuto o escríbenos al ${SUPPORT_PHONE}` });
+    res.status(200).json({ success: false, route: "search_order", intencion: "consultar_pedido", message: `Dame un segundito 🙏 No pude consultar tu pedido ahorita. Inténtalo en un minuto o escríbenos al ${SUPPORT_PHONE}` });
   }
 }
 

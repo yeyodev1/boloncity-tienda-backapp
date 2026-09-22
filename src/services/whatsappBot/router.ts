@@ -200,6 +200,18 @@ export interface TurnResult {
 export type BuilderBotRoute = "conversation" | "catalog" | "checkout" | "search_order" | "human";
 
 /**
+ * Traduce la ruta interna a las ÚNICAS 5 que puede ver BuilderBot. Las internas ("choice", "summary",
+ * "location", "tracking") son para los logs: si salieran, una Rule por `route` mandaría al cliente a un
+ * flow que no existe (pasó con "choice" el 2026-09-22). Todo lo que sigue siendo conversación es
+ * "conversation", y el que conversa es el mismo endpoint de siempre.
+ */
+export function publicRoute(route: Route | string): BuilderBotRoute {
+  if (route === "catalog" || route === "checkout" || route === "human") return route;
+  if (route === "tracking" || route === "search_order") return "search_order";
+  return "conversation";
+}
+
+/**
  * Enrutador del flow "Bienvenida" (mismo esquema que Sorbito): SOLO decide a qué flow
  * va el mensaje. No cambia la conversación ni llama a la IA, así responde en milisegundos
  * y el flow de destino recibe el mensaje intacto.
@@ -403,7 +415,8 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
       return {
         state,
         reply: followUp,
-        route: "checkout",
+        // Sigue siendo conversación: la orden ya existe y no hay nada que cobrar de nuevo.
+        route: "conversation",
         intent: "conversar",
         step: state.stage,
         decision: "R7:seguimiento_orden",
