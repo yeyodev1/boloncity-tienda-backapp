@@ -691,6 +691,39 @@ interface TurnOptions {
   endpoint?: string;
 }
 
+/** Cuánto espera un nodo sin texto a que el otro nodo del flow conteste la misma burbuja. */
+const SIBLING_WAIT_MS = 22000;
+
+/**
+ * Espera a que el OTRO nodo HTTP del flow termine de atender esta burbuja y devuelve su respuesta tal cual. Así
+ * el cliente ve la respuesta de verdad aunque BuilderBot envíe la del nodo que llegó sin texto.
+ */
+async function waitForSiblingReply(phone: string, arrivedAt: number): Promise<TurnOutcome | null> {
+  const deadline = Date.now() + SIBLING_WAIT_MS;
+  for (;;) {
+    const session: any = await WhatsAppSession.findOne({ phone }).lean();
+    const lastAt = session?.lastMessageAt ? new Date(session.lastMessageAt).getTime() : 0;
+    if (session?.lastReply && lastAt >= arrivedAt) {
+      console.warn(`[whatsapp-bot] ⚠️ el flow tiene DOS nodos HTTP: este llegó sin texto para ${phone} y se devuelve la respuesta del otro. DEJA UN SOLO NODO HTTP`);
+      const state = { ...createInitialState(phone), ...(session.state || {}) } as BotState;
+      const last: any = session.lastResponse || {};
+      return {
+        state,
+        reply: session.lastReply,
+        route: last.route || "conversation",
+        intent: last.intent || state.lastIntent || "conversar",
+        step: state.stage,
+        decision: "R0:eco_otro_nodo",
+        orderNumber: last.orderNumber || undefined,
+        paymentLink: last.paymentLink || undefined,
+        duplicated: true,
+      };
+    }
+    if (Date.now() > deadline) return null;
+    await sleep(400);
+  }
+}
+
 async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcome | null> {
   const phone = readPhone(body);
   if (!phone) {
@@ -709,6 +742,14 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
     console.log(`[whatsapp-bot] ${phone} reiniciatodo → sesión borrada`);
     const state = createInitialState(phone);
     return { state, reply: RESET_REPLY, route: "conversation", intent: "conversar", step: state.stage, decision: "R0:reinicio" };
+  }
+
+  // El nodo que solo manda {history} a veces llega SIN texto legible, y a veces llega ANTES que el nodo que sí
+  // trae el mensaje. Si contesta él, el cliente ve una respuesta genérica en lugar de la real (pasó en vivo: el
+  // pin de ubicación se quedó sin respuesta). En ese caso se espera la respuesta del otro nodo y se devuelve ESA.
+  if (!message && !location && !event && options.endpoint && TEXT_TWIN_ENDPOINTS.has(options.endpoint)) {
+    const fresh = await waitForSiblingReply(phone, arrivedAt);
+    if (fresh) return fresh;
   }
 
   const session = await acquireTurnLock(phone);
