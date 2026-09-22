@@ -18,7 +18,7 @@ import axios from "axios";
 import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
 import { classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
-import { isDuplicateTurn, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
+import { botResponseRoute, isDuplicateTurn, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
 import { isBotPath } from "../app";
 import { BotDeps, BotState, classifyRoute, createInitialState, handleTurn, LastOrder, TurnResult } from "../services/whatsappBot/router";
 
@@ -1193,6 +1193,22 @@ test("flow tipo Sorbito: el mensaje sale del {history} cuando no llega rawMessag
   assert.equal(latestUserMessage("user: una humita\ny un cafe\nassistant: listo"), "una humita\ny un cafe");
   for (const empty of [undefined, null, "", "{history}", [], [{ role: "assistant", content: "hola" }]]) {
     assert.equal(latestUserMessage(empty), "", JSON.stringify(empty));
+  }
+});
+
+test("a BuilderBot solo salen 5 rutas: conversation, catalog, checkout, search_order, human", async () => {
+  const PERMITIDAS = ["conversation", "catalog", "checkout", "search_order", "human"];
+  const { deps } = fakeDeps();
+  const mensajes = [
+    "hola quisiera comprar", "quisiera 2 bolones de queso", "2", "retiro", "1", "ana@test.com", "1",
+    "menu", "que llevo", "confirmo", "gracias", "mi pedido", "asdfgh", "tengo un reclamo, llego frio",
+  ];
+  const { results, state } = await chat(deps, mensajes);
+  for (const result of results) {
+    assert.ok(PERMITIDAS.includes(botResponseRoute(result.route)), `ruta interna ${result.route} no se traduce`);
+  }
+  for (const message of mensajes) {
+    assert.ok(PERMITIDAS.includes(classifyRoute(state, message)), `classifyRoute devolvió algo nuevo con "${message}"`);
   }
 });
 

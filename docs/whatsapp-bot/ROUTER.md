@@ -263,3 +263,15 @@ Igual que Sorbito de Verdad: el flow "agente que obtiene datos" (o "Inicio de co
 Si no llega `rawMessage`, el backend toma **el último mensaje del cliente** dentro de `{history}` (arreglo de
 `{ role, content }`, ese arreglo como JSON, o texto con líneas `user:` / `assistant:`). Si además se manda
 `rawMessage = {body}`, se usa ese. El estado del pedido vive en Mongo (`WhatsAppSession`), no en el historial.
+
+## `route`: solo 5 valores hacia BuilderBot
+
+La respuesta al cliente solo puede traer `conversation`, `catalog`, `checkout`, `search_order` o `human`.
+Las rutas internas del router (`choice`, `summary`, `location`, `tracking`) se traducen con `publicRoute()`
+antes de responder: si salieran, una Rule por `route` mandaría al cliente a un flow que no existe (pasó con
+`choice` el 2026-09-22, el cliente vio "choice" y la conversación se cortó).
+
+`checkout` sale solo cuando la orden existe. Un "gracias" después de crear la orden es `conversation`.
+Recordatorio: lo más simple y lo recomendado es **un solo flow, sin Rules**, que llame a `/assistant` (o
+`/brain`) y envíe `{message}`. Ese endpoint conversa hasta tener productos, entrega, local o dirección,
+nombre, correo y forma de pago, muestra el resumen y crea la orden con su link.
