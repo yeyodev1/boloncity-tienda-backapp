@@ -226,3 +226,31 @@ export async function runfoodHealth(config: RunfoodConfig): Promise<boolean> {
     return false;
   }
 }
+
+/** Una forma de pago del POS, tal como la devuelve `GET /payment-methods`. */
+export interface RunfoodPaymentMethod {
+  id: number;
+  nombre: string;
+  esElectronico: boolean;
+}
+
+/**
+ * Lista las formas de pago del local. El `id` NO es estable entre sucursales:
+ * cada POS tiene su propio catalogo, asi que hay que resolverlo por local y
+ * nunca hardcodear un numero.
+ *
+ * Requiere el scope `payment-methods:read`, que la app `boloncity_web` NO tiene
+ * hoy (403 insufficient_scope, verificado contra Garzota el 2026-09-17). Mientras
+ * siga negado esto devuelve `[]` con el motivo, no revienta.
+ */
+export async function getRunfoodPaymentMethods(
+  config: RunfoodConfig
+): Promise<{ ok: boolean; methods: RunfoodPaymentMethod[]; message: string }> {
+  try {
+    const { data } = await withRetry(() => client(config).get("/payment-methods"));
+    const methods: RunfoodPaymentMethod[] = data?.data || data || [];
+    return { ok: true, methods, message: `${methods.length} formas de pago` };
+  } catch (err) {
+    return { ok: false, methods: [], message: `No se pudieron leer las formas de pago: ${describeAxiosError(err)}` };
+  }
+}

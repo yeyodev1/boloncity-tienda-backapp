@@ -612,13 +612,42 @@ export function isRetry(input: { arrivedAt: number; lastAt: number; now: number;
   // Un flow de BuilderBot con DOS nodos HTTP manda el MISMO mensaje a DOS endpoints distintos con segundos de
   // diferencia (visto en producción: /assistant y /brain). Es una sola burbuja del cliente: misma respuesta, y no
   // se avanza dos veces el pedido. Un mensaje repetido por el MISMO endpoint sí puede ser una burbuja nueva.
-  if (input.endpoint && input.endpointBefore && input.endpoint !== input.endpointBefore && elapsed < OTHER_NODE_MS) return true;
+  if (isOtherHttpNode({ endpoint: input.endpoint, endpointBefore: input.endpointBefore, lastAt: input.lastAt, now: input.now })) return true;
   if (elapsed >= 5000) return false;
   return input.currentKey === input.keyBefore || input.createdOrder;
 }
 
 /** Ventana en la que el mismo texto por OTRO endpoint es el mismo mensaje (dos nodos HTTP, no dos burbujas). */
 const OTHER_NODE_MS = 20000;
+
+/**
+ * Los DOS nodos HTTP que el flow dispara con la MISMA burbuja de texto. Solo entre ellos puede haber un turno
+ * duplicado por "otro nodo". /location (el pin) y /catalog (el menú) son pasos legítimos del mismo flow: traen
+ * contenido propio que NADIE más va a mandar, y descartarlos dejaba al cliente atascado pidiéndole el pin una y
+ * otra vez (el pin llega en segundos, siempre dentro de la ventana).
+ */
+const TEXT_TWIN_ENDPOINTS = new Set(["brain", "assistant"]);
+
+/** Huella de un mensaje sin texto: el nodo que solo manda `{history}` a veces no trae nada legible. */
+const EMPTY_TURN_HASH = crypto.createHash("sha1").update("|||").digest("hex");
+
+/**
+ * ¿Este turno llegó por OTRO nodo HTTP del flow, a segundos del turno anterior del MISMO teléfono, con el MISMO
+ * mensaje?
+ *
+ * El flow del dueño tiene dos nodos HTTP (/assistant y /brain) y cada burbuja del cliente dispara los dos: uno
+ * manda `rawMessage={body}` y el otro solo `history={history}`. Es la misma burbuja cuando el texto derivado
+ * coincide, o cuando el nodo de `{history}` no trajo texto legible (hash vacío): ahí no hay nada nuevo que
+ * procesar. Si el texto es OTRO, es la burbuja SIGUIENTE (el orden entre los dos nodos varía) y hay que
+ * procesarla: devolverle la respuesta del turno anterior hacía que el cliente viera repetida la pregunta vieja.
+ */
+export function isOtherHttpNode(input: { endpoint?: string; endpointBefore?: string | null; lastAt: number; now: number; hash?: string; hashBefore?: string | null }) {
+  if (!input.endpoint || !input.endpointBefore || input.endpoint === input.endpointBefore) return false;
+  if (!TEXT_TWIN_ENDPOINTS.has(input.endpoint) || !TEXT_TWIN_ENDPOINTS.has(input.endpointBefore)) return false;
+  if (input.now - input.lastAt >= OTHER_NODE_MS) return false;
+  if (!input.hash || !input.hashBefore) return true;
+  return input.hash === input.hashBefore || input.hash === EMPTY_TURN_HASH;
+}
 
 /** Huella del mensaje (texto + ubicación + evento) para reconocer un reintento de BuilderBot. */
 export function turnHash(message: string, location: { lat: number; lng: number } | null, event: string | null) {
@@ -630,8 +659,11 @@ export function turnHash(message: string, location: { lat: number; lng: number }
  * reintento del turno anterior (misma respuesta completa, R0:duplicado). La usan runTurn y las pruebas.
  */
 export function isDuplicateTurn(session: any, hash: string, arrivedAt: number, now: number, endpoint?: string) {
-  if (!session || session.lastMessageHash !== hash || !session.lastReply) return false;
+  if (!session || !session.lastReply) return false;
   const lastAt = session.lastMessageAt ? new Date(session.lastMessageAt).getTime() : 0;
+  // El otro nodo HTTP del flow: misma burbuja aunque el texto derivado no coincida (ver isOtherHttpNode).
+  if (isOtherHttpNode({ endpoint, endpointBefore: session.lastEndpoint, lastAt, now, hash, hashBefore: session.lastMessageHash })) return true;
+  if (session.lastMessageHash !== hash) return false;
   const createdOrder = session.state?.stage === "ordered" && Boolean(session.lastResponse?.orderNumber);
   return isRetry({
     arrivedAt, lastAt, now, currentKey: pendingKey(session.state), keyBefore: session.lastStageBefore, createdOrder,
@@ -693,6 +725,12 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
     // y luego "¿cuál cola?" → "1" tienen el mismo paso ("choosing") pero distinta pregunta (ver pendingKey).
     const hash = turnHash(message, location, event);
     if (isDuplicateTurn(session, hash, arrivedAt, Date.now(), options.endpoint)) {
+      if (isOtherHttpNode({ endpoint: options.endpoint, endpointBefore: session.lastEndpoint, lastAt: session.lastMessageAt ? new Date(session.lastMessageAt).getTime() : 0, now: Date.now(), hash, hashBefore: session.lastMessageHash })) {
+        console.warn(
+          `[whatsapp-bot] ⚠️ el flow tiene DOS nodos HTTP: esta misma burbuja de ${phone} ya la atendió /${session.lastEndpoint} y ahora llegó a /${options.endpoint}. ` +
+            `Se devuelve la respuesta anterior y NO se vuelve a tocar el pedido. DEJA UN SOLO NODO HTTP en el flow de BuilderBot (recomendado: /api/orders/whatsapp-bot/brain).`
+        );
+      }
       const state = { ...createInitialState(phone), ...(session.state || {}) } as BotState;
       const last: any = session.lastResponse || {};
       return {

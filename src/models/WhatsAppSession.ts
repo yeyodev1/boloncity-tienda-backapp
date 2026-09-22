@@ -18,6 +18,13 @@ export interface IWhatsAppSession {
   lastResponse?: Record<string, unknown> | null;
   /** Paso en que estaba la conversación ANTES del último mensaje (para distinguir un reintento de una respuesta nueva). */
   lastStageBefore?: string;
+  /**
+   * Endpoint que atendió el último turno ("brain" | "assistant"). Si el siguiente turno del mismo teléfono llega
+   * por OTRO endpoint a segundos de distancia, es la misma burbuja repartida entre los dos nodos HTTP del flow
+   * (ver isOtherHttpNode en controllers/whatsappBot.controller.ts). SIN este campo en el schema Mongoose descarta
+   * el valor en el $set y la defensa contra el pedido duplicado nunca se activa.
+   */
+  lastEndpoint?: string;
   /** Evita que dos "confirmo" simultáneos creen dos órdenes. */
   checkoutLockUntil?: Date | null;
   /** Candado por teléfono: los mensajes del mismo cliente se procesan uno por uno (WhatsApp manda burbujas seguidas). */
@@ -44,6 +51,7 @@ const sessionSchema = new Schema<IWhatsAppSession>(
     lastReply: String,
     lastResponse: { type: Schema.Types.Mixed, default: null },
     lastStageBefore: String,
+    lastEndpoint: String,
     checkoutLockUntil: { type: Date, default: null },
     turnLockUntil: { type: Date, default: null },
     resetAt: { type: Date, default: null },
