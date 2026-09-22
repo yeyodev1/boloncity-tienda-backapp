@@ -9,7 +9,7 @@ import { extractIva, getActivePromo, getOrCreateSettings, promoDiscountCents } f
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { env, getFrontendUrl } from "../config/env";
 import { bookPickerForOrder, reportPurchaseToMeta, sendOrderToRunfood } from "./order.controller";
-import { getBranchAvailability, getBranchPayphoneStoreId, isBranchOpenAt, pickerEnabledBranchFilter } from "../services/branchOperational.service";
+import { getBranchAvailability, getBranchPayphoneStoreId, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
 import { quoteDelivery } from "../services/deliveryQuote.service";
 import { calculateEarnedPoints } from "../services/points.service";
 import { sendEmail } from "../services/resend.service";
@@ -21,7 +21,7 @@ import { isAvailableAt } from "../utils/productAvailability";
 import { loadCatalog, searchCatalog } from "../services/whatsappBot/catalog";
 import { aiChooseOption, aiExtract } from "../services/whatsappBot/extractor";
 import { classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
-import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, nextStep, publicRoute, TurnResult } from "../services/whatsappBot/router";
+import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, LocationQuote, nextStep, OpeningWindow, publicRoute, TurnResult } from "../services/whatsappBot/router";
 
 /** Las pruebas verifican con esto que ninguna ruta interna se escape hacia BuilderBot. */
 export const botResponseRoute = publicRoute;
@@ -38,6 +38,8 @@ export const botResponseRoute = publicRoute;
 const SUPPORT_PHONE = "+593 99 315 7333";
 /** Sucursales que se cotizan por delivery en un mensaje. Cada cotización puede tardar hasta 8 s en Picker. */
 const MAX_BRANCHES_TO_QUOTE = 3;
+/** Además de las más cercanas se cotizan hasta 2 sucursales ABIERTAS, para poder ofrecer una alternativa. */
+const MAX_OPEN_BRANCHES_TO_QUOTE = 2;
 
 /** Una variable de BuilderBot que no se reemplazó llega literal: "{body}", "{from}", "{name}", "{latitude}". */
 const PLACEHOLDER = /^\{\s*[\w.\-]+\s*\}$/;
@@ -281,18 +283,34 @@ function activeBranchesQuery() {
   return Branch.find({ isActive: true, isArchived: { $ne: true }, ...pickerEnabledBranchFilter() });
 }
 
-/** Igual que el checkout web (delivery.controller.ts): de la sucursal más cercana hacia afuera, la primera que cubre el punto. */
-async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMethod?: "card" | "cash") {
+/**
+ * Sucursal que atiende una ubicación. Gana la MÁS CERCANA que cubra la dirección, esté ABIERTA O CERRADA
+ * (pedido del dueño: "debería atenderme el Boloncity del Centro"). El estado abierto/cerrado NO decide quién
+ * gana; se devuelve para que el bot ofrezca programar el pedido o cambiar a una sucursal abierta.
+ *
+ * Se cotizan las 3 más cercanas (gana una de ellas) más hasta 2 ABIERTAS más cercanas, para poder ofrecer la
+ * alternativa "que me lo mande la otra". `preferBranchId` fuerza a esa sucursal si cubre: es la que el cliente
+ * eligió a mano, y así una recotización (por cambio de pago) no lo devuelve a la cerrada.
+ */
+async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMethod?: "card" | "cash", preferBranchId?: string): Promise<LocationQuote> {
   const branches = await activeBranchesQuery().select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey");
-  const candidates = branches
+  const ranked = branches
     .filter((branch) => branch.coordinates?.lat != null && branch.coordinates?.lng != null)
     .map((branch) => ({ branch, distance: distanceKm(coords, { lat: branch.coordinates!.lat, lng: branch.coordinates!.lng }), open: isOpen(branch) }))
-    // Primero las ABIERTAS: de nada sirve la más cercana si está cerrada y el cliente tiene que esperar a mañana.
-    .sort((a, b) => Number(b.open) - Number(a.open) || a.distance - b.distance)
-    .slice(0, MAX_BRANCHES_TO_QUOTE);
+    .sort((a, b) => a.distance - b.distance);
+
+  const candidates = ranked.slice(0, MAX_BRANCHES_TO_QUOTE);
+  // Además, las abiertas más cercanas: si la que gana está cerrada hay que poder ofrecer una que atienda ya.
+  for (const item of ranked) {
+    if (candidates.length >= MAX_BRANCHES_TO_QUOTE + MAX_OPEN_BRANCHES_TO_QUOTE) break;
+    if (item.open && !candidates.includes(item)) candidates.push(item);
+  }
+  const preferred = preferBranchId ? ranked.find((item) => String(item.branch._id) === preferBranchId) : undefined;
+  if (preferred && !candidates.includes(preferred)) candidates.push(preferred);
+
   const settings = await getOrCreateSettings();
   let lastReason = "Uy, hasta esa dirección todavía no llegamos con delivery 😔";
-  // Se cotizan en paralelo (cada una puede tardar hasta 8 s en Picker) y gana la más cercana que cubre.
+  // Se cotizan en paralelo (cada una puede tardar hasta 8 s en Picker).
   const quotes = await Promise.all(
     candidates.map(({ branch }) =>
       quoteDelivery({ branch, lat: coords.lat, lng: coords.lng, paymentMethod: paymentMethod === "cash" ? "CASH" : "CARD" }).catch((error) => ({
@@ -303,31 +321,60 @@ async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMet
       }))
     )
   );
-  // Dos vueltas: primero una abierta que cubra; si ninguna abierta cubre, se acepta una cerrada (el bot
-  // avisa el horario y guarda el pedido) en vez de decir que no hay cobertura.
-  const ordered = [...candidates.entries()].sort(([, a], [, b]) => Number(b.open) - Number(a.open));
-  for (const [index, { branch }] of ordered) {
-    const quote: any = quotes[index];
-    if (!quote.covered) {
-      lastReason = quote.reason || lastReason;
-      continue;
-    }
-    // Un delivery jamás sale gratis (misma regla que createOrder).
-    const deliveryFee = quote.deliveryFee > 0 ? quote.deliveryFee : (settings.deliveryPricePerKm || 150) / 100;
-    return { covered: true as const, branchId: String(branch._id), branchName: branch.name, deliveryFee, distance: Math.round(quote.distance * 10) / 10 };
-  }
-  return { covered: false as const, reason: lastReason };
+  const covered = candidates
+    .map((candidate, index) => ({ ...candidate, quote: quotes[index] as any }))
+    .filter((item) => {
+      if (item.quote.covered) return true;
+      lastReason = item.quote.reason || lastReason;
+      return false;
+    });
+  // Un delivery jamás sale gratis (misma regla que createOrder).
+  const feeOf = (quote: any) => (quote.deliveryFee > 0 ? quote.deliveryFee : (settings.deliveryPricePerKm || 150) / 100);
+
+  // `covered` ya viene ordenado por distancia: la primera es la más cercana que cubre.
+  const winner = (preferBranchId && covered.find((item) => String(item.branch._id) === preferBranchId)) || covered[0];
+  if (!winner) return { covered: false as const, reason: lastReason };
+
+  const alternative = covered.find((item) => item.open && String(item.branch._id) !== String(winner.branch._id));
+  const availability = getBranchAvailability(winner.branch);
+  return {
+    covered: true as const,
+    branchId: String(winner.branch._id),
+    branchName: winner.branch.name,
+    deliveryFee: feeOf(winner.quote),
+    distance: Math.round(winner.quote.distance * 10) / 10,
+    open: winner.open,
+    nextOpening: toOpeningWindow(availability.nextOpening, winner.branch.timezone),
+    openAlternative: alternative
+      ? {
+          branchId: String(alternative.branch._id),
+          branchName: alternative.branch.name,
+          deliveryFee: feeOf(alternative.quote),
+          distance: Math.round(alternative.quote.distance * 10) / 10,
+        }
+      : null,
+  };
+}
+
+/** Próxima apertura en el formato que usa el router (con la etiqueta en palabras ya resuelta). */
+function toOpeningWindow(nextOpening: { date: string; opensAt: string; closesAt: string; at: string } | null, timezone?: string): OpeningWindow | null {
+  if (!nextOpening) return null;
+  return { at: nextOpening.at, opensAt: nextOpening.opensAt, closesAt: nextOpening.closesAt, label: describeOpeningDay(nextOpening.at, timezone) };
 }
 
 async function branchStatus(branchId: string) {
   const branch = await Branch.findById(branchId);
   if (!branch || !branch.isActive) return { open: false, message: "Uy, ese local no está disponible ahorita 😔 Escribe *otro local* para elegir otro, o *delivery* y te lo llevamos" };
-  if (isOpen(branch)) return { open: true };
+  if (isOpen(branch)) return { open: true, branchName: branch.name };
   const availability = getBranchAvailability(branch);
+  const nextOpening = toOpeningWindow(availability.nextOpening, branch.timezone);
   return {
     open: false,
-    message: availability.nextOpening
-      ? `${branch.name} está cerrada ahorita 😴 Abre ${describeOpeningDay(availability.nextOpening.at, branch.timezone)} a las ${availability.nextOpening.opensAt}. Escríbenos desde esa hora y te tomamos el pedido`
+    branchName: branch.name,
+    nextOpening,
+    // El router arma la oferta completa (programar / otra sucursal abierta); este mensaje es el respaldo.
+    message: nextOpening
+      ? `${branch.name} está cerrada ahorita 😴 Atiende de ${nextOpening.opensAt} a ${nextOpening.closesAt}, y vuelve a abrir ${nextOpening.label} a las ${nextOpening.opensAt}`
       : `${branch.name} no tiene horario de atención por ahora 😔 Prueba con otro local o escríbenos en un rato`,
   };
 }
@@ -368,7 +415,20 @@ async function createBotOrder(state: BotState) {
     ? await Branch.findOne({ _id: state.branchId, isActive: true, isArchived: { $ne: true } }).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
     : null;
   if (!branch) throw new Error("No pude asignarle un local a tu pedido 🙏 Dime de nuevo si lo quieres por delivery o para retirar");
-  if (!isOpen(branch)) throw new Error(`Uy, ${branch.name} acaba de cerrar 😴 Te esperamos apenas abramos`);
+
+  // PEDIDO PROGRAMADO: mismas reglas que POST /api/orders (createOrder) — fecha válida, estrictamente futura
+  // y dentro del horario de ESA sucursal en su timezone. Con un pedido programado el local puede estar cerrado:
+  // justamente por eso se programó.
+  const scheduledFor = state.scheduledFor ? new Date(state.scheduledFor) : null;
+  if (scheduledFor) {
+    if (Number.isNaN(scheduledFor.getTime()) || scheduledFor <= new Date()) {
+      throw new Error("Esa hora ya pasó 🙈 Dime de nuevo para cuándo lo quieres y lo programamos");
+    }
+    const scheduledValidation = validateScheduledTime(branch, scheduledFor);
+    if (!scheduledValidation.valid) throw new Error(scheduledValidation.message || `${branch.name} no atiende a esa hora 🙏`);
+  } else if (!isOpen(branch)) {
+    throw new Error(`Uy, ${branch.name} acaba de cerrar 😴 Te esperamos apenas abramos`);
+  }
 
   const isDelivery = state.deliveryType === "delivery";
   let deliveryCostCents = 0;
@@ -442,6 +502,7 @@ async function createBotOrder(state: BotState) {
     customerPhone: isLid(state.phone) ? "" : toE164(state.phone),
     notes: state.notes || "",
     branch: branch._id,
+    ...(scheduledFor ? { scheduledFor } : {}),
     ...(state.billingPreference === "invoice" && docNumber
       ? { billing: { docType: docNumber.length === 13 ? "ruc" : "cedula", name: state.billingName || state.customerName, docNumber, email: state.customerEmail || "", address: state.deliveryAddress || "" } }
       : {}),
@@ -457,8 +518,10 @@ async function createBotOrder(state: BotState) {
       orderNumber: order.orderNumber,
       customerName: order.customerName || "Cliente",
       status: order.status,
-      statusText: "Recibimos tu pedido — falta el pago",
-      description: "Tu pedido quedó registrado. La cocina lo empieza apenas se confirme el pago con tarjeta.",
+      statusText: scheduledFor ? `Pedido programado para ${longScheduledLabel(scheduledFor)} — falta el pago` : "Recibimos tu pedido — falta el pago",
+      description: scheduledFor
+        ? "Tu pedido quedó programado. La cocina lo prepara a esa hora, apenas se confirme el pago con tarjeta."
+        : "Tu pedido quedó registrado. La cocina lo empieza apenas se confirme el pago con tarjeta.",
       detailUrl: botPaymentLink(order),
       ctaLabel: "Pagar mi pedido",
       items: order.items || [],
@@ -467,14 +530,21 @@ async function createBotOrder(state: BotState) {
     await sendEmail(order.customerEmail, `Boloncity: completa el pago de tu pedido ${order.orderNumber}`, html).catch(() => {});
   }
   if (order.paymentMethod === "cash") {
-    if (isDelivery) await bookPickerForOrder(order, "CASH");
-    await sendOrderToRunfood(order);
+    // Igual que la web (order.controller.ts): un pedido PROGRAMADO no se despacha ahora. La reserva de Picker
+    // entra cuando el cajero lo pasa a "Listas para recolección" y la comanda RunFood cuando lo pasa a
+    // "En preparación". Meta sí se reporta: en efectivo la venta ya está hecha. Ver docs/whatsapp-bot/ROUTER.md.
+    if (!scheduledFor) {
+      if (isDelivery) await bookPickerForOrder(order, "CASH");
+      await sendOrderToRunfood(order);
+    }
     await reportPurchaseToMeta(order);
     const html = getOrderStatusEmailHtml({
       orderNumber: order.orderNumber,
       customerName: order.customerName || "Cliente",
       status: order.status,
-      statusText: `Recibimos tu pedido — pagas en efectivo al ${isDelivery ? "recibirlo" : "retirarlo en el local"}`,
+      statusText: scheduledFor
+        ? `Pedido programado para ${longScheduledLabel(scheduledFor)}`
+        : `Recibimos tu pedido — pagas en efectivo al ${isDelivery ? "recibirlo" : "retirarlo en el local"}`,
       detailUrl: getOrderDetailUrl(order),
       items: order.items || [],
       total: order.total,
@@ -482,6 +552,14 @@ async function createBotOrder(state: BotState) {
     await sendEmail(order.customerEmail, `Boloncity: recibimos tu pedido ${order.orderNumber}`, html).catch(() => {});
   }
   return order;
+}
+
+/** Fecha larga en es-EC para el correo, EXACTAMENTE como la arma el checkout web (order.controller.ts). */
+function longScheduledLabel(date: Date) {
+  return new Intl.DateTimeFormat("es-EC", {
+    timeZone: "America/Guayaquil",
+    weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit",
+  }).format(date);
 }
 
 function botPaymentLink(order: { orderNumber: string; customerEmail?: string }) {
@@ -547,7 +625,14 @@ function defaultDeps(): BotDeps {
     resolveMapsUrl: async (url) => parseMapsUrl(url) || (await resolveMapsCoordinates(url, undefined, env.GOOGLE_MAPS_API_KEY)),
     quoteLocation: quoteBotLocation,
     pickupBranches: async () =>
-      (await activeBranchesQuery().sort({ name: 1 })).map((branch) => ({ branchId: String(branch._id), name: branch.name, address: branch.address || undefined })),
+      (await activeBranchesQuery().sort({ name: 1 })).map((branch) => ({
+        branchId: String(branch._id),
+        name: branch.name,
+        address: branch.address || undefined,
+        // El bot marca cuáles están abiertos y ofrece programar en los cerrados.
+        open: isOpen(branch),
+        nextOpening: toOpeningWindow(getBranchAvailability(branch).nextOpening, branch.timezone),
+      })),
     branchStatus,
     quote: quoteState,
     createOrder: createOrderWithLock,

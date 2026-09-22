@@ -42,23 +42,57 @@ interface FakeOptions {
   extract?: Extractor;
 }
 
+/** Próxima apertura falsa: mañana a las 07:00 en Guayaquil. Siempre futura, como la real. */
+function fakeNextOpening() {
+  const tomorrow = new Date(Date.now() + 86_400_000);
+  const date = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Guayaquil" }).format(tomorrow);
+  const label = `mañana ${new Intl.DateTimeFormat("es-EC", { timeZone: "America/Guayaquil", weekday: "long", day: "numeric" }).format(tomorrow)}`;
+  return { at: `${date}T07:00:00-05:00`, opensAt: "07:00", closesAt: "13:00", label };
+}
+
+const FAKE_BRANCHES = [
+  { branchId: "b-urdesa", name: "Urdesa", address: "Av. Víctor Emilio Estrada", distance: 3.1, fee: 2.5 },
+  { branchId: "b-samborondon", name: "Samborondón", address: "Km 2.5", distance: 9.4, fee: 5.9 },
+];
+
 function fakeDeps(options: FakeOptions = {}) {
   const created: BotState[] = [];
+  const isClosed = (branchId: string) => Boolean(options.closed || options.closedBranches?.includes(branchId));
+  const opening = fakeNextOpening();
   const deps: BotDeps = {
     search: async (query, branchId) => rankProducts(query, branchId ? MENU.filter((p) => !options.unavailableAtBranch?.includes(p.name)) : MENU),
     catalog: async (branchId) => (branchId ? MENU.filter((p) => !options.unavailableAtBranch?.includes(p.name)) : MENU),
     lastOrder: async () => options.lastOrder ?? null,
     resolveMapsUrl: async () => ({ lat: -2.15, lng: -79.9 }),
-    quoteLocation: async (_coords, paymentMethod) =>
-      options.covered === false
-        ? { covered: false, reason: "Todavía no llegamos a esa dirección con delivery" }
-        : { covered: true, branchId: "b-urdesa", branchName: "Urdesa", deliveryFee: paymentMethod === "cash" && options.cashFee ? options.cashFee : 2.5, distance: 3.1 },
-    pickupBranches: async () => [
-      { branchId: "b-urdesa", name: "Urdesa", address: "Av. Víctor Emilio Estrada" },
-      { branchId: "b-samborondon", name: "Samborondón", address: "Km 2.5" },
-    ],
+    quoteLocation: async (_coords, paymentMethod, preferBranchId) => {
+      if (options.covered === false) return { covered: false, reason: "Todavía no llegamos a esa dirección con delivery" };
+      // Gana la MÁS CERCANA que cubra (Urdesa), abierta o cerrada; salvo que el cliente haya elegido otra.
+      const winner = FAKE_BRANCHES.find((branch) => branch.branchId === preferBranchId) || FAKE_BRANCHES[0];
+      const alternative = FAKE_BRANCHES.find((branch) => !isClosed(branch.branchId) && branch.branchId !== winner.branchId);
+      const fee = winner.branchId === "b-urdesa" && paymentMethod === "cash" && options.cashFee ? options.cashFee : winner.fee;
+      return {
+        covered: true,
+        branchId: winner.branchId,
+        branchName: winner.name,
+        deliveryFee: fee,
+        distance: winner.distance,
+        open: !isClosed(winner.branchId),
+        nextOpening: isClosed(winner.branchId) ? opening : null,
+        openAlternative: alternative ? { branchId: alternative.branchId, branchName: alternative.name, deliveryFee: alternative.fee, distance: alternative.distance } : null,
+      };
+    },
+    pickupBranches: async () =>
+      FAKE_BRANCHES.map((branch) => ({
+        branchId: branch.branchId,
+        name: branch.name,
+        address: branch.address,
+        open: !isClosed(branch.branchId),
+        nextOpening: isClosed(branch.branchId) ? opening : null,
+      })),
     branchStatus: async (branchId) =>
-      options.closed || options.closedBranches?.includes(branchId) ? { open: false, message: "Urdesa está cerrada en este momento. Abre a las 07:00" } : { open: true },
+      isClosed(branchId)
+        ? { open: false, branchName: FAKE_BRANCHES.find((b) => b.branchId === branchId)?.name || "Urdesa", nextOpening: opening, message: "Urdesa está cerrada en este momento. Abre a las 07:00" }
+        : { open: true, branchName: FAKE_BRANCHES.find((b) => b.branchId === branchId)?.name },
     quote: async (state) => {
       const lines = state.cart.map((item) => ({ name: item.name, quantity: item.quantity, unitPrice: MENU.find((p) => p.productId === item.productId)!.price }));
       const subtotal = lines.reduce((sum, line) => sum + line.unitPrice * line.quantity, 0);
@@ -1679,6 +1713,171 @@ test("DIR-01: en el paso de dirección, 'me llamo Diego Reyes' es el nombre, no 
   const direccion = await handleTurn(nombre.state, { message: "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos" }, deps);
   assert.equal(direccion.state.deliveryAddress, "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos");
   assert.match(direccion.reply, /Anoté la dirección/, direccion.reply);
+});
+
+// ─── Sucursal cerrada: programar o cambiar a una abierta ─────────────────────
+
+test("PROG-01: gana la sucursal MÁS CERCANA aunque esté cerrada (no la abierta lejana)", async () => {
+  const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { state, last } = await chat(deps, ["una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }]);
+  assert.equal(state.branchId, "b-urdesa", "debe ganar la más cercana, esté abierta o cerrada");
+  assert.equal(state.deliveryFee, 2.5, "el envío es el de la cercana, no el de la lejana abierta");
+  assert.equal(last.step, "closed");
+});
+
+test("PROG-02: con la sucursal cerrada se dice el horario real y se ofrecen las DOS salidas", async () => {
+  const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { last } = await chat(deps, ["una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }]);
+  assert.match(last.reply, /Atiende de 07:00 a 13:00/, last.reply);
+  assert.match(last.reply, /\*programo\* para mañana/i, last.reply);
+  assert.match(last.reply, /Samborondón/, last.reply);
+  assert.match(last.reply, /\$5\.90/, "debe decir el envío de la alternativa");
+});
+
+test("PROG-03: 'prográmalo' deja el pedido para la próxima apertura y lo dice en el resumen y al confirmar", async () => {
+  const { deps, created } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { last, state } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } },
+    "prográmalo", "Kennedy 123", "Ana", "ana@test.com", "tarjeta",
+  ]);
+  const opening = fakeNextOpening();
+  assert.equal(state.scheduledFor, opening.at, `scheduledFor: ${state.scheduledFor}`);
+  assert.equal(state.branchId, "b-urdesa");
+  assert.equal(last.step, "confirm");
+  assert.match(last.reply, /Programado para mañana .* a las 07:00/, last.reply);
+  const confirmado = await handleTurn(state, { message: "confirmo" }, deps);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].scheduledFor, opening.at, "la orden se crea con scheduledFor");
+  assert.match(confirmado.reply, /Programado para mañana/, confirmado.reply);
+  assert.doesNotMatch(confirmado.reply, /Ya lo estamos preparando/, "un pedido programado no se está preparando");
+});
+
+test("PROG-04: 'que me lo mande la otra' cambia a la sucursal abierta y avisa el nuevo envío", async () => {
+  const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { state, last } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, "que me lo mande la otra",
+  ]);
+  assert.equal(state.branchId, "b-samborondon");
+  assert.equal(state.scheduledFor, undefined, "si lo quiere ahora, no queda programado");
+  assert.equal(state.deliveryFee, 5.9);
+  assert.match(last.reply, /\$5\.90/, last.reply);
+  assert.notEqual(last.step, "closed");
+});
+
+test("PROG-05: elegir la sucursal abierta se respeta al recotizar por el pago", async () => {
+  const { deps } = fakeDeps({ closedBranches: ["b-urdesa"], cashFee: 3.2 });
+  const { state } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, "la que esté abierta",
+    "Kennedy 123", "Ana", "ana@test.com", "efectivo",
+  ]);
+  assert.equal(state.branchId, "b-samborondon", "el cambio de pago no debe devolverlo a la cerrada");
+  assert.equal(state.deliveryFee, 5.9);
+});
+
+test("PROG-06: retiro en un local cerrado ofrece programar o elegir otro local abierto", async () => {
+  const { deps, created } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { results, state } = await chat(deps, ["una humita", "retiro", "1"]);
+  assert.equal(results[2].step, "closed");
+  assert.match(results[2].reply, /\*programo\* para mañana/i, results[2].reply);
+  assert.match(results[2].reply, /otro local abierto ahorita: Samborondón/, results[2].reply);
+  const programado = await chat(deps, ["una humita", "retiro", "1", "dale prográmalo", "Ana", "ana@test.com", "efectivo", "confirmo"]);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].scheduledFor, fakeNextOpening().at);
+  assert.equal(created[0].deliveryType, "pickup");
+  assert.match(programado.last.reply, /Programado para mañana/, programado.last.reply);
+  assert.equal(state.branchId, "b-urdesa");
+});
+
+test("PROG-07: en el paso cerrado, '¿a qué hora abren?' repite el horario y no cuenta como no entendido", async () => {
+  const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { last, state } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, "a qué hora abren",
+  ]);
+  assert.equal(last.decision, "R10:horario");
+  assert.match(last.reply, /Atiende de 07:00 a 13:00/, last.reply);
+  assert.equal(state.misunderstood || 0, 0);
+});
+
+test("PROG-08: cambiar de sucursal después de programar borra la programación", async () => {
+  const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { state } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, "prográmalo", "mejor para retirar",
+  ]);
+  assert.equal(state.scheduledFor, undefined, "lo programado era para la sucursal de delivery");
+});
+
+test("PROG-09: 'ahorita no puedo, prográmalo' PROGRAMA y no muda el pedido a la otra sucursal (ni le sube el envío)", async () => {
+  for (const respuesta of ["ahorita no puedo, prográmalo", "hoy no, mejor mañana", "no, ahorita no, déjalo para mañana"]) {
+    const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+    const { state, last } = await chat(deps, [
+      "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, respuesta,
+    ]);
+    assert.equal(state.branchId, "b-urdesa", `"${respuesta}" no debe cambiar de sucursal`);
+    assert.equal(state.scheduledFor, fakeNextOpening().at, `"${respuesta}" debe quedar programado`);
+    assert.equal(state.deliveryFee, 2.5, `"${respuesta}" no debe cambiarle el envío`);
+    assert.doesNotMatch(last.reply, /Samborondón/, last.reply);
+    assert.match(last.reply, /programado para mañana/i, last.reply);
+  }
+});
+
+test("PROG-10: 'la otra no, gracias' NO cambia a la otra sucursal", async () => {
+  for (const respuesta of ["la otra no, gracias", "no quiero la otra", "de la otra no"]) {
+    const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+    const { state, last } = await chat(deps, [
+      "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, respuesta,
+    ]);
+    assert.equal(state.branchId, "b-urdesa", `"${respuesta}" no debe mudar el pedido`);
+    assert.equal(state.deliveryFee, 2.5, `"${respuesta}" no debe cambiarle el envío`);
+    assert.equal(state.scheduledFor, undefined, `"${respuesta}" tampoco programa solo`);
+    assert.doesNotMatch(last.reply, /te atiende Samborondón/, last.reply);
+    // Decir que no a una opción NO es quitar un producto (en producción "no quiero la otra" vació el carrito).
+    assert.equal(state.cart.length, 1, `"${respuesta}" no debe tocar el carrito`);
+    assert.equal(last.decision, "R10:sigue_cerrada", last.decision);
+    assert.match(last.reply, /\*programo\* para mañana/i, last.reply);
+  }
+});
+
+test("PROG-13: la urgencia explícita le gana a 'mañana' ('no puedo esperar hasta mañana' NO programa)", async () => {
+  const { deps } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { state, last } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, "no puedo esperar hasta mañana",
+  ]);
+  assert.equal(state.scheduledFor, undefined, "no quiere esperar: no se programa");
+  assert.equal(state.branchId, "b-samborondon", "se va con la sucursal abierta");
+  assert.match(last.reply, /abierta ahorita/, last.reply);
+});
+
+test("PROG-11: una programación que ya pasó caduca sola: con el local ABIERTO el pedido sigue como inmediato", async () => {
+  const { deps, created } = fakeDeps();
+  const { state } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } },
+    "Kennedy 123", "Ana", "ana@test.com", "efectivo",
+  ]);
+  // La sesión de anoche quedó programada para hoy a las 07:00 (ya pasó) y el checkout a medias.
+  const vencido = new Date(Date.now() - 3 * 3_600_000).toISOString();
+  const viejo: BotState = { ...state, scheduledFor: vencido, scheduledLabel: "hoy a las 07:00", closedOffer: { branchId: state.branchId!, branchName: "Urdesa", nextOpeningAt: vencido, nextOpeningLabel: "hoy", opensAt: "07:00", closesAt: "13:00", alternative: null } };
+  const confirmado = await handleTurn(viejo, { message: "confirmo" }, deps);
+  assert.doesNotMatch(confirmado.reply, /ya pasó/i, confirmado.reply);
+  assert.doesNotMatch(confirmado.reply, /Programado para/, confirmado.reply);
+  assert.equal(created.length, 1, "la orden se crea, no se queda en bucle");
+  assert.equal(created[0].scheduledFor, undefined, "no se manda una hora que ya pasó");
+  assert.equal(confirmado.state.scheduledFor, undefined);
+});
+
+test("PROG-12: una programación que ya pasó con el local CERRADO se vuelve a ofrecer para la próxima apertura", async () => {
+  const { deps, created } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { state } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } }, "prográmalo",
+    "Kennedy 123", "Ana", "ana@test.com", "efectivo",
+  ]);
+  const vencido = new Date(Date.now() - 3 * 3_600_000).toISOString();
+  const viejo: BotState = { ...state, scheduledFor: vencido, scheduledLabel: "hoy a las 07:00", closedOffer: { ...state.closedOffer!, nextOpeningAt: vencido, nextOpeningLabel: "hoy" } };
+  const revalidado = await handleTurn(viejo, { message: "confirmo" }, deps);
+  assert.equal(created.length, 0, "no se crea una orden para una hora que ya pasó");
+  assert.equal(revalidado.step, "closed", revalidado.reply);
+  assert.match(revalidado.reply, /\*programo\* para mañana/i, revalidado.reply);
+  const reprogramado = await handleTurn(revalidado.state, { message: "prográmalo" }, deps);
+  assert.equal(reprogramado.state.scheduledFor, fakeNextOpening().at, "queda para la PRÓXIMA apertura");
 });
 
 (async () => {
