@@ -1,5 +1,29 @@
+import { getFrontendUrl } from "../config/env";
+
 function centsToDollars(cents: number): number {
   return cents / 100;
+}
+
+/**
+ * Escapa texto que viene del cliente (nombre, productos, dirección). El nombre del bot sale del perfil de
+ * WhatsApp, que controla cualquiera: sin esto se podían meter enlaces o HTML en correos de team@boloncity.com.
+ */
+/**
+ * Link del botón de los correos. Con cuenta: /mis-ordenes/:id (pide login). Sin cuenta (pedidos de WhatsApp o
+ * invitados): /pedido con el número y el correo, que TrackOrderView abre directo sin login.
+ */
+export function getOrderDetailUrl(order: { _id?: unknown; user?: unknown; orderNumber: string; customerEmail?: string; source?: string }) {
+  if (order.user && order.source !== "whatsapp") return `${getFrontendUrl()}/mis-ordenes/${order._id}`;
+  return `${getFrontendUrl()}/pedido?order=${encodeURIComponent(order.orderNumber)}&email=${encodeURIComponent(order.customerEmail || "")}`;
+}
+
+export function escapeHtml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 interface StatusEmailData {
@@ -11,6 +35,10 @@ interface StatusEmailData {
   detailUrl: string;
   items: Array<{ name: string; quantity: number; price: number }>;
   total: number;
+  /** Texto del botón (por defecto "Ver detalle de mi pedido"). */
+  ctaLabel?: string;
+  /** Reemplaza el párrafo que describe el estado. */
+  description?: string;
 }
 
 const STATUS_EMOJIS: Record<string, string> = {
@@ -35,12 +63,12 @@ export function getOrderStatusEmailHtml(data: StatusEmailData): string {
   const itemsHtml = data.items
     .map(
       (item) =>
-        `<tr><td style="padding:8px 0;border-bottom:1px solid #e5e5e5;font-size:14px;color:#111111;">${item.name} <span style="color:#111111;">x${item.quantity}</span></td><td style="padding:8px 0;border-bottom:1px solid #e5e5e5;text-align:right;font-size:14px;color:#111111;">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
+        `<tr><td style="padding:8px 0;border-bottom:1px solid #e5e5e5;font-size:14px;color:#111111;">${escapeHtml(item.name)} <span style="color:#111111;">x${Number(item.quantity) || 0}</span></td><td style="padding:8px 0;border-bottom:1px solid #e5e5e5;text-align:right;font-size:14px;color:#111111;">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
     )
     .join("");
 
   const driverHtml = data.driverName
-    ? `<tr><td style="padding:12px 0 4px;font-size:14px;color:#111111;"><strong>Tu delivery</strong></td></tr><tr><td style="padding:0 0 12px;font-size:14px;color:#111111;">${data.driverName}</td></tr>`
+    ? `<tr><td style="padding:12px 0 4px;font-size:14px;color:#111111;"><strong>Tu delivery</strong></td></tr><tr><td style="padding:0 0 12px;font-size:14px;color:#111111;">${escapeHtml(data.driverName)}</td></tr>`
     : "";
 
   return `
@@ -52,12 +80,12 @@ export function getOrderStatusEmailHtml(data: StatusEmailData): string {
     <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #111111;border-radius:12px;overflow:hidden;">
       <tr><td style="background:#ffffff;border-bottom:1px solid #111111;padding:32px 32px 24px;text-align:center;color:#111111;">
         <div style="font-size:40px;margin-bottom:8px;">${emoji}</div>
-        <h1 style="color:#111111;font-size:22px;margin:0 0 4px;letter-spacing:-0.02em;">${data.statusText}</h1>
-        <p style="color:#111111;font-size:14px;margin:0;">Pedido <strong style="color:#111111;">${data.orderNumber}</strong></p>
+        <h1 style="color:#111111;font-size:22px;margin:0 0 4px;letter-spacing:-0.02em;">${escapeHtml(data.statusText)}</h1>
+        <p style="color:#111111;font-size:14px;margin:0;">Pedido <strong style="color:#111111;">${escapeHtml(data.orderNumber)}</strong></p>
       </td></tr>
       <tr><td style="padding:24px 32px 0;">
-        <p style="font-size:15px;margin:0 0 16px;color:#111111;">Hola <strong>${data.customerName}</strong>,</p>
-        <p style="font-size:14px;margin:0 0 16px;color:#111111;line-height:1.5;">${getStatusDescription(data.status, data.driverName)}</p>
+        <p style="font-size:15px;margin:0 0 16px;color:#111111;">Hola <strong>${escapeHtml(data.customerName)}</strong>,</p>
+        <p style="font-size:14px;margin:0 0 16px;color:#111111;line-height:1.5;">${escapeHtml(data.description || getStatusDescription(data.status, data.driverName))}</p>
 
         ${driverHtml ? `<table width="100%" style="margin-bottom:8px;">${driverHtml}</table>` : ""}
 
@@ -67,7 +95,7 @@ export function getOrderStatusEmailHtml(data: StatusEmailData): string {
           <tr><td style="padding:12px 0 8px;font-size:15px;font-weight:700;color:#111111;">Total</td><td style="padding:12px 0 8px;text-align:right;font-size:15px;font-weight:700;color:#111111;">$${centsToDollars(data.total).toFixed(2)}</td></tr>
         </table>
 
-        <a href="${data.detailUrl}" target="_blank" style="display:block;text-align:center;background:#ffffff;border:1px solid #111111;color:#111111;text-decoration:none;padding:14px 24px;border-radius:8px;font-size:15px;font-weight:700;margin:16px 0 0;">Ver detalle de mi pedido</a>
+        <a href="${escapeHtml(data.detailUrl)}" target="_blank" style="display:block;text-align:center;background:#ffffff;border:1px solid #111111;color:#111111;text-decoration:none;padding:14px 24px;border-radius:8px;font-size:15px;font-weight:700;margin:16px 0 0;">${escapeHtml(data.ctaLabel || "Ver detalle de mi pedido")}</a>
       </td></tr>
       <tr><td style="padding:32px;text-align:center;color:#111111;font-size:12px;">
         Boloncity — Todos los derechos reservados.

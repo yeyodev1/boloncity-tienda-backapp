@@ -201,6 +201,12 @@ export function metaUserDataFromRequest(req: Request): MetaUserData {
  */
 export async function sendMetaEvent(input: MetaEventInput): Promise<boolean> {
   if (!isMetaConfigured()) return false;
+  // Fuera de producción solo se envía como evento de prueba: los pedidos de dev/QA no son compras reales
+  // y ensuciaban las conversiones del pixel. META_TEST_EVENT_CODE los manda a "Probar eventos".
+  if (env.APP_ENV !== "production" && !env.META_TEST_EVENT_CODE) {
+    console.log(`[meta-capi] ${input.eventName} omitido (APP_ENV=${env.APP_ENV} sin META_TEST_EVENT_CODE, event_id=${input.eventId})`);
+    return false;
+  }
 
   const event: Record<string, unknown> = {
     event_name: input.eventName,

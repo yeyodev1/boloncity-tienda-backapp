@@ -21,10 +21,13 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
   }
 
   try {
+    // Fuera de producción el asunto lleva [DEV]: comparte cuenta y remitente con producción, y un correo de
+    // prueba no debe parecer un pedido real.
+    const finalSubject = env.APP_ENV === "production" ? subject : `[DEV] ${subject}`;
     const { data, error } = await resend.emails.send({
       from: env.RESEND_FROM_EMAIL,
       to,
-      subject,
+      subject: finalSubject,
       html,
     });
 
@@ -33,6 +36,7 @@ export async function sendEmail(to: string, subject: string, html: string): Prom
       return { ok: false, error: `${error.name}: ${error.message}` };
     }
 
+    console.log(`[email] enviado ${data?.id || "?"} a ${to}: "${finalSubject}"`);
     return { ok: true, id: data?.id || null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

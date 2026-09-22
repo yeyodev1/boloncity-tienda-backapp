@@ -18,7 +18,7 @@ import { publishOrderUpdate, subscribeToOrder } from "../services/orderEvents.se
 import { getBranchAvailability, getBranchPayphoneStoreId, getPickerStoreApiKey, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
 import { pushOrderToRunfood } from "../services/runfood.service";
 import { getFrontendUrl } from "../config/env";
-import { getOrderStatusEmailHtml } from "../services/email-templates";
+import { escapeHtml, getOrderDetailUrl, getOrderStatusEmailHtml } from "../services/email-templates";
 import { PICKER_STATUS_LABELS } from "./webhook.controller";
 import { sendMetaEvent } from "../services/metaConversions.service";
 import { quoteDelivery } from "../services/deliveryQuote.service";
@@ -428,7 +428,7 @@ export async function createOrder(req: Request, res: Response) {
       statusText: scheduledLabel
         ? `Pedido programado para ${scheduledLabel}`
         : `Recibimos tu pedido — pagas en efectivo al ${order.deliveryType === "pickup" ? "retirarlo en el local" : "recibirlo"}`,
-      detailUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
+      detailUrl: getOrderDetailUrl(order),
       items: order.items || [],
       total: order.total,
     });
@@ -661,7 +661,30 @@ export async function confirmOrder(req: Request, res: Response) {
     return;
   }
 
-  if (payphoneResult?.statusCode === 3 || payphoneResult?.transactionStatus === "Approved") {
+  const approved = payphoneResult?.statusCode === 3 || payphoneResult?.transactionStatus === "Approved";
+  // El clientTransactionId es público (va en el link de pago): una transacción aprobada por OTRO monto
+  // no puede marcar la orden como pagada ni mandarla a cocina.
+  const paidAmount = Number(payphoneResult?.amount);
+  const amountMismatch = Number.isFinite(paidAmount) && paidAmount > 0 && paidAmount !== order.total;
+  const txMismatch = payphoneResult?.clientTransactionId && payphoneResult.clientTransactionId !== clientTxId;
+  if (approved && (amountMismatch || txMismatch)) {
+    console.error(
+      `[payphone] ${order.orderNumber}: pago aprobado que no cuadra (monto ${paidAmount} vs total ${order.total}, clientTxId ${payphoneResult?.clientTransactionId} vs ${clientTxId}, txId ${payphoneResult?.transactionId})`
+    );
+    pushAudit(order, {
+      action: "payment_mismatch",
+      performedBy: null,
+      performedByEmail: "system",
+      fromValue: order.status,
+      toValue: order.status,
+      details: `PayPhone txId ${payphoneResult?.transactionId || ""} aprobado por ${paidAmount} (total ${order.total}). Revisar manualmente`,
+    });
+    await order.save();
+    res.status(409).json({ message: "El pago no coincide con el total del pedido. Escríbenos para revisarlo" });
+    return;
+  }
+
+  if (approved) {
     const previousStatus = order.status;
     order.status = "paid";
     order.payphone = {
@@ -728,7 +751,7 @@ export async function confirmOrder(req: Request, res: Response) {
       const itemsRows = order.items
         .map(
           (item: any) =>
-            `<tr style="border-bottom:1px solid #e0e0e0"><td style="padding:10px 0">${item.name}</td><td style="padding:10px 0;text-align:center">x${item.quantity}</td><td style="padding:10px 0;text-align:right;font-weight:700">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
+            `<tr style="border-bottom:1px solid #e0e0e0"><td style="padding:10px 0">${escapeHtml(item.name)}</td><td style="padding:10px 0;text-align:center">x${item.quantity}</td><td style="padding:10px 0;text-align:right;font-weight:700">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
         )
         .join("");
 
@@ -747,7 +770,7 @@ export async function confirmOrder(req: Request, res: Response) {
             <p style="color:#efd537;margin:8px 0 0;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase">Pedido confirmado</p>
           </div>
           <div style="background:#fff;padding:28px 24px;border:1px solid #e0e0e0;border-top:0;border-radius:0 0 16px 16px">
-            <p style="font-size:20px;font-weight:800;margin:0 0 4px">¡Hola${order.customerName ? " " + order.customerName : ""}!</p>
+            <p style="font-size:20px;font-weight:800;margin:0 0 4px">¡Hola${order.customerName ? " " + escapeHtml(order.customerName) : ""}!</p>
             <p style="color:#666;margin:0 0 24px">Tu pedido <strong style="color:#235931">#${order.orderNumber}</strong> ha sido confirmado.</p>
             <div style="background:#f8f6ec;border-radius:12px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:#235931;font-weight:700">
               ${deliveryInfo}
@@ -759,14 +782,14 @@ export async function confirmOrder(req: Request, res: Response) {
               ${order.deliveryCost ? `Envío: $${centsToDollars(order.deliveryCost).toFixed(2)}<br />` : ""}
               <span style="font-size:18px;color:#235931">Total pagado: $${centsToDollars(order.total).toFixed(2)}</span>
             </div>
-            ${order.deliveryAddress ? `<p style="margin:16px 0 0;color:#666;font-size:14px"><strong>Dirección:</strong> ${order.deliveryAddress}</p>` : ""}
+            ${order.deliveryAddress ? `<p style="margin:16px 0 0;color:#666;font-size:14px"><strong>Dirección:</strong> ${escapeHtml(order.deliveryAddress)}</p>` : ""}
             ${trackingLink ? `
               <div style="margin:20px 0 0;text-align:center">
                 <a href="${trackingLink}" style="display:inline-block;background:#235931;color:#fff;padding:14px 24px;border-radius:999px;font-size:15px;font-weight:800;text-decoration:none">Seguir delivery en vivo</a>
               </div>
             ` : ""}
             <p style="color:#00a523;font-weight:700;margin:16px 0 0">Puntos ganados: ${order.pointsEarned}</p>
-            <p style="color:#999;font-size:13px;margin:20px 0 0;text-align:center">Puedes seguir tu pedido en <a href="https://boloncity.com/pedido" style="color:#235931">boloncity.com/pedido</a></p>
+            <p style="color:#999;font-size:13px;margin:20px 0 0;text-align:center">Puedes seguir tu pedido en <a href="${escapeHtml(getOrderDetailUrl(order))}" style="color:#235931">${escapeHtml(getFrontendUrl().replace(/^https?:\/\//, ""))}/pedido</a></p>
           </div>
         </div>`;
 
@@ -981,7 +1004,7 @@ export async function refundOrder(req: AuthRequest, res: Response) {
     customerName: order.customerName || "Cliente",
     status: order.status,
     statusText: "Tu pago fue devuelto",
-    detailUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
+    detailUrl: getOrderDetailUrl(order),
     items: order.items || [],
     total: order.total,
   });
@@ -1036,8 +1059,14 @@ export async function listOrders(req: AuthRequest, res: Response) {
 
 export async function getOrderByNumber(req: Request, res: Response) {
   const { orderNumber } = req.params;
-  const { email } = req.query as { email?: string };
-  const order = await Order.findOne({ orderNumber, ...(email ? { customerEmail: email.toLowerCase() } : {}) })
+  const email = typeof req.query.email === "string" ? req.query.email.trim().toLowerCase() : "";
+  // Sin correo cualquiera podía recorrer ORD-00001, ORD-00002… y ver nombre, teléfono, correo y dirección.
+  // La web (seguimiento y /pago/:orderNumber) siempre lo manda.
+  if (!email) {
+    res.status(400).json({ message: "Email is required" });
+    return;
+  }
+  const order = await Order.findOne({ orderNumber, customerEmail: email })
     .populate("user")
     .populate("branch")
     .populate("items.product");
@@ -1245,7 +1274,7 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
       customerName: order.customerName || "Cliente",
       status: order.status,
       statusText: statusText[order.status] || "Actualización de tu pedido",
-      detailUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
+      detailUrl: getOrderDetailUrl(order),
       items: order.items || [],
       total: order.total,
     });
