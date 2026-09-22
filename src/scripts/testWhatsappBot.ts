@@ -341,12 +341,45 @@ test("router y conversación coinciden: lo que el router manda a checkout, la co
   assert.equal(created.length, 1);
 });
 
-test("dos mensajes seguidos sin entender: deriva al número de soporte", async () => {
+test("mensajes que no se entienden NO derivan a una persona: el bot sigue ofreciendo ayuda", async () => {
   const { deps } = fakeDeps();
-  const { results } = await chat(deps, ["asdfgh", "¿ustedes hacen catering para 200 personas?"]);
-  assert.equal(results[0].intent, "conversar", "el primero todavía se intenta resolver aquí");
-  assert.equal(results[1].intent, "dudas");
-  assert.match(results[1].reply, /\+593 99 315 7333/);
+  const { results } = await chat(deps, ["asdfgh", "¿ustedes hacen catering para 200 personas?", "qwerty", "zxcvb"]);
+  for (const result of results) {
+    assert.equal(result.intent, "conversar", result.reply);
+    assert.notEqual(result.route, "human", result.reply);
+    assert.doesNotMatch(result.reply, /\+593 99 315 7333/, "solo un reclamo pasa a soporte");
+  }
+  assert.equal(results[1].decision, "R11:ayuda");
+  assert.match(results[1].reply, /men\u00fa/);
+});
+
+test("querer comprar nunca deriva a una persona; un reclamo sí", async () => {
+  for (const text of [
+    "hola quisiera comprar",
+    "quiero comprar",
+    "quiero hacer un pedido",
+    "necesito ayuda para pedir",
+    "me ayudas con un pedido",
+    "quiero ordenar 2 bolones",
+    "human",
+  ]) {
+    assert.ok(!wantsHuman(text), text);
+  }
+  for (const text of [
+    "quiero hablar con una persona",
+    "pasame un asesor",
+    "tengo un reclamo",
+    "el pedido llegó frío",
+    "no llegó mi pedido",
+    "quiero un reembolso",
+    "atencion al cliente",
+  ]) {
+    assert.ok(wantsHuman(text), text);
+  }
+  const { deps } = fakeDeps();
+  const { results } = await chat(deps, ["hola quisiera comprar"]);
+  assert.notEqual(results[0].route, "human");
+  assert.equal(classifyRoute(createInitialState("+593999"), "hola quisiera comprar"), "conversation");
 });
 
 test("después de crear la orden, un mensaje nuevo arranca otro pedido conservando los datos", async () => {
@@ -460,7 +493,7 @@ test("detectores: consulta de pedido, reclamos, saludos y confirmación", async 
   assert.ok(wantsTracking("orden 17"));
   assert.ok(!wantsTracking("agrega un café americano a mi pedido"), "editar el carrito no es consultar");
   assert.ok(wantsHuman("el pedido llegó frío y feo"));
-  assert.ok(wantsHuman("necesito ayuda"));
+  assert.ok(!wantsHuman("necesito ayuda"), "pedir ayuda no es un reclamo: casi siempre quiere pedir");
   assert.ok(!wantsHuman("el nombre está mal"), "corregir un dato no es un reclamo");
   assert.ok(isSmallTalk("Buenas tardes!") && isSmallTalk("👍") && !isSmallTalk("hola quiero 2 humitas"));
   assert.ok(isPlainConfirmation("Sí, confirmo porfa") && !isPlainConfirmation("si pero sin cebolla"));

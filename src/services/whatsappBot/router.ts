@@ -695,16 +695,16 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     // Con el local cerrado no hay nada que entender: se repite solo el aviso de horario.
     notes.push(state.cart.length && state.stage !== "closed" ? "No te entendí bien 🙈 ¿Me lo repites?" : "");
     state.misunderstood = (state.misunderstood || 0) + 1;
-    // Dos mensajes seguidos sin entender: no es un pedido, es una duda. Se deriva a una persona.
+    // Varios mensajes sin entender NO derivan a una persona: este bot toma pedidos y sigue intentando.
+    // Solo un reclamo explícito pasa a soporte (R2). Al tercero se ofrece ayuda concreta.
     if (state.misunderstood >= 2 && state.stage !== "closed") {
-      return {
-        state,
-        reply: `Mejor te paso con una persona del equipo 👋 Escríbele al ${deps.supportPhone} y te atienden enseguida\n\nY si quieres pedir algo, dime qué se te antoja y seguimos por aquí`,
-        route: "human",
-        intent: "dudas",
-        step: state.stage,
-        decision: "R11:derivado_a_persona",
-      };
+      state.misunderstood = 0;
+      notes.push(
+        state.cart.length
+          ? "No te entendí bien 🙈 Dime qué quieres agregar o quitar, escribe *menú* para ver todo, o *qué llevo* para revisar tu pedido"
+          : "Perdón, no te entendí 🙈 Escríbeme qué se te antoja, algo como \"2 bolones mixtos de verde y un café\", o pídeme el *menú* para ver todo"
+      );
+      return finish("R11:ayuda");
     }
     return finish("R11:no_entendido");
   }
