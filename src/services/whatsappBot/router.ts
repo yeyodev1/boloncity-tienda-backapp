@@ -737,7 +737,9 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   }
   if (!answered) {
     // Con el local cerrado no hay nada que entender: se repite solo el aviso de horario.
-    notes.push(state.cart.length && state.stage !== "closed" ? "No te entendí bien 🙈 ¿Me lo repites?" : "");
+    // Si ya se dijo algo ("no tenemos X en el menú"), no se apila otra disculpa encima: suena a bot roto.
+    const yaSeDisculpo = notes.some((nota) => /no tenemos|no encontr|no te entend/i.test(nota));
+    notes.push(state.cart.length && state.stage !== "closed" && !yaSeDisculpo ? "No te entendí bien 🙈 ¿Me lo repites?" : "");
     state.misunderstood = (state.misunderstood || 0) + 1;
     // Varios mensajes sin entender NO derivan a una persona: este bot toma pedidos y sigue intentando.
     // Solo un reclamo explícito pasa a soporte (R2). Al tercero se ofrece ayuda concreta.
