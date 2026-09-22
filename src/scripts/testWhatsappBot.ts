@@ -1509,6 +1509,16 @@ test("la cantidad dicha al elegir se respeta ('y verde quiero 3'), y un número 
   assert.equal(state.cart[0]?.quantity, 1);
 });
 
+test("dos nodos HTTP de BuilderBot con el mismo mensaje = un solo turno", async () => {
+  const sesion = { lastMessageHash: "abc", lastReply: "respuesta", lastMessageAt: new Date(1000), lastStageBefore: "choosing|aaa", lastEndpoint: "assistant", state: { stage: "delivery_type" } };
+  // /assistant ya lo atendió y cambió el paso; el otro nodo llega a /brain con el mismo texto: misma respuesta.
+  assert.equal(isDuplicateTurn(sesion, "abc", 2200, 2200, "brain"), true);
+  // Pasados 20 s ya no se agrupan aunque sean endpoints distintos.
+  assert.equal(isDuplicateTurn(sesion, "abc", 25000, 25000, "brain"), false);
+  // Mismo endpoint respondiendo OTRA pregunta: sigue siendo un mensaje nuevo (VR-04 protegido).
+  assert.equal(isDuplicateTurn({ ...sesion, state: { stage: "choosing" }, lastStageBefore: "choosing|zzz" }, "abc", 2200, 2200, "assistant"), false);
+});
+
 (async () => {
   let failed = 0;
   for (const [name, run] of tests) {

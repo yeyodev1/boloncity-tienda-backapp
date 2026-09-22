@@ -37,6 +37,9 @@ const STOPWORDS = new Set([
   "pon", "ponme", "tambien", "mas", "otro", "otra", "otros", "otras", "que", "sea", "sean", "solo", "nomas", "hola", "buenas",
   "buenos", "dias", "tardes", "noches", "gracias", "tipo", "algo", "tienen", "tiene", "hay", "vende", "venden", "llevar",
   "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve", "diez", "docena", "vez", "veces", "nuevo", "nueva",
+  // Cómo lo quiere, no qué producto es: "una colita bien fría", "el café bien caliente", "algo rico".
+  "bien", "muy", "super", "fria", "frio", "frias", "frios", "heladita", "helada", "helado", "caliente", "calientito",
+  "calientita", "rico", "rica", "ricos", "ricas", "delicioso", "deliciosa", "porfavorcito", "please", "plis", "ya",
 ]);
 
 /**

@@ -602,11 +602,19 @@ export function pendingKey(state: any) {
  * que cambie la pregunta pendiente. Excepción: si ese turno CREÓ la orden, la clave cambia (confirm → ordered) pero
  * repetir el "sí" en 5 s sigue siendo el mismo envío (doble toque o reintento de BuilderBot).
  */
-export function isRetry(input: { arrivedAt: number; lastAt: number; now: number; currentKey: string; keyBefore?: string | null; createdOrder: boolean }) {
+export function isRetry(input: { arrivedAt: number; lastAt: number; now: number; currentKey: string; keyBefore?: string | null; createdOrder: boolean; endpoint?: string; endpointBefore?: string }) {
   if (input.arrivedAt <= input.lastAt) return true;
-  if (input.now - input.lastAt >= 5000) return false;
+  const elapsed = input.now - input.lastAt;
+  // Un flow de BuilderBot con DOS nodos HTTP manda el MISMO mensaje a DOS endpoints distintos con segundos de
+  // diferencia (visto en producción: /assistant y /brain). Es una sola burbuja del cliente: misma respuesta, y no
+  // se avanza dos veces el pedido. Un mensaje repetido por el MISMO endpoint sí puede ser una burbuja nueva.
+  if (input.endpoint && input.endpointBefore && input.endpoint !== input.endpointBefore && elapsed < OTHER_NODE_MS) return true;
+  if (elapsed >= 5000) return false;
   return input.currentKey === input.keyBefore || input.createdOrder;
 }
+
+/** Ventana en la que el mismo texto por OTRO endpoint es el mismo mensaje (dos nodos HTTP, no dos burbujas). */
+const OTHER_NODE_MS = 20000;
 
 /** Huella del mensaje (texto + ubicación + evento) para reconocer un reintento de BuilderBot. */
 export function turnHash(message: string, location: { lat: number; lng: number } | null, event: string | null) {
@@ -617,16 +625,20 @@ export function turnHash(message: string, location: { lat: number; lng: number }
  * Decisión de duplicado de runTurn, sin Mongo: recibe la sesión tal como está guardada y dice si el mensaje es un
  * reintento del turno anterior (misma respuesta completa, R0:duplicado). La usan runTurn y las pruebas.
  */
-export function isDuplicateTurn(session: any, hash: string, arrivedAt: number, now: number) {
+export function isDuplicateTurn(session: any, hash: string, arrivedAt: number, now: number, endpoint?: string) {
   if (!session || session.lastMessageHash !== hash || !session.lastReply) return false;
   const lastAt = session.lastMessageAt ? new Date(session.lastMessageAt).getTime() : 0;
   const createdOrder = session.state?.stage === "ordered" && Boolean(session.lastResponse?.orderNumber);
-  return isRetry({ arrivedAt, lastAt, now, currentKey: pendingKey(session.state), keyBefore: session.lastStageBefore, createdOrder });
+  return isRetry({
+    arrivedAt, lastAt, now, currentKey: pendingKey(session.state), keyBefore: session.lastStageBefore, createdOrder,
+    endpoint, endpointBefore: session.lastEndpoint,
+  });
 }
 
 /** Lo que runTurn guarda de un turno para poder reconocer su reintento (ver isDuplicateTurn). */
-export function turnRecord(previous: BotState, result: TurnResult, hash: string, now: Date) {
+export function turnRecord(previous: BotState, result: TurnResult, hash: string, now: Date, endpoint?: string) {
   return {
+    lastEndpoint: endpoint || "",
     state: JSON.parse(JSON.stringify(result.state)),
     lastMessageHash: hash,
     lastMessageAt: now,
@@ -639,6 +651,8 @@ export function turnRecord(previous: BotState, result: TurnResult, hash: string,
 interface TurnOptions {
   /** Flow de ubicación: si no llegan coordenadas legibles, se responde "No pude leer tu ubicación". */
   expectLocation?: boolean;
+  /** Endpoint que atendió el mensaje: si el mismo texto llega por otro, es un flow con dos nodos HTTP. */
+  endpoint?: string;
 }
 
 async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcome | null> {
@@ -674,7 +688,7 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
     // cambió la pregunta pendiente. Un "1" que responde OTRA pregunta es una respuesta nueva: "¿cuál tigrillo?" → "1"
     // y luego "¿cuál cola?" → "1" tienen el mismo paso ("choosing") pero distinta pregunta (ver pendingKey).
     const hash = turnHash(message, location, event);
-    if (isDuplicateTurn(session, hash, arrivedAt, Date.now())) {
+    if (isDuplicateTurn(session, hash, arrivedAt, Date.now(), options.endpoint)) {
       const state = { ...createInitialState(phone), ...(session.state || {}) } as BotState;
       const last: any = session.lastResponse || {};
       return {
@@ -708,7 +722,7 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
       { phone },
       {
         $set: {
-          ...turnRecord(previous, result, hash, new Date()),
+          ...turnRecord(previous, result, hash, new Date(), options.endpoint),
           history: history.slice(-30),
           turnLockUntil: null,
         },
@@ -788,7 +802,7 @@ export async function whatsappBotRouter(req: Request, res: Response) {
 /** Punto de entrada principal: todos los flujos de BuilderBot pueden llamar aquí. */
 export async function whatsappBotBrain(req: Request, res: Response) {
   try {
-    res.status(200).json(toBotResponse(await runTurn({ ...req.query, ...req.body })));
+    res.status(200).json(toBotResponse(await runTurn({ ...req.query, ...req.body }, { endpoint: "brain" })));
   } catch (error) {
     console.error("[whatsapp-bot] brain falló", error);
     res.status(200).json(errorResponse());
@@ -798,7 +812,7 @@ export async function whatsappBotBrain(req: Request, res: Response) {
 // BuilderBot espera este sobre en el flujo del asistente.
 export async function whatsappBotAssistant(req: Request, res: Response) {
   try {
-    const result = await runTurn({ ...req.query, ...req.body });
+    const result = await runTurn({ ...req.query, ...req.body }, { endpoint: "assistant" });
     res.status(200).json({
       success: Boolean(result),
       message: result?.reply || NO_PHONE_MESSAGE,
@@ -818,7 +832,7 @@ export async function whatsappBotCatalog(req: Request, res: Response) {
   try {
     const body = { ...req.query, ...req.body };
     if (!readMessage(body)) body.message = "menú";
-    const result = await runTurn(body);
+    const result = await runTurn(body, { endpoint: "catalog" });
     res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "menu" });
   } catch (error) {
     console.error("[whatsapp-bot] catalog falló", error);
@@ -831,7 +845,7 @@ export async function whatsappBotLocation(req: Request, res: Response) {
   try {
     const body = { ...req.query, ...req.body };
     if (clean(body.mapsUrl) && !readMessage(body)) body.message = String(body.mapsUrl);
-    const result = await runTurn(body, { expectLocation: true });
+    const result = await runTurn(body, { expectLocation: true, endpoint: "location" });
     res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "conversar" });
   } catch (error) {
     console.error("[whatsapp-bot] location falló", error);
