@@ -257,9 +257,9 @@ function isPendingOrderQuestion(state: BotState, message: string) {
 function pendingOrderAnswer(state: BotState) {
   const timing =
     state.deliveryType === "pickup"
-      ? `Apenas lo confirmes, ${state.branchName ? `el local ${state.branchName}` : "el local"} empieza a prepararlo; el tiempo depende de cuántos pedidos tenga la cocina`
-      : "Apenas lo confirmes, la cocina lo prepara; el tiempo depende de la cocina y del tráfico. Cuando salga, escribe *mi pedido* y te paso el seguimiento";
-  return `Tu pedido todavía no está enviado. ${timing} 👇`;
+      ? `Apenas lo confirmes, ${state.branchName ? `el local ${state.branchName}` : "el local"} se pone a prepararlo. El tiempo depende de cuántos pedidos tengan en cocina`
+      : "Apenas lo confirmes, la cocina se pone con él. El tiempo depende de la cocina y del tráfico. Cuando salga, escribe *mi pedido* y te paso el seguimiento";
+  return `Ojo, tu pedido todavía no está enviado 🙂 ${timing} 👇`;
 }
 
 /**
@@ -383,7 +383,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     const next = await nextStep(state, deps);
     const question = skipIdleQuestion && state.stage === "idle" ? "" : next.question;
     let reply = [...notes, question].filter(Boolean).join("\n\n");
-    if (decision === "R10:saludo" && state.stage === "idle" && !/^hola/i.test(reply)) reply = `¡Hola! 👋 Bienvenido a Boloncity\n\n${reply}`;
+    if (decision === "R10:saludo" && state.stage === "idle" && !/^hola/i.test(reply)) reply = `¡Hola! 👋 Qué gusto tenerte por Boloncity\n\n${reply}`;
     const resolvedRoute = next.route || route;
     const intent: Intent = resolvedRoute === "catalog" || decision === "R9:menu" ? "menu" : "conversar";
     return { state, reply, route: resolvedRoute, intent, step: state.stage, decision, ...extra };
@@ -391,7 +391,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
 
   // Un audio, imagen o documento: el bot solo lee texto y ubicaciones.
   if (input.unsupportedMedia && !input.location) {
-    notes.push("Por ahora solo puedo leer mensajes de texto y ubicaciones 🙏 Escríbeme lo que necesitas");
+    notes.push("Uy, por ahora solo puedo leer mensajes de texto y ubicaciones 🙏 Escríbeme por aquí lo que necesitas y seguimos");
     return finish("R0:media_no_soportada");
   }
 
@@ -421,7 +421,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (state.stage === "ordered" && message && !wantsTracking(message) && !confirmsPlacedOrder(message) && !wantsHuman(message)) {
     // "sí, y agrégale un café" con la orden ya creada: esa orden no se toca. Se avisa que arranca un pedido nuevo
     // (antes empezaba otro en silencio y el cliente creía que había modificado el suyo).
-    if (state.lastOrderNumber) notes.push(`Tu pedido ${state.lastOrderNumber} ya está registrado y no se puede modificar. Empiezo un pedido nuevo 👇`);
+    if (state.lastOrderNumber) notes.push(`Tu pedido ${state.lastOrderNumber} ya está registrado y no lo puedo modificar 🙏 Te empiezo uno nuevo 👇`);
     Object.assign(state, {
       stage: "idle",
       cart: [],
@@ -451,7 +451,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (input.location || mapsUrl || input.locationInvalid) {
     const coords = input.location || (mapsUrl ? await deps.resolveMapsUrl(mapsUrl) : null);
     if (!coords) {
-      notes.push("No pude leer esa ubicación. Compárteme tu ubicación desde el clip 📎 de WhatsApp o un enlace de Google Maps");
+      notes.push("Mmm, no pude leer esa ubicación 🙈 Mándamela desde el clip 📎 de WhatsApp o pásame un enlace de Google Maps");
       return finish("R1:ubicacion_invalida", "location");
     }
     // Una ubicación responde "¿en qué local lo retiras?" o "¿a la misma dirección?": el cliente eligió delivery aquí.
@@ -466,7 +466,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (wantsHuman(message)) {
     return {
       state,
-      reply: `Este número lo atiende un asistente automático para pedidos. Para que una persona revise tu caso escribe al ${deps.supportPhone} y te ayudan enseguida`,
+      reply: `Claro, te paso con una persona del equipo 👋 Escríbele al ${deps.supportPhone} y te ayudan enseguida. Por aquí yo te tomo el pedido cuando quieras`,
       route: "human",
       intent: "dudas",
       step: state.stage,
@@ -492,7 +492,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   const newAddress = state.stage === "confirm" ? addressCorrection(state, message) : "";
   if (newAddress) {
     state.deliveryAddress = newAddress;
-    notes.push(`Listo, cambié la dirección a: ${newAddress}`);
+    notes.push(`Listo, ya la cambié a: ${newAddress} ✅`);
     return finish("R7:direccion_cambiada", "summary");
   }
   // "la dirección está mal" sin decir cuál es: se borra y el siguiente paso vuelve a pedirla.
@@ -535,7 +535,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     const order = await deps.lastOrder(state.phone);
     state.reorderOffered = true;
     if (!order) {
-      notes.push("No encuentro pedidos anteriores con este número");
+      notes.push("No te encuentro pedidos anteriores con este número 🙈");
       return finish("R5:repetir_sin_historial");
     }
     state.pendingChoice = { kind: "reorder", order };
@@ -545,7 +545,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   // R6 · Vaciar el carrito / empezar de nuevo.
   if (wantsClearCart(message)) {
     Object.assign(state, { cart: [], pendingChoice: null, choiceQueue: [], stage: "idle" });
-    notes.push("Listo, borré tu pedido");
+    notes.push("Listo, borré tu pedido 🧹 Empezamos de cero");
     return finish("R6:vaciar_carrito");
   }
 
@@ -555,22 +555,22 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   const confirmReply = classifyConfirmReply(message);
   // "no confirmo", "todavía no", "espera": aún no decide. No es "sin cambios" ni un rechazo.
   if (state.stage === "confirm" && !state.pendingChoice && wantsToWait(message)) {
-    notes.push("Sin problema, cuando quieras escribe *confirmo* o dime qué cambiar. Tu pedido todavía no está enviado 👇");
+    notes.push("Tranquilo, sin apuro 🙂 Cuando quieras escribe *confirmo* o dime qué cambiar. Tu pedido todavía no está enviado 👇");
     return finish("R7:espera_en_resumen", "summary");
   }
   if (state.stage === "confirm" && confirmReply === "courtesy") {
-    notes.push("Tu pedido todavía no está enviado 👇");
+    notes.push("¡Con gusto! 😊 Ojo que tu pedido todavía no está enviado 👇");
     return finish("R7:cortesia_en_resumen", "summary");
   }
   // "incorrecto", "todo está mal", "no": quiere cambiar algo pero no dijo qué. Se le pregunta sin tocar el pedido.
   if (state.stage === "confirm" && !state.pendingChoice && isBareRejection(message)) {
-    notes.push("Dime qué quieres cambiar: productos, entrega, pago o tus datos. Tu pedido todavía no está enviado 👇");
+    notes.push("Dime qué te cambio: productos, entrega, pago o tus datos 🙌 Tu pedido todavía no está enviado 👇");
     return finish("R7:pedir_cambio", "summary");
   }
   const confirming = state.stage === "ordered" ? confirmsPlacedOrder(message) : confirmReply === "confirm";
   if (confirming) {
     if (state.stage === "ordered" && state.lastOrderNumber) {
-      notes.push(`Tu pedido ${state.lastOrderNumber} ya está registrado${state.lastPaymentLink ? `\nPuedes pagarlo aquí: ${state.lastPaymentLink}` : ""}`);
+      notes.push(`Tu pedido ${state.lastOrderNumber} ya está registrado ✅${state.lastPaymentLink ? `\nPuedes pagarlo aquí: ${state.lastPaymentLink}` : ""}`);
       return { state, reply: notes.join("\n\n"), route: "checkout", intent: "orden_creada", step: state.stage, decision: "R7:ya_confirmado", orderNumber: state.lastOrderNumber, paymentLink: state.lastPaymentLink };
     }
     if (state.stage === "confirm") return confirmOrder(state, deps);
@@ -582,25 +582,25 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   // cuando se espera la ubicación NO se manda a la IA (a veces lo leía como "que sea 1 humita" y cambiaba el carrito):
   // se repite el paso sin tocar nada y sin sumar "no entendido".
   if (!state.pendingChoice && (state.stage === "confirm" || state.stage === "location") && /^#?\d{1,3}$/.test(normalizeText(message))) {
-    if (state.stage === "confirm") notes.push("Tu pedido todavía no está enviado 👇");
+    if (state.stage === "confirm") notes.push("Ojo, tu pedido todavía no está enviado 👇");
     return finish("R10:numero_suelto", state.stage === "confirm" ? "summary" : "location");
   }
 
   // Ya es delivery y falta la ubicación: "delivery" o "quiero delivery a mi casa" repiten lo que ya se sabe.
   // Se vuelve a pedir la ubicación (antes no cambiaba nada y sumaba "no entendido").
   if (state.stage === "location" && state.deliveryType === "delivery" && detectDeliveryType(message) === "delivery" && onlyControlWords(message)) {
-    notes.push("Perfecto, va por delivery 🛵");
+    notes.push("¡Perfecto! Va por delivery 🛵");
     return finish("R10:delivery_repetido", "location");
   }
 
   // R8 · Ver el carrito.
   if (wantsCart(message) && state.cart.length) {
-    notes.push(`Llevas:\n${state.cart.map(cartLine).join("\n")}`);
+    notes.push(`Por ahora llevas 🧾\n${state.cart.map(cartLine).join("\n")}`);
     return finish("R8:ver_carrito");
   }
   // "¿qué llevo?" con el carrito vacío: se dice y se sigue con el paso (antes sumaba "no entendido" y derivaba).
   if (wantsCart(message) && !state.cart.length && !wantsMenu(message)) {
-    notes.push("Tu carrito está vacío por ahora");
+    notes.push("Tu carrito está vacío por ahora 🙂");
     return finish("R8:carrito_vacio");
   }
 
@@ -658,21 +658,21 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
       // "la misma" después de "la dirección está mal": se vuelve a la dirección que tenía (se ve en el resumen).
       state.deliveryAddress = state.previousDeliveryAddress;
       state.previousDeliveryAddress = undefined;
-      notes.push(`Listo, dejo la dirección que tenías: ${state.deliveryAddress}`);
+      notes.push(`Listo, te dejo la dirección que tenías: ${state.deliveryAddress} ✅`);
     } else {
       // "no sé", "otra dirección", "la misma" sin dirección anterior: no se guarda y se vuelve a pedir.
-      notes.push("Necesito la dirección escrita para el motorizado");
+      notes.push("Necesito la dirección escrita, porfa 🙏");
     }
     answered = true;
   }
   if (state.stage === "name" && !state.customerName && !answered && isNotAName(message)) {
     // "retiro", "sí", "menú" en el paso del nombre: no es un nombre. Se vuelve a pedir sin sumar "no entendido".
-    notes.push("Necesito el nombre de la persona que hace el pedido (ej. *Ana Pérez*)");
+    notes.push("Necesito el nombre de quien hace el pedido, así nomás (ej. *Ana Pérez*) 😊");
     answered = true;
   }
   if (state.stage === "invoice_doc" && !state.billingDocNumber && (hasDocLikeNumber(message) || !answered)) {
     // El dígito verificador no cuadra: se avisa en vez de aceptarla (la factura del SRI fallaría).
-    notes.push(hasDocLikeNumber(message) ? "Ese número no es una cédula o RUC válido. Revísalo por favor" : "La cédula debe tener 10 dígitos o el RUC 13");
+    notes.push(hasDocLikeNumber(message) ? "Ese número no es una cédula o RUC válido 🙏 Revísalo porfa" : "La cédula lleva 10 dígitos y el RUC 13 🧾");
     answered = true;
   }
 
@@ -685,21 +685,21 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     // el resumen con la instrucción. No suma "no entendido" ni deriva a soporte con el pedido listo para enviar.
     // Una pregunta que no sabemos responder no es "sin cambios": se da el contacto de soporte y el resumen.
     if (isQuestion(message)) {
-      notes.push(`Esa duda te la resuelven al ${deps.supportPhone}. Tu pedido todavía no está enviado 👇`);
+      notes.push(`Esa dudita te la resuelve mejor una persona del equipo: escríbele al ${deps.supportPhone} 👋 Tu pedido todavía no está enviado 👇`);
       return finish("R7:duda_en_resumen", "summary");
     }
-    notes.push("No vi ningún cambio en tu pedido 👇");
+    notes.push("No vi ningún cambio en tu pedido, te lo dejo igualito 👇");
     return finish("R7:resumen_sin_cambios", "summary");
   }
   if (!answered) {
     // Con el local cerrado no hay nada que entender: se repite solo el aviso de horario.
-    notes.push(state.cart.length && state.stage !== "closed" ? "No te entendí bien" : "");
+    notes.push(state.cart.length && state.stage !== "closed" ? "No te entendí bien 🙈 ¿Me lo repites?" : "");
     state.misunderstood = (state.misunderstood || 0) + 1;
     // Dos mensajes seguidos sin entender: no es un pedido, es una duda. Se deriva a una persona.
     if (state.misunderstood >= 2 && state.stage !== "closed") {
       return {
         state,
-        reply: `Creo que necesitas ayuda de una persona. Escríbenos al ${deps.supportPhone} y te atienden enseguida\n\nSi quieres hacer un pedido, dime qué se te antoja y seguimos por aquí`,
+        reply: `Mejor te paso con una persona del equipo 👋 Escríbele al ${deps.supportPhone} y te atienden enseguida\n\nY si quieres pedir algo, dime qué se te antoja y seguimos por aquí`,
         route: "human",
         intent: "dudas",
         step: state.stage,
@@ -741,18 +741,19 @@ async function answerAddressQuestion(state: BotState, message: string, deps: Bot
     if (other && other !== quoted && state.deliveryCoordinates) {
       const alt = await deps.quoteLocation(state.deliveryCoordinates, other);
       if (alt.covered && Math.round(alt.deliveryFee * 100) !== Math.round(state.deliveryFee * 100)) {
-        return `El delivery a la ubicación que me compartiste cuesta ${money(state.deliveryFee)} ${paymentLabel(quoted)} y ${money(alt.deliveryFee)} ${paymentLabel(other)}${branch}`;
+        return `El delivery a la ubicación que me compartiste cuesta ${money(state.deliveryFee)} ${paymentLabel(quoted)} y ${money(alt.deliveryFee)} ${paymentLabel(other)}${branch} 🛵`;
       }
     }
-    return `El delivery a la ubicación que me compartiste cuesta ${money(state.deliveryFee)}${branch}`;
+    return `El delivery a la ubicación que me compartiste cuesta ${money(state.deliveryFee)}${branch} 🛵`;
   }
   if (/\b(demora|demoran|tarda|tardan|tiempo|minutos|cuando llega)\b/.test(text)) {
-    return `El tiempo depende de la cocina y del tráfico. Cuando tu pedido salga, escribe *mi pedido* y te paso el link para seguir al motorizado en vivo`;
+    return `Depende de cómo esté la cocina y el tráfico 🛵 Apenas salga tu pedido, escribe *mi pedido* y te paso el link para seguir al motorizado en vivo`;
   }
   if (/\b(llegan|llega|hacen delivery|hacen envios|envian|cubren|reparten)\b/.test(text)) {
-    return `Sí llegamos a la ubicación que me compartiste${branch}. Si el pedido es para otro lugar, compárteme esa ubicación desde el clip 📎`;
+    return `¡Sí llegamos a la ubicación que me compartiste! 🛵${branch}
+Si el pedido es para otro lado, mándame esa ubicación desde el clip 📎`;
   }
-  return `Esa duda te la resuelven al ${deps.supportPhone}`;
+  return `Esa dudita te la resuelve mejor una persona del equipo: escríbele al ${deps.supportPhone} 👋`;
 }
 
 /** Pista para la IA de qué respondería el cliente según el paso actual. */
@@ -790,11 +791,11 @@ async function addSearchedItem(state: BotState, query: string, quantity: number,
     return true;
   }
   if (result.suggestions.length) {
-    notes.push(`No encontré "${query}" tal cual`);
+    notes.push(`Mmm, no encontré "${query}" tal cual 🙈`);
     state.pendingChoice = { kind: "product", query, quantity, options: result.suggestions.map(toOption) };
     return true;
   }
-  notes.push(`No tenemos "${query}" en el menú`);
+  notes.push(`Uy, no tenemos "${query}" en el menú 🙈`);
   return false;
 }
 
@@ -810,7 +811,7 @@ function addCapped(state: BotState, product: { productId: string; name: string; 
   if (added >= quantity) return line;
   return added > 0
     ? `${line} (pediste ${quantity}, el máximo por producto es ${MAX_QUANTITY})`
-    : `Ya tienes el máximo de ${MAX_QUANTITY} x ${prettyName(product.name)} por pedido`;
+    : `Ya tienes el máximo de ${MAX_QUANTITY} x ${prettyName(product.name)} por pedido 🙏`;
 }
 
 const toOption = (product: CatalogProduct): ProductOption => ({ productId: product.productId, name: product.name, price: product.price });
@@ -830,7 +831,7 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
 
   // Transferencia: no se acepta, se ofrece tarjeta o efectivo.
   if (extraction.paymentMethod === "transfer") {
-    notes.push("Por WhatsApp no recibimos transferencias. Puedes pagar con tarjeta (te envío un link) o en efectivo");
+    notes.push("Por aquí no recibimos transferencias 🙏 Puedes pagar con tarjeta (te mando un link) o en efectivo");
     state.paymentMethod = undefined;
     changed = true;
   } else if (extraction.paymentMethod) {
@@ -876,9 +877,9 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
     const item = findInCart(state.cart, query);
     if (item) {
       state.cart = removeFromCart(state.cart, item.productId);
-      notes.push(`Quité ${prettyName(item.name)}`);
+      notes.push(`Quité ${prettyName(item.name)} ✅`);
     } else {
-      notes.push(`No encontré "${query}" en tu pedido`);
+      notes.push(`No encontré "${query}" en tu pedido 🤔`);
     }
     changed = true;
   }
@@ -891,7 +892,7 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
       notes.push(
         change.quantity > 0
           ? `Ahora son ${now} x ${prettyName(item.name)}${now < change.quantity ? ` (el máximo por producto es ${MAX_QUANTITY})` : ""}`
-          : `Quité ${prettyName(item.name)}`
+          : `Quité ${prettyName(item.name)} ✅`
       );
       changed = true;
     } else {
@@ -999,7 +1000,7 @@ async function setDeliveryType(state: BotState, type: "delivery" | "pickup", dep
   const saved = state.savedDeliveryLocation;
   if (!state.deliveryCoordinates && saved) {
     state.savedDeliveryLocation = undefined;
-    notes.push("Uso la ubicación que me compartiste antes (si es otra, compárteme la nueva desde el clip 📎)");
+    notes.push("Uso la ubicación que me compartiste antes 📍 Si es otra, mándame la nueva desde el clip 📎");
     await applyLocation(state, saved.coords, saved.mapsUrl, deps, notes);
   }
 }
@@ -1017,8 +1018,8 @@ async function applyLocation(
     Object.assign(state, { deliveryCoordinates: undefined, deliveryGoogleMapsUrl: undefined, deliveryFee: undefined, branchId: undefined, branchName: undefined });
     if (state.deliveryType === "delivery") state.deliveryType = undefined;
     // El motivo de Picker/web habla de «Retiro en tienda» (botón de la web): en WhatsApp se dice en una frase.
-    const reason = /tienda|sucursal m[aá]s cercana/i.test(quote.reason || "") || !quote.reason ? "No llegamos con delivery a esa ubicación 😔" : quote.reason;
-    notes.push(`${reason}\n¿Prefieres retirarlo en el local? Escribe *retiro*`);
+    const reason = /tienda|sucursal m[aá]s cercana/i.test(quote.reason || "") || !quote.reason ? "Uy, hasta esa ubicación no llegamos con delivery 😔" : quote.reason;
+    notes.push(`${reason}\nPero lo puedes retirar en el local, escribe *retiro* 🏠`);
     return false;
   }
   const branchChanged = state.branchId !== quote.branchId;
@@ -1031,7 +1032,7 @@ async function applyLocation(
     branchId: quote.branchId,
     branchName: quote.branchName,
   });
-  if (!silent) notes.push(`Perfecto, te atiende la sucursal ${quote.branchName}. El delivery cuesta ${money(quote.deliveryFee)}`);
+  if (!silent) notes.push(`¡Listo! Te atiende la sucursal ${quote.branchName} 🛵 El delivery te cuesta ${money(quote.deliveryFee)}`);
   if (branchChanged) await revalidateCartForBranch(state, deps, notes);
   return true;
 }
@@ -1048,7 +1049,7 @@ async function requoteForPayment(state: BotState, deps: BotDeps, notes: string[]
   const before = state.deliveryFee;
   const covered = await applyLocation(state, state.deliveryCoordinates, state.deliveryGoogleMapsUrl || "", deps, notes, { silent: true });
   if (covered && before != null && state.deliveryFee != null && Math.round(before * 100) !== Math.round(state.deliveryFee * 100)) {
-    notes.push(`El envío ${paymentLabel(state.paymentMethod)} cuesta ${money(state.deliveryFee)} (antes te dije ${money(before)})`);
+    notes.push(`Ojo: el envío ${paymentLabel(state.paymentMethod)} cuesta ${money(state.deliveryFee)}, no ${money(before)} como te dije 🙏`);
   }
 }
 
@@ -1059,7 +1060,7 @@ async function revalidateCartForBranch(state: BotState, deps: BotDeps, notes: st
   const missing = state.cart.filter((item) => !available.has(item.productId));
   if (!missing.length) return;
   state.cart = state.cart.filter((item) => available.has(item.productId));
-  notes.push(`En ${state.branchName} no hay disponible: ${missing.map((item) => prettyName(item.name)).join(", ")}. Lo quité de tu pedido`);
+  notes.push(`En ${state.branchName} no hay disponible: ${missing.map((item) => prettyName(item.name)).join(", ")} 😕 Lo saqué de tu pedido`);
 }
 
 async function resolvePendingChoice(state: BotState, message: string, deps: BotDeps, notes: string[]): Promise<string | null> {
@@ -1068,7 +1069,7 @@ async function resolvePendingChoice(state: BotState, message: string, deps: BotD
     case "product": {
       if (isNo(message) || /\b(ninguno|ninguna|ninguno de esos|otro)\b/.test(normalizeText(message))) {
         state.pendingChoice = null;
-        notes.push("Dale, no lo agrego");
+        notes.push("Dale, no lo agrego 👍");
         return "producto_descartado";
       }
       const picked = pickOption(message, choice.options);
@@ -1094,7 +1095,7 @@ async function resolvePendingChoice(state: BotState, message: string, deps: BotD
       state.customerName = state.customerName || choice.order.customerName;
       state.customerEmail = state.customerEmail || choice.order.customerEmail;
       notes.push(
-        `Listo, agregué tu pedido anterior:\n${state.cart.map(cartLine).join("\n")}${missing.length ? `\n\nYa no está disponible: ${missing.join(", ")}` : ""}`
+        `¡Listo! Te armé lo mismo de la vez pasada 🫓\n${state.cart.map(cartLine).join("\n")}${missing.length ? `\n\nEso sí, ya no tenemos: ${missing.join(", ")}` : ""}`
       );
       return "repetir_si";
     }
@@ -1145,7 +1146,7 @@ async function showMenu(state: BotState, message: string, deps: BotDeps, notes: 
     }
   }
   notes.push(
-    `Estas son nuestras categorías:\n${categories.map((entry) => `• ${displayCategoryName(titleCase(entry.name))}`).join("\n")}\n\nDime qué se te antoja (ej. "2 bolones mixtos y un café") o mira el menú con fotos: ${deps.menuUrl}`
+    `Mira, esto es lo que tenemos 🫓\n${categories.map((entry) => `• ${displayCategoryName(titleCase(entry.name))}`).join("\n")}\n\nDime qué se te antoja (ej. "2 bolones mixtos y un café") o mira el menú con fotos aquí: ${deps.menuUrl}`
   );
   return !state.cart.length;
 }
@@ -1209,7 +1210,7 @@ async function pickBranch(state: BotState, branch: BranchOption, deps: BotDeps, 
   state.pendingChoice = null;
   state.branchId = branch.branchId;
   state.branchName = branch.name;
-  notes.push(`Perfecto, lo retiras en ${branch.name}`);
+  notes.push(`¡Perfecto! Lo retiras en ${branch.name} 🏠`);
   await revalidateCartForBranch(state, deps, notes);
 }
 
@@ -1226,20 +1227,20 @@ function orderFollowUp(state: BotState, message: string, deps: BotDeps): string 
   const short = normalizeText(message).split(" ").length <= 8;
   if (wantsPaymentLink(message)) {
     return link
-      ? `Aquí tienes el link de pago de tu pedido ${order}:\n${link}\n\nSi no te abre, cópialo y pégalo en el navegador. Si sigue sin funcionar, escríbenos al ${deps.supportPhone}`
-      : `Tu pedido ${order} es con pago en efectivo, no necesita link. Si necesitas algo más, escríbenos al ${deps.supportPhone}`;
+      ? `Aquí tienes el link de pago de tu pedido ${order} 💳\n${link}\n\nSi no te abre, cópialo y pégalo en el navegador. Y si sigue sin funcionar, escríbele al ${deps.supportPhone} que te ayudan`
+      : `Tu pedido ${order} es con pago en efectivo 💵, no necesita link. Si necesitas algo más, escríbenos al ${deps.supportPhone}`;
   }
   if (method && short) {
     if (link && method !== "card") {
-      return `Tu pedido ${order} ya quedó creado para pagar con tarjeta:\n${link}\n\nSi prefieres pagar ${method === "cash" ? "en efectivo" : "de otra forma"}, escríbenos al ${deps.supportPhone} y lo cambiamos`;
+      return `Tu pedido ${order} ya quedó creado para pagar con tarjeta 💳\n${link}\n\nSi prefieres pagar ${method === "cash" ? "en efectivo" : "de otra forma"}, escríbele al ${deps.supportPhone} y te lo cambian`;
     }
-    return `Tu pedido ${order} ya está registrado${link ? `\nPuedes pagarlo aquí: ${link}` : ""}`;
+    return `Tu pedido ${order} ya está registrado ✅${link ? `\nPuedes pagarlo aquí: ${link}` : ""}`;
   }
   if (isGreeting(message)) {
-    return `¡Hola! 👋 Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nEscribe *mi pedido* para ver cómo va o dime qué se te antoja para hacer un pedido nuevo`;
+    return `¡Hola de nuevo! 👋 Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nEscribe *mi pedido* para ver cómo va, o dime qué se te antoja y armamos uno nuevo`;
   }
   if (isSmallTalk(message)) {
-    return `¡Gracias a ti! Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nSi quieres pedir algo más, dime qué se te antoja`;
+    return `¡Gracias a ti! 🙌 Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nY si se te antoja algo más, dime nomás`;
   }
   return null;
 }
@@ -1269,19 +1270,19 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
   if (choice) {
     state.stage = "choosing";
     if (choice.kind === "product") {
-      const ask = choice.label ? `Estas son nuestras opciones de ${choice.label}:` : `¿Cuál ${choice.query} quieres?`;
-      return { question: `${ask}\n${optionsList(choice.options)}\n\nResponde con el número`, route: "choice" };
+      const ask = choice.label ? `Estas son nuestras opciones de ${choice.label} 😋` : `¿Cuál ${choice.query} quieres?`;
+      return { question: `${ask}\n${optionsList(choice.options)}\n\nRespóndeme con el número nomás`, route: "choice" };
     }
     if (choice.kind === "reorder") {
       return {
-        question: `Tu último pedido (${choice.order.orderNumber}) fue:\n${describeLastOrder(choice.order)}\n\n¿Quieres repetirlo? Responde *sí* o dime qué te gustaría pedir`,
+        question: `Tu último pedido (${choice.order.orderNumber}) fue:\n${describeLastOrder(choice.order)}\n\n¿Te lo repito? Responde *sí* o dime qué se te antoja hoy 🫓`,
         route: "choice",
       };
     }
     if (choice.kind === "reuse_location") {
-      return { question: `¿Te lo enviamos a la misma dirección de la vez pasada?\n${choice.address}\n\nResponde *sí* o compárteme otra ubicación`, route: "choice" };
+      return { question: `¿Te lo mandamos a la misma dirección de la vez pasada? 📍\n${choice.address}\n\nResponde *sí* o mándame otra ubicación`, route: "choice" };
     }
-    return { question: `¿En qué local lo retiras?\n${optionsList(choice.options)}\n\nResponde con el número`, route: "choice" };
+    return { question: `¿En qué local lo retiras? 🏠\n${optionsList(choice.options)}\n\nRespóndeme con el número nomás`, route: "choice" };
   }
 
   if (state.stage === "ordered") return { question: "" };
@@ -1294,17 +1295,17 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
         state.customerName = state.customerName || order.customerName;
         state.customerEmail = state.customerEmail || order.customerEmail;
         state.pendingChoice = { kind: "reorder", order };
-        const greeting = state.customerName ? `Hola ${state.customerName.split(" ")[0]} 👋` : "Hola 👋";
+        const greeting = state.customerName ? `¡Hola ${state.customerName.split(" ")[0]}! 👋 Qué bueno verte de vuelta` : "¡Hola! 👋 Qué bueno verte";
         return { question: `${greeting}\n${(await nextStep(state, deps)).question}`, route: "choice" };
       }
     }
     state.stage = "idle";
-    return { question: `¿Qué te gustaría pedir hoy? Puedes escribirme algo como "2 bolones mixtos de verde y un café" o pedirme el *menú*` };
+    return { question: `¿Qué te gustaría pedir hoy? 🫓 Escríbeme algo como "2 bolones mixtos de verde y un café", o pídeme el *menú* si quieres ver todo` };
   }
 
   if (!state.deliveryType) {
     state.stage = "delivery_type";
-    return { question: "¿Es para *delivery* a domicilio o lo *retiras en el local*?\n1. Delivery\n2. Retiro en local" };
+    return { question: "¿Te lo mandamos a domicilio o lo retiras en el local? 🛵\n1. Delivery\n2. Retiro en local" };
   }
 
   if (state.deliveryType === "delivery" && !state.deliveryCoordinates) {
@@ -1317,14 +1318,14 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
       }
     }
     state.stage = "location";
-    return { question: "Compárteme tu ubicación desde el clip 📎 de WhatsApp (Ubicación → Enviar mi ubicación actual) o un enlace de Google Maps", route: "location" };
+    return { question: "Mándame tu ubicación desde el clip 📎 de WhatsApp (Ubicación → Enviar mi ubicación actual) o pásame un enlace de Google Maps 📍", route: "location" };
   }
 
   if (state.deliveryType === "pickup" && !state.branchId) {
     const branches = await deps.pickupBranches();
     if (!branches.length) {
       state.stage = "branch";
-      return { question: "En este momento no tenemos locales disponibles para retiro" };
+      return { question: "Justo ahora no tengo locales disponibles para retiro 😔 Prueba con delivery y te lo mandamos" };
     }
     state.pendingChoice = { kind: "branch", options: branches };
     return nextStep(state, deps);
@@ -1335,44 +1336,44 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
     const status = await deps.branchStatus(state.branchId);
     if (!status.open) {
       state.stage = "closed";
-      return { question: status.message || `${state.branchName || "La sucursal"} está cerrada en este momento` };
+      return { question: status.message || `${state.branchName || "La sucursal"} está cerrada ahorita 😴 Te esperamos apenas abramos` };
     }
   }
 
   if (state.deliveryType === "delivery" && !state.deliveryAddress) {
     state.stage = "address";
-    return { question: "Escríbeme la dirección con una referencia (calle, número de casa, edificio o piso) para el motorizado" };
+    return { question: "Escríbeme la dirección con una referencia (calle, número de casa, edificio o piso) para el motorizado 🙌" };
   }
 
   if (!state.customerName) {
     state.stage = "name";
-    return { question: "¿A nombre de quién va el pedido?" };
+    return { question: "¿A nombre de quién va el pedido? 😊" };
   }
 
   if (!state.customerEmail) {
     state.stage = "email";
-    return { question: "¿Cuál es tu correo? Ahí te llega la confirmación del pedido" };
+    return { question: "¿Cuál es tu correo? Ahí te llega la confirmación del pedido 📩" };
   }
 
   if (!state.paymentMethod) {
     state.stage = "payment";
     const cashLabel = state.deliveryType === "pickup" ? "Efectivo al retirar" : "Efectivo al motorizado";
-    return { question: `¿Cómo quieres pagar?\n1. Tarjeta (te envío un link de pago)\n2. ${cashLabel}` };
+    return { question: `¿Cómo prefieres pagar?\n1. Tarjeta 💳 (te mando un link de pago)\n2. ${cashLabel} 💵` };
   }
 
   if (state.billingPreference === "invoice" && !state.billingDocNumber) {
     state.stage = "invoice_doc";
-    return { question: "Para la factura, ¿cuál es tu cédula (10 dígitos) o RUC (13 dígitos)?" };
+    return { question: "Para la factura, ¿me pasas tu cédula (10 dígitos) o RUC (13 dígitos)? 🧾" };
   }
   if (state.billingPreference === "invoice" && !state.billingName) {
     state.stage = "invoice_name";
-    return { question: "¿A nombre de quién va la factura?" };
+    return { question: "¿A nombre de quién va la factura? 🧾" };
   }
 
   const quote = await deps.quote(state);
   if (!quote) {
     state.stage = "idle";
-    return { question: "No pude calcular tu pedido. ¿Me repites qué te gustaría pedir?" };
+    return { question: "Uy, no pude calcular tu pedido 🙏 ¿Me repites qué te gustaría pedir?" };
   }
   state.stage = "confirm";
   return { question: formatSummary(state, quote), route: "summary" };
@@ -1386,10 +1387,10 @@ export function formatSummary(state: BotState, quote: Quote) {
       : `Retiro en: ${state.branchName}`;
   const payment =
     state.paymentMethod === "card"
-      ? "Pago: tarjeta (te envío el link al confirmar)"
+      ? "Pago: tarjeta 💳 (te mando el link al confirmar)"
       : state.deliveryType === "delivery"
-      ? "Pago: efectivo al motorizado"
-      : "Pago: efectivo al retirar";
+      ? "Pago: efectivo al motorizado 💵"
+      : "Pago: efectivo al retirar 💵";
   // Aviso de efectivo en delivery pedido por el negocio.
   const cashWarning =
     state.paymentMethod === "cash" && state.deliveryType === "delivery"
@@ -1413,7 +1414,7 @@ export function formatSummary(state: BotState, quote: Quote) {
       state.notes && `Indicaciones: ${state.notes}`
     ),
     cashWarning.trim(),
-    "Escribe *confirmo* para enviar tu pedido o dime qué quieres cambiar",
+    "Escribe *confirmo* y lo mandamos a la cocina 🙌 O dime qué quieres cambiar",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -1434,9 +1435,9 @@ async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult>
   state.lastPaymentLink = result.paymentLink;
   const reply =
     state.paymentMethod === "card"
-      ? `✅ Pedido ${result.orderNumber} creado por ${money(result.total)}\n\nPágalo aquí para que la cocina lo empiece:\n${result.paymentLink}`
+      ? `✅ Listo, tu pedido ${result.orderNumber} quedó creado por ${money(result.total)}\n\nPágalo aquí y la cocina se pone de una:\n${result.paymentLink}`
       : state.deliveryType === "delivery"
-      ? `✅ Pedido ${result.orderNumber} confirmado por ${money(result.total)}\n\nYa lo estamos preparando. Ten el efectivo listo para el motorizado`
-      : `✅ Pedido ${result.orderNumber} confirmado por ${money(result.total)}\n\nTe esperamos en ${state.branchName}. Pagas en efectivo al retirar`;
+      ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nYa lo estamos preparando 🫓 Ten el efectivo listo para el motorizado`
+      : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nTe esperamos en ${state.branchName} 🏠 Pagas en efectivo al retirar`;
   return { state, reply, route: "checkout", intent: "orden_creada", step: "ordered", decision: "R7:orden_creada", orderNumber: result.orderNumber, paymentLink: result.paymentLink };
 }

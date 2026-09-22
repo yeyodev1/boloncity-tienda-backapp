@@ -161,7 +161,7 @@ test("pedido completo: delivery + efectivo, con elección de café y aviso de de
   const [hola, pide, elige, entrega, ubicacion, direccion, nombre, correo, pago, confirmo, confirmoOtraVez] = results;
 
   assert.equal(hola.step, "idle");
-  assert.doesNotMatch(hola.reply, /No tenemos/, "un saludo no se busca como producto");
+  assert.doesNotMatch(hola.reply, /no tenemos/i, "un saludo no se busca como producto");
   assert.match(pide.reply, /Agregué 2 x Bolon Mixto Verde/);
   assert.equal(pide.step, "choosing", "café americano tiene 2 opciones: debe preguntar");
   assert.match(pide.reply, /1\. Cafe Americano Maquina/);
@@ -211,7 +211,7 @@ test("repetir lo de la última vez + retiro en local + tarjeta", async () => {
   assert.match(si.reply, /1 x Tigrillo Mixto Verde\n2 x Capuccino/);
   assert.equal(si.step, "delivery_type");
   assert.equal(retiro.step, "choosing", "debe listar los locales");
-  assert.match(local.reply, /lo retiras en Samborondón/);
+  assert.match(local.reply, /Lo retiras en Samborondón/);
   assert.equal(local.step, "payment", "nombre y correo vienen del pedido anterior");
   assert.match(tarjeta.reply, /Retiro en: Samborondón/);
   assert.doesNotMatch(tarjeta.reply, /próxima compra/, "sin aviso de deuda en retiro");
@@ -263,7 +263,7 @@ test("transferencia: se rechaza y se ofrecen tarjeta o efectivo", async () => {
 test("fuera de cobertura: ofrece retiro en el local", async () => {
   const { deps } = fakeDeps({ covered: false });
   const { last, state } = await chat(deps, ["una humita", "delivery", { location: { lat: -2.5, lng: -80.5 } }]);
-  assert.match(last.reply, /retirarlo en el local/);
+  assert.match(last.reply, /lo puedes retirar en el local/);
   assert.equal(state.deliveryType, undefined);
 });
 
@@ -284,7 +284,7 @@ test("producto no disponible en la sucursal: se quita al fijar la sucursal", asy
 test("menú: categorías, y 'bebidas' muestra opciones elegibles", async () => {
   const { deps } = fakeDeps();
   const { results, state } = await chat(deps, ["menú", "qué bebidas tienen", "1"]);
-  assert.match(results[0].reply, /categorías/);
+  assert.match(results[0].reply, /esto es lo que tenemos/);
   assert.equal(results[1].step, "choosing");
   assert.equal(state.cart.length, 1);
 });
@@ -499,7 +499,7 @@ test("ubicación ilegible y audios: mensaje claro, sin sumar 'no entendido'", as
   const { deps } = fakeDeps();
   const ubicacion = await handleTurn(createInitialState("+593987654321"), { message: "", locationInvalid: true }, deps);
   assert.equal(ubicacion.decision, "R1:ubicacion_invalida");
-  assert.match(ubicacion.reply, /No pude leer esa ubicación/);
+  assert.match(ubicacion.reply, /no pude leer esa ubicación/);
   const audio = await handleTurn(createInitialState("+593987654321"), { message: "", unsupportedMedia: true }, deps);
   assert.match(audio.reply, /solo puedo leer mensajes de texto/);
   assert.equal(audio.state.misunderstood || 0, 0);
@@ -661,7 +661,7 @@ test("VR-05: después de la orden, 'hola' saluda (no '¡Gracias a ti!')", async 
   const { deps } = fakeDeps();
   const { state } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "tarjeta", "confirmo"]);
   const hola = await handleTurn(state, { message: "hola" }, deps);
-  assert.match(hola.reply, /^¡Hola!/);
+  assert.match(hola.reply, /^¡Hola de nuevo!/);
   assert.doesNotMatch(hola.reply, /Gracias a ti/);
   assert.match(hola.reply, /ORD-00991/);
   assert.equal(hola.step, "ordered");
@@ -864,12 +864,12 @@ test("F-02/V-02: con delivery, un '1' a la lista vieja de locales no elige local
     const result = await handleTurn(current, { message }, deps);
     assert.ok(!result.decision.startsWith("R11"), `${message} → ${result.decision}`);
     assert.equal(result.step, "location");
-    assert.doesNotMatch(result.reply, /No tenemos/);
+    assert.doesNotMatch(result.reply, /no tenemos/i);
     assert.match(result.reply, /ubicación/);
     current = result.state;
   }
   const mejor = await chat(deps, ["2 humitas", "mejor para delivery"]);
-  assert.doesNotMatch(mejor.last.reply, /No tenemos "mejor/);
+  assert.doesNotMatch(mejor.last.reply, /no tenemos "mejor/i);
 });
 
 test("F-03: si el envío cambia al elegir efectivo, se dice explícitamente (y en la pregunta de costo)", async () => {
@@ -878,10 +878,10 @@ test("F-03: si el envío cambia al elegir efectivo, se dice explícitamente (y e
   const costo = await handleTurn(state, { message: "cuanto cuesta el envio?" }, deps);
   assert.match(costo.reply, /\$2\.50 pagando con tarjeta y \$2\.80 pagando en efectivo/);
   const { last } = await chat(deps, ["una humita", "delivery", { location: { lat: -2.1, lng: -79.9 } }, "Cdla. Kennedy mz 1", "Ana", "ana@test.com", "efectivo"]);
-  assert.match(last.reply, /El envío pagando en efectivo cuesta \$2\.80/);
+  assert.match(last.reply, /el envío pagando en efectivo cuesta \$2\.80/);
   assert.match(last.reply, /Delivery \$2\.80/);
   const igual = await chat(fakeDeps().deps, ["una humita", "delivery", { location: { lat: -2.1, lng: -79.9 } }, "Cdla. Kennedy mz 1", "Ana", "ana@test.com", "efectivo"]);
-  assert.doesNotMatch(igual.last.reply, /El envío pagando/, "si no cambia, no se avisa");
+  assert.doesNotMatch(igual.last.reply, /el envío pagando/i, "si no cambia, no se avisa");
 });
 
 test("V-01: 'no, mejor para retirar' con una elección de producto pendiente aplica el retiro", async () => {
@@ -899,7 +899,7 @@ test("V-03: tras crear la orden, 'sí, y agrégale un café' avisa que la orden 
   const { deps } = fakeDeps();
   const { state } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "tarjeta", "confirmo"]);
   const result = await handleTurn(state, { message: "si, y agregale un cafe" }, deps);
-  assert.match(result.reply, /ORD-00991 ya está registrado y no se puede modificar/);
+  assert.match(result.reply, /ORD-00991 ya está registrado y no lo puedo modificar/);
   assert.equal(result.state.lastOrderNumber, undefined);
 });
 
@@ -1072,7 +1072,7 @@ test("R6-05: 'no confirmo' / 'todavia no' / 'espera' en el resumen piden confirm
     assert.notEqual(classifyRoute(state, text), "checkout", text);
     const result = await handleTurn(state, { message: text }, deps);
     assert.equal(result.decision, "R7:espera_en_resumen", text);
-    assert.match(result.reply, /cuando quieras escribe \*confirmo\*/, text);
+    assert.match(result.reply, /Cuando quieras escribe \*confirmo\*/, text);
     assert.doesNotMatch(result.reply, /No vi ningún cambio/, text);
   }
   // "espera, agrégale un café" sí trae un cambio.
