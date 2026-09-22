@@ -14,8 +14,16 @@ export interface IWhatsAppSession {
   lastMessageAt?: Date;
   /** Última respuesta enviada: se reenvía si BuilderBot repite el mismo mensaje por un reintento. */
   lastReply?: string;
+  /** Respuesta completa del último turno (route, intención, orden, link): se reenvía igual en un reintento. */
+  lastResponse?: Record<string, unknown> | null;
+  /** Paso en que estaba la conversación ANTES del último mensaje (para distinguir un reintento de una respuesta nueva). */
+  lastStageBefore?: string;
   /** Evita que dos "confirmo" simultáneos creen dos órdenes. */
   checkoutLockUntil?: Date | null;
+  /** Candado por teléfono: los mensajes del mismo cliente se procesan uno por uno (WhatsApp manda burbujas seguidas). */
+  turnLockUntil?: Date | null;
+  /** Último "reiniciatodo": los pedidos anteriores a esta fecha ya no se ofrecen como "lo mismo de la última vez". */
+  resetAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -34,7 +42,11 @@ const sessionSchema = new Schema<IWhatsAppSession>(
     lastMessageHash: String,
     lastMessageAt: Date,
     lastReply: String,
+    lastResponse: { type: Schema.Types.Mixed, default: null },
+    lastStageBefore: String,
     checkoutLockUntil: { type: Date, default: null },
+    turnLockUntil: { type: Date, default: null },
+    resetAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

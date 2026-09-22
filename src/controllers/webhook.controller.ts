@@ -1,8 +1,7 @@
 import { Request, Response } from "express";
 import { Order } from "../models/Order";
 import { sendEmail } from "../services/resend.service";
-import { getFrontendUrl } from "../config/env";
-import { getOrderStatusEmailHtml } from "../services/email-templates";
+import { getOrderDetailUrl, getOrderStatusEmailHtml } from "../services/email-templates";
 import { publishOrderUpdate } from "../services/orderEvents.service";
 
 const PICKER_STATUS_ORDER_MAP: Record<string, string> = {
@@ -176,8 +175,7 @@ function pushAudit(order: any, entry: Record<string, unknown>) {
 }
 
 async function sendStatusEmail(order: any, status: string, statusText: string, driverName?: string) {
-  const frontendUrl = getFrontendUrl();
-  const detailUrl = `${frontendUrl}/mis-ordenes/${order._id}`;
+  const detailUrl = getOrderDetailUrl(order);
 
   const html = getOrderStatusEmailHtml({
     orderNumber: order.orderNumber,

@@ -13,14 +13,14 @@ import { getBranchAvailability, getBranchPayphoneStoreId, isBranchOpenAt, picker
 import { quoteDelivery } from "../services/deliveryQuote.service";
 import { calculateEarnedPoints } from "../services/points.service";
 import { sendEmail } from "../services/resend.service";
-import { getOrderStatusEmailHtml } from "../services/email-templates";
+import { getOrderDetailUrl, getOrderStatusEmailHtml } from "../services/email-templates";
 import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl, resolveMapsCoordinates } from "../utils/parseMapsUrl";
 import { normalizePhone } from "../utils/phone";
 import { isAvailableAt } from "../utils/productAvailability";
 import { loadCatalog, searchCatalog } from "../services/whatsappBot/catalog";
 import { aiExtract } from "../services/whatsappBot/extractor";
-import { extractOrderNumber } from "../services/whatsappBot/intents";
+import { classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
 import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, nextStep, TurnResult } from "../services/whatsappBot/router";
 
 /**
@@ -36,15 +36,74 @@ const SUPPORT_PHONE = "+593 99 315 7333";
 /** Sucursales que se cotizan por delivery en un mensaje. Cada cotización puede tardar hasta 8 s en Picker. */
 const MAX_BRANCHES_TO_QUOTE = 3;
 
-function toE164(value: unknown) {
-  return normalizePhone(value)?.e164 || String(value || "").replace(/[^0-9+]/g, "");
+/** Una variable de BuilderBot que no se reemplazó llega literal: "{body}", "{from}", "{name}", "{latitude}". */
+const PLACEHOLDER = /^\{\s*[\w.\-]+\s*\}$/;
+
+/** Texto limpio de un campo del body: "" si viene vacío o es una variable sin reemplazar. */
+function clean(value: unknown) {
+  if (value == null || typeof value === "object") return "";
+  const text = String(value).trim();
+  return PLACEHOLDER.test(text) ? "" : text;
 }
+
+/**
+ * Teléfono en E.164 ("+593991234567"). WhatsApp puede mandar el JID completo: "593991234567:12@s.whatsapp.net"
+ * (el ":12" es el dispositivo).
+ *
+ * "…@lid" NO es un teléfono: es el id de privacidad de WhatsApp (el cliente oculta su número). Se guarda como
+ * "lid:<dígitos>" para que su sesión sea siempre la misma, pero no se usa como teléfono del cliente
+ * (customerPhone de la orden queda vacío y no se buscan pedidos anteriores por ese id). Ver ROUTER.md.
+ */
+export function toE164(value: unknown) {
+  const text = clean(value);
+  if (/^lid:\d+$/.test(text)) return text;
+  if (/@lid\b/i.test(text)) {
+    const lid = text.replace(/[:@].*$/, "").replace(/\D/g, "");
+    if (!lid) return "";
+    console.warn(`[whatsapp-bot] llegó un JID @lid (${lid}) en vez de un teléfono: se usa lid:${lid} como sesión, sin teléfono del cliente`);
+    return `lid:${lid}`;
+  }
+  const raw = text.replace(/[:@].*$/, "");
+  return normalizePhone(raw)?.e164 || raw.replace(/[^0-9+]/g, "");
+}
+
+/** El id "lid:…" no es un teléfono: no va como customerPhone ni sirve para buscar pedidos. */
+const isLid = (phone: string) => phone.startsWith("lid:");
+
+/**
+ * Fuera de producción, BOT_TEST_PHONE reemplaza el teléfono de TODOS los mensajes. Sirve para probar por
+ * Telegram, donde `{from}` es el id del chat y no un teléfono. Quitarla al conectar WhatsApp.
+ */
+function testPhone() {
+  return env.APP_ENV !== "production" ? toE164(process.env.BOT_TEST_PHONE) : "";
+}
+
+/** Teléfono del cliente: BuilderBot lo puede mandar como `phone` o `from`, en el body o en la URL. */
+function readPhone(body: any) {
+  return testPhone() || toE164(clean(body?.phone) || clean(body?.from) || clean(body?.telefono));
+}
+
+/** "reiniciatodo" (con o sin espacio, tildes o mayúsculas) borra la conversación para probar desde cero. */
+function isResetKeyword(message: string) {
+  return message.toLowerCase().normalize("NFD").replace(/[^a-z]/g, "") === "reiniciatodo";
+}
+
+const RESET_REPLY = "Listo, reinicié todo 🔄 Empezamos de cero. ¿Qué te gustaría pedir hoy?";
 
 /** Las órdenes viejas guardaron el teléfono en formatos distintos: se buscan todos. */
 function phoneVariants(value: unknown) {
   const phone = normalizePhone(value);
   if (!phone) return [String(value || "")];
-  return [phone.e164, `${phone.code}${phone.number}`, `0${phone.number}`, phone.number, `+${phone.code} ${phone.number}`];
+  return [phone.e164, `${phone.code}${phone.number}`, `0${phone.number}`, phone.number, `+${phone.code} ${phone.number}`, `+${phone.code} 0${phone.number}`];
+}
+
+/** Fuera de producción, BOT_FORCE_OPEN=1 simula el local abierto para probar el flujo completo de noche. */
+function forceOpen() {
+  return process.env.BOT_FORCE_OPEN === "1" && env.APP_ENV !== "production";
+}
+
+function isOpen(branch: any) {
+  return forceOpen() || isBranchOpenAt(branch);
 }
 
 function appendHistory(session: any, role: "user" | "assistant", content: string) {
@@ -52,22 +111,138 @@ function appendHistory(session: any, role: "user" | "assistant", content: string
   session.history = [...(session.history || []), { role, content: content.trim().slice(0, 2000), createdAt: new Date() }].slice(-30);
 }
 
+/**
+ * Mensaje del cliente. BuilderBot manda los eventos sin texto como "_event_location__<uuid>",
+ * "_event_media__…", "_event_voice_note__…": no son texto del cliente (antes "_event_location__…" quedaba
+ * guardado como dirección de entrega).
+ */
 function readMessage(body: any) {
-  return String(body?.rawMessage || body?.rawMess || body?.body || body?.message || "").trim();
+  const text = rawText(body);
+  return /^_event_\w*__/i.test(text) ? "" : text.slice(0, 1500);
 }
 
-function readLocation(body: any): { lat: number; lng: number } | null {
-  const source = body?.location || body?.metadata?.location || body;
-  const lat = Number(source?.latitude ?? source?.lat);
-  const lng = Number(source?.longitude ?? source?.longitud ?? source?.lng);
-  return Number.isFinite(lat) && Number.isFinite(lng) && (lat !== 0 || lng !== 0) ? { lat, lng } : null;
+/** Texto crudo del mensaje: el campo del body o, si BuilderBot solo manda `{history}`, lo último que dijo el cliente. */
+function rawText(body: any) {
+  return [body?.rawMessage, body?.rawMess, body?.body, body?.message, body?.mensaje].map(clean).find(Boolean) || latestUserMessage(body?.history);
+}
+
+const ASSISTANT_ROLES = /^(assistant|model|bot|system|asistente|ia|ai)$/i;
+const ROLE_LINE = /^\s*(user|usuario|cliente|human|humano|customer|assistant|asistente|model|bot|system|ia|ai)\s*:\s*(.*)$/i;
+
+function historyContent(value: any): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(historyContent).filter(Boolean).join("\n").trim();
+  for (const key of ["text", "content", "message", "body", "value"]) {
+    if (typeof value?.[key] === "string") return value[key].trim();
+  }
+  return "";
+}
+
+function historyArray(value: any): any[] {
+  if (Array.isArray(value)) return value;
+  for (const key of ["messages", "history", "conversation", "data"]) {
+    if (Array.isArray(value?.[key])) return value[key];
+  }
+  return [];
+}
+
+/**
+ * Último mensaje del CLIENTE dentro de `{history}` (flow tipo Sorbito: el nodo HTTP manda solo history + from).
+ * Acepta un arreglo de mensajes ({ role, content }), ese arreglo como JSON en texto, o texto con líneas
+ * "user: …" / "assistant: …". Texto sin roles: se toma la última línea.
+ */
+export function latestUserMessage(history: unknown): string {
+  if (history == null) return "";
+  let value: any = history;
+  if (typeof value === "string") {
+    const text = clean(value);
+    if (!text) return "";
+    try {
+      value = JSON.parse(text);
+    } catch {
+      const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (lines.some((line) => ROLE_LINE.test(line))) {
+        let last = "";
+        let current: { assistant: boolean; parts: string[] } | null = null;
+        for (const line of lines) {
+          const match = line.match(ROLE_LINE);
+          if (match) {
+            if (current && !current.assistant) last = current.parts.join("\n");
+            current = { assistant: ASSISTANT_ROLES.test(match[1]), parts: [match[2]] };
+          } else if (current) current.parts.push(line);
+        }
+        if (current && !current.assistant) last = current.parts.join("\n");
+        return last.trim();
+      }
+      return lines[lines.length - 1] || "";
+    }
+  }
+  const items = historyArray(value);
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const role = String(item?.role ?? item?.sender ?? item?.type ?? "user");
+    if (ASSISTANT_ROLES.test(role)) continue;
+    const content = historyContent(item?.content ?? item?.parts ?? item?.text ?? item?.body ?? item);
+    if (content) return content;
+  }
+  return "";
+}
+
+function readEvent(body: any): "location" | "media" | null {
+  const text = rawText(body);
+  const match = text.match(/^_event_(\w*?)__/i);
+  if (!match) return null;
+  return /location|ubicacion/i.test(match[1]) ? "location" : "media";
+}
+
+function toCoordinate(value: unknown) {
+  if (typeof value === "number") return value;
+  const text = clean(value).replace(/\s+/g, "");
+  if (!text) return NaN;
+  // "-2,1577677": coma decimal.
+  return Number(/^-?\d+,\d+$/.test(text) ? text.replace(",", ".") : text);
+}
+
+function validCoords(lat: number, lng: number) {
+  return Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && (lat !== 0 || lng !== 0);
+}
+
+/** "-2.1577677,-79.8947611" suelto, o un link de Waze (…?ll=-2.15,-79.89). */
+function coordsFromText(value: unknown): { lat: number; lng: number } | null {
+  const text = clean(value);
+  if (!text) return null;
+  const match =
+    text.match(/[?&]ll=(-?\d+(?:\.\d+)?)(?:,|%2C)(-?\d+(?:\.\d+)?)/i) ||
+    text.match(/^\(?\s*(-?\d{1,2}\.\d{3,})\s*[,;\s]\s*(-?\d{1,3}\.\d{3,})\s*\)?$/);
+  if (!match) return null;
+  const lat = Number(match[1]);
+  const lng = Number(match[2]);
+  return validCoords(lat, lng) ? { lat, lng } : null;
+}
+
+function readLocation(body: any, message = ""): { lat: number; lng: number } | null {
+  for (const source of [body?.location, body?.metadata?.location, body]) {
+    if (!source) continue;
+    if (typeof source === "string") {
+      const coords = coordsFromText(source);
+      if (coords) return coords;
+      continue;
+    }
+    const lat = toCoordinate(source.latitude ?? source.lat ?? source.latitud);
+    const lng = toCoordinate(source.longitude ?? source.longitud ?? source.lng ?? source.long);
+    if (validCoords(lat, lng)) return { lat, lng };
+  }
+  return coordsFromText(body?.mapsUrl) || coordsFromText(message);
 }
 
 // ─── Dependencias reales del router ──────────────────────────────────────────
 
 async function findLastOrder(phone: string): Promise<LastOrder | null> {
+  if (isLid(phone)) return null;
+  const session: any = await WhatsAppSession.findOne({ phone }).select("resetAt").lean();
   const order: any = await Order.findOne({
     customerPhone: { $in: phoneVariants(phone) },
+    ...(session?.resetAt ? { createdAt: { $gt: session.resetAt } } : {}),
     status: { $ne: "cancelled" },
     // Una tarjeta que nunca se pagó no es "lo de la última vez".
     $nor: [{ status: "pending", paymentMethod: "card" }],
@@ -106,8 +281,19 @@ async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMet
     .slice(0, MAX_BRANCHES_TO_QUOTE);
   const settings = await getOrCreateSettings();
   let lastReason = "Todavía no llegamos a esa dirección con delivery";
-  for (const { branch } of candidates) {
-    const quote = await quoteDelivery({ branch, lat: coords.lat, lng: coords.lng, paymentMethod: paymentMethod === "cash" ? "CASH" : "CARD" });
+  // Se cotizan en paralelo (cada una puede tardar hasta 8 s en Picker) y gana la más cercana que cubre.
+  const quotes = await Promise.all(
+    candidates.map(({ branch }) =>
+      quoteDelivery({ branch, lat: coords.lat, lng: coords.lng, paymentMethod: paymentMethod === "cash" ? "CASH" : "CARD" }).catch((error) => ({
+        covered: false as const,
+        reason: error instanceof Error ? error.message : "",
+        deliveryFee: 0,
+        distance: 0,
+      }))
+    )
+  );
+  for (const [index, { branch }] of candidates.entries()) {
+    const quote: any = quotes[index];
     if (!quote.covered) {
       lastReason = quote.reason || lastReason;
       continue;
@@ -121,8 +307,8 @@ async function quoteBotLocation(coords: { lat: number; lng: number }, paymentMet
 
 async function branchStatus(branchId: string) {
   const branch = await Branch.findById(branchId);
-  if (!branch || !branch.isActive) return { open: false, message: "Esa sucursal no está disponible. Elige otra o cambia a delivery" };
-  if (isBranchOpenAt(branch)) return { open: true };
+  if (!branch || !branch.isActive) return { open: false, message: "Esa sucursal no está disponible. Escribe *otro local* para elegir otra o *delivery* para que te lo llevemos" };
+  if (isOpen(branch)) return { open: true };
   const availability = getBranchAvailability(branch);
   return {
     open: false,
@@ -168,7 +354,7 @@ async function createBotOrder(state: BotState) {
     ? await Branch.findOne({ _id: state.branchId, isActive: true, isArchived: { $ne: true } }).select("+pickerStore.storeApiKey +pickerStore.productionStoreApiKey")
     : null;
   if (!branch) throw new Error("No pudimos asignar una sucursal a tu pedido");
-  if (!isBranchOpenAt(branch)) throw new Error(`${branch.name} está cerrada en este momento`);
+  if (!isOpen(branch)) throw new Error(`${branch.name} está cerrada en este momento`);
 
   const isDelivery = state.deliveryType === "delivery";
   let deliveryCostCents = 0;
@@ -239,7 +425,7 @@ async function createBotOrder(state: BotState) {
     status: "pending",
     customerEmail: String(state.customerEmail || "").toLowerCase(),
     customerName: state.customerName || "",
-    customerPhone: toE164(state.phone),
+    customerPhone: isLid(state.phone) ? "" : toE164(state.phone),
     notes: state.notes || "",
     branch: branch._id,
     ...(state.billingPreference === "invoice" && docNumber
@@ -250,7 +436,22 @@ async function createBotOrder(state: BotState) {
     payphone: { clientTransactionId: `BOL-${Date.now()}`, storeId: getBranchPayphoneStoreId(branch.payphone) },
   });
 
-  // Efectivo: exactamente lo que hace createOrder. Tarjeta: todo esto ocurre en confirmOrder al pagar.
+  // Efectivo: exactamente lo que hace createOrder. Tarjeta: todo esto ocurre en confirmOrder al pagar;
+  // aquí solo se manda el correo con el link de pago (por si pierde el mensaje de WhatsApp).
+  if (order.paymentMethod === "card") {
+    const html = getOrderStatusEmailHtml({
+      orderNumber: order.orderNumber,
+      customerName: order.customerName || "Cliente",
+      status: order.status,
+      statusText: "Recibimos tu pedido — falta el pago",
+      description: "Tu pedido quedó registrado. La cocina lo empieza apenas se confirme el pago con tarjeta.",
+      detailUrl: botPaymentLink(order),
+      ctaLabel: "Pagar mi pedido",
+      items: order.items || [],
+      total: order.total,
+    });
+    await sendEmail(order.customerEmail, `Boloncity: completa el pago de tu pedido ${order.orderNumber}`, html).catch(() => {});
+  }
   if (order.paymentMethod === "cash") {
     if (isDelivery) await bookPickerForOrder(order, "CASH");
     await sendOrderToRunfood(order);
@@ -260,7 +461,7 @@ async function createBotOrder(state: BotState) {
       customerName: order.customerName || "Cliente",
       status: order.status,
       statusText: `Recibimos tu pedido — pagas en efectivo al ${isDelivery ? "recibirlo" : "retirarlo en el local"}`,
-      detailUrl: `${getFrontendUrl()}/pedido`,
+      detailUrl: getOrderDetailUrl(order),
       items: order.items || [],
       total: order.total,
     });
@@ -269,24 +470,50 @@ async function createBotOrder(state: BotState) {
   return order;
 }
 
+function botPaymentLink(order: { orderNumber: string; customerEmail?: string }) {
+  return `${getFrontendUrl()}/pago/${order.orderNumber}?email=${encodeURIComponent(order.customerEmail || "")}`;
+}
+
 async function createOrderWithLock(state: BotState) {
   const phone = toE164(state.phone);
   const now = new Date();
   // Candado atómico de 45 s: si BuilderBot reintenta el "confirmo" mientras se crea la orden, el segundo no crea otra.
-  const locked = await WhatsAppSession.findOneAndUpdate(
+  const locked: any = await WhatsAppSession.findOneAndUpdate(
     { phone, $or: [{ checkoutLockUntil: null }, { checkoutLockUntil: { $lt: now } }] },
-    { $set: { checkoutLockUntil: new Date(now.getTime() + 45_000) } }
-  );
+    { $set: { checkoutLockUntil: new Date(now.getTime() + 45_000) } },
+    { new: true }
+  ).lean();
   if (!locked) return { ok: false as const, message: "Ya estoy creando tu pedido, dame unos segundos" };
+  // Otra request ya creó la orden de este resumen: se devuelve la misma, nunca una segunda.
+  const saved: any = locked.state;
+  if (saved?.stage === "ordered" && saved.lastOrderNumber) {
+    await WhatsAppSession.updateOne({ phone }, { $set: { checkoutLockUntil: null } });
+    const existing: any = await Order.findOne({ orderNumber: saved.lastOrderNumber }).select("total").lean();
+    return { ok: true as const, orderNumber: saved.lastOrderNumber as string, total: (existing?.total || 0) / 100, paymentLink: saved.lastPaymentLink || undefined };
+  }
+  let created: { orderNumber: string; paymentLink?: string } | null = null;
   try {
     const order = await createBotOrder(state);
-    const paymentLink = order.paymentMethod === "card" ? `${getFrontendUrl()}/pago/${order.orderNumber}?email=${encodeURIComponent(order.customerEmail)}` : undefined;
+    const paymentLink = order.paymentMethod === "card" ? botPaymentLink(order) : undefined;
+    created = { orderNumber: order.orderNumber, paymentLink };
     return { ok: true as const, orderNumber: order.orderNumber, total: order.total / 100, paymentLink };
   } catch (error) {
     console.error("[whatsapp-bot] no se pudo crear la orden", error instanceof Error ? error.message : error);
     return { ok: false as const, message: error instanceof Error && error.message ? error.message : "No pude crear tu pedido" };
   } finally {
-    await WhatsAppSession.updateOne({ phone }, { $set: { checkoutLockUntil: null } });
+    // La orden creada se anota en la sesión en el MISMO update que suelta el candado: aunque el guardado del
+    // turno fallara después, ningún "confirmo" posterior crea otra orden para este resumen.
+    await WhatsAppSession.updateOne(
+      { phone },
+      {
+        $set: {
+          checkoutLockUntil: null,
+          ...(created
+            ? { "state.stage": "ordered", "state.lastOrderNumber": created.orderNumber, "state.lastPaymentLink": created.paymentLink || null }
+            : {}),
+        },
+      }
+    );
   }
 }
 
@@ -319,38 +546,178 @@ function defaultDeps(): BotDeps {
 
 // ─── Turno de conversación ───────────────────────────────────────────────────
 
-async function runTurn(body: any): Promise<(TurnResult & { duplicated?: boolean }) | null> {
-  const phone = toE164(body?.phone || body?.from);
-  if (!phone) return null;
-  const message = readMessage(body);
-  const location = readLocation(body);
-  const session = (await WhatsAppSession.findOne({ phone })) || new WhatsAppSession({ phone, history: [] });
+const TURN_LOCK_MS = 30_000;
+const TURN_WAIT_MS = 25_000;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  // BuilderBot reintenta cuando una respuesta tarda: el mismo mensaje en menos de 5 s recibe la misma respuesta.
-  const hash = crypto.createHash("sha1").update(`${message}|${location?.lat ?? ""}|${location?.lng ?? ""}`).digest("hex");
-  if (session.lastMessageHash === hash && session.lastMessageAt && Date.now() - session.lastMessageAt.getTime() < 5000 && session.lastReply) {
-    const state = { ...createInitialState(phone), ...(session.state || {}) } as BotState;
-    return { state, reply: session.lastReply, route: "conversation", intent: state.lastIntent || "conversar", step: state.stage, decision: "R0:duplicado", duplicated: true };
+/**
+ * Toma el candado del teléfono (y crea la sesión si no existe) de forma atómica. Si otro mensaje del mismo
+ * cliente se está procesando, espera a que termine: así dos burbujas seguidas se procesan en orden y ninguna
+ * se pierde (antes una fallaba con E11000 o VersionError y el cliente veía "Tuve un problema").
+ */
+async function acquireTurnLock(phone: string): Promise<any | null> {
+  const deadline = Date.now() + TURN_WAIT_MS;
+  for (;;) {
+    const now = new Date();
+    try {
+      const session = await WhatsAppSession.findOneAndUpdate(
+        { phone, $or: [{ turnLockUntil: null }, { turnLockUntil: { $lt: now } }] },
+        { $set: { turnLockUntil: new Date(now.getTime() + TURN_LOCK_MS) } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      ).lean();
+      if (session) return session;
+    } catch (error: any) {
+      // E11000: la sesión existe y tiene el candado tomado (el upsert intentó crear otra). Se espera.
+      if (error?.code !== 11000) throw error;
+    }
+    if (Date.now() > deadline) return null;
+    await sleep(200);
+  }
+}
+
+type TurnOutcome = TurnResult & { duplicated?: boolean };
+
+/**
+ * Identidad de la pregunta que el bot tiene abierta: paso + elección pendiente + cola de productos.
+ * Dos mensajes iguales seguidos solo son un reintento si responden a la MISMA pregunta.
+ */
+export function pendingKey(state: any) {
+  const identity = JSON.stringify([state?.pendingChoice || null, state?.choiceQueue || []]);
+  return `${state?.stage || "idle"}|${crypto.createHash("sha1").update(identity).digest("hex").slice(0, 12)}`;
+}
+
+/**
+ * ¿El mismo mensaje es un reintento del turno anterior? Sí si llegó mientras se procesaba, o en menos de 5 s sin
+ * que cambie la pregunta pendiente. Excepción: si ese turno CREÓ la orden, la clave cambia (confirm → ordered) pero
+ * repetir el "sí" en 5 s sigue siendo el mismo envío (doble toque o reintento de BuilderBot).
+ */
+export function isRetry(input: { arrivedAt: number; lastAt: number; now: number; currentKey: string; keyBefore?: string | null; createdOrder: boolean }) {
+  if (input.arrivedAt <= input.lastAt) return true;
+  if (input.now - input.lastAt >= 5000) return false;
+  return input.currentKey === input.keyBefore || input.createdOrder;
+}
+
+/** Huella del mensaje (texto + ubicación + evento) para reconocer un reintento de BuilderBot. */
+export function turnHash(message: string, location: { lat: number; lng: number } | null, event: string | null) {
+  return crypto.createHash("sha1").update(`${message}|${location?.lat ?? ""}|${location?.lng ?? ""}|${event || ""}`).digest("hex");
+}
+
+/**
+ * Decisión de duplicado de runTurn, sin Mongo: recibe la sesión tal como está guardada y dice si el mensaje es un
+ * reintento del turno anterior (misma respuesta completa, R0:duplicado). La usan runTurn y las pruebas.
+ */
+export function isDuplicateTurn(session: any, hash: string, arrivedAt: number, now: number) {
+  if (!session || session.lastMessageHash !== hash || !session.lastReply) return false;
+  const lastAt = session.lastMessageAt ? new Date(session.lastMessageAt).getTime() : 0;
+  const createdOrder = session.state?.stage === "ordered" && Boolean(session.lastResponse?.orderNumber);
+  return isRetry({ arrivedAt, lastAt, now, currentKey: pendingKey(session.state), keyBefore: session.lastStageBefore, createdOrder });
+}
+
+/** Lo que runTurn guarda de un turno para poder reconocer su reintento (ver isDuplicateTurn). */
+export function turnRecord(previous: BotState, result: TurnResult, hash: string, now: Date) {
+  return {
+    state: JSON.parse(JSON.stringify(result.state)),
+    lastMessageHash: hash,
+    lastMessageAt: now,
+    lastReply: result.reply,
+    lastStageBefore: pendingKey(previous),
+    lastResponse: { route: result.route, intent: result.intent, orderNumber: result.orderNumber || "", paymentLink: result.paymentLink || "" },
+  };
+}
+
+interface TurnOptions {
+  /** Flow de ubicación: si no llegan coordenadas legibles, se responde "No pude leer tu ubicación". */
+  expectLocation?: boolean;
+}
+
+async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcome | null> {
+  const phone = readPhone(body);
+  if (!phone) {
+    console.warn("[whatsapp-bot] llegó un mensaje sin teléfono válido. Revisa que el nodo HTTP mande phone = {from}", JSON.stringify(body).slice(0, 300));
+    return null;
+  }
+  const arrivedAt = Date.now();
+  const message = readMessage(body);
+  const event = readEvent(body);
+  const location = readLocation(body, message);
+  const locationInvalid = !location && Boolean(options.expectLocation || event === "location") && !extractMapsUrl(message);
+
+  if (isResetKeyword(message)) {
+    // Reemplaza la sesión entera (carrito, paso, historial, candados) y marca desde cuándo ignorar pedidos viejos.
+    await WhatsAppSession.replaceOne({ phone }, { phone, history: [], state: null, resetAt: new Date() }, { upsert: true });
+    console.log(`[whatsapp-bot] ${phone} reiniciatodo → sesión borrada`);
+    const state = createInitialState(phone);
+    return { state, reply: RESET_REPLY, route: "conversation", intent: "conversar", step: state.stage, decision: "R0:reinicio" };
   }
 
-  const previous = { ...createInitialState(phone), ...(session.state || {}), phone } as BotState;
-  appendHistory(session, "user", message || (location ? `[ubicación ${location.lat},${location.lng}]` : ""));
-  const result = await handleTurn(previous, { message, location, senderName: String(body?.name || "") }, buildDeps());
-  result.state.lastIntent = result.intent;
-  appendHistory(session, "assistant", result.reply);
-  session.state = JSON.parse(JSON.stringify(result.state));
-  session.markModified("state");
-  session.lastMessageHash = hash;
-  session.lastMessageAt = new Date();
-  session.lastReply = result.reply;
-  await session.save();
-  console.log(`[whatsapp-bot] ${phone} ${result.decision} → paso ${result.step}`);
-  return result;
+  const session = await acquireTurnLock(phone);
+  if (!session) {
+    const state = createInitialState(phone);
+    return { state, reply: "Estoy terminando de procesar tu mensaje anterior. Dame unos segundos 🙏", route: "conversation", intent: "conversar", step: state.stage, decision: "R0:ocupado" };
+  }
+
+  let released = false;
+  try {
+    // BuilderBot reintenta cuando una respuesta tarda: el mismo mensaje recibe la misma respuesta completa si
+    // (a) llegó mientras se procesaba ese mismo mensaje, o (b) llegó en menos de 5 s y el turno anterior no
+    // cambió la pregunta pendiente. Un "1" que responde OTRA pregunta es una respuesta nueva: "¿cuál tigrillo?" → "1"
+    // y luego "¿cuál cola?" → "1" tienen el mismo paso ("choosing") pero distinta pregunta (ver pendingKey).
+    const hash = turnHash(message, location, event);
+    if (isDuplicateTurn(session, hash, arrivedAt, Date.now())) {
+      const state = { ...createInitialState(phone), ...(session.state || {}) } as BotState;
+      const last: any = session.lastResponse || {};
+      return {
+        state,
+        reply: session.lastReply,
+        route: last.route || "conversation",
+        intent: last.intent || state.lastIntent || "conversar",
+        step: state.stage,
+        decision: "R0:duplicado",
+        orderNumber: last.orderNumber || undefined,
+        paymentLink: last.paymentLink || undefined,
+        duplicated: true,
+      };
+    }
+
+    const previous = { ...createInitialState(phone), ...(session.state || {}), phone } as BotState;
+    const history: Array<{ role: "user" | "assistant"; content: string; createdAt: Date }> = [...(session.history || [])];
+    const pushHistory = (role: "user" | "assistant", content: string) => {
+      if (content.trim()) history.push({ role, content: content.trim().slice(0, 2000), createdAt: new Date() });
+    };
+    pushHistory("user", message || (location ? `[ubicación ${location.lat},${location.lng}]` : event ? `[${event}]` : ""));
+    const result = await handleTurn(
+      previous,
+      { message, location, locationInvalid, unsupportedMedia: event === "media", senderName: clean(body?.name) },
+      buildDeps()
+    );
+    result.state.lastIntent = result.intent;
+    pushHistory("assistant", result.reply);
+    // Guardado con $set (sin versionado): con el candado nadie más escribe esta sesión a la vez.
+    await WhatsAppSession.updateOne(
+      { phone },
+      {
+        $set: {
+          ...turnRecord(previous, result, hash, new Date()),
+          history: history.slice(-30),
+          turnLockUntil: null,
+        },
+      }
+    );
+    released = true;
+    console.log(`[whatsapp-bot] ${phone} ${result.decision} → paso ${result.step}`);
+    return result;
+  } finally {
+    if (!released) await WhatsAppSession.updateOne({ phone }, { $set: { turnLockUntil: null } }).catch(() => {});
+  }
 }
+
+const NO_PHONE_MESSAGE = `No pude identificar tu número de WhatsApp. Escríbenos al ${SUPPORT_PHONE} y te ayudamos`;
+const ERROR_MESSAGE = "Tuve un problema procesando tu mensaje. ¿Me lo repites?";
 
 function toBotResponse(result: TurnResult | null) {
   if (!result) {
-    return { success: false, intencion: "dudas", telefonoSoporte: SUPPORT_PHONE, route: "conversation", message: "", missingData: [], readyToCheckout: false };
+    // Nunca message vacío: BuilderBot mandaría un mensaje en blanco (o el literal {message}).
+    return { success: false, intencion: "conversar", telefonoSoporte: SUPPORT_PHONE, route: "conversation", message: NO_PHONE_MESSAGE, missingData: [], readyToCheckout: false };
   }
   return {
     success: true,
@@ -371,6 +738,11 @@ function toBotResponse(result: TurnResult | null) {
   };
 }
 
+/** Respuesta cuando algo falla: siempre con intención y texto, para que una Rule de BuilderBot la tome. */
+function errorResponse(message = ERROR_MESSAGE, extra: Record<string, unknown> = {}) {
+  return { success: false, intencion: "conversar", telefonoSoporte: SUPPORT_PHONE, route: "conversation", message, missingData: [], readyToCheckout: false, ...extra };
+}
+
 const ROUTE_INTENT: Record<BuilderBotRoute, string> = {
   conversation: "conversar",
   catalog: "menu",
@@ -379,6 +751,7 @@ const ROUTE_INTENT: Record<BuilderBotRoute, string> = {
   human: "dudas",
 };
 
+
 /**
  * Flow "Bienvenida" de BuilderBot: decide a qué flow va el mensaje (campo `route` para las Rules).
  * Solo lee la sesión: no la modifica, no llama a la IA y no responde texto al cliente.
@@ -386,10 +759,12 @@ const ROUTE_INTENT: Record<BuilderBotRoute, string> = {
 export async function whatsappBotRouter(req: Request, res: Response) {
   try {
     const body = { ...req.query, ...req.body };
-    const phone = toE164(body.phone || body.from);
+    const phone = readPhone(body);
+    const message = readMessage(body);
     const session: any = phone ? await WhatsAppSession.findOne({ phone }).lean() : null;
     const state = session?.state ? ({ ...createInitialState(phone), ...session.state } as BotState) : null;
-    const route = classifyRoute(state, readMessage(body), Boolean(readLocation(body)));
+    // "reiniciatodo" siempre va a la conversación, que es la que borra la sesión.
+    const route = isResetKeyword(message) ? "conversation" : classifyRoute(state, message, Boolean(readLocation(body, message)) || readEvent(body) === "location");
     console.log(`[whatsapp-bot] router ${phone} → ${route} (paso ${state?.stage || "nuevo"})`);
     res.status(200).json({ success: true, route, intencion: ROUTE_INTENT[route], step: state?.stage || "idle", telefonoSoporte: SUPPORT_PHONE, message: "" });
   } catch (error) {
@@ -402,28 +777,28 @@ export async function whatsappBotRouter(req: Request, res: Response) {
 /** Punto de entrada principal: todos los flujos de BuilderBot pueden llamar aquí. */
 export async function whatsappBotBrain(req: Request, res: Response) {
   try {
-    res.status(200).json(toBotResponse(await runTurn(req.body)));
+    res.status(200).json(toBotResponse(await runTurn({ ...req.query, ...req.body })));
   } catch (error) {
     console.error("[whatsapp-bot] brain falló", error);
-    res.status(200).json({ success: false, route: "conversation", message: "Tuve un problema procesando tu mensaje. ¿Me lo repites?", missingData: [], readyToCheckout: false });
+    res.status(200).json(errorResponse());
   }
 }
 
 // BuilderBot espera este sobre en el flujo del asistente.
 export async function whatsappBotAssistant(req: Request, res: Response) {
   try {
-    const result = await runTurn(req.body);
+    const result = await runTurn({ ...req.query, ...req.body });
     res.status(200).json({
       success: Boolean(result),
-      message: result?.reply || "",
-      intencion: result?.intent || "dudas",
+      message: result?.reply || NO_PHONE_MESSAGE,
+      intencion: result?.intent || "conversar",
       telefonoSoporte: SUPPORT_PHONE,
-      _intent: result?.intent || "dudas",
+      _intent: result?.intent || "conversar",
       missingData: [],
     });
   } catch (error) {
     console.error("[whatsapp-bot] assistant falló", error);
-    res.status(200).json({ success: false, message: "Tuve un problema procesando tu mensaje. ¿Me lo repites?", _intent: "chat", missingData: [] });
+    res.status(200).json({ ...errorResponse(), _intent: "conversar" });
   }
 }
 
@@ -433,23 +808,23 @@ export async function whatsappBotCatalog(req: Request, res: Response) {
     const body = { ...req.query, ...req.body };
     if (!readMessage(body)) body.message = "menú";
     const result = await runTurn(body);
-    res.status(200).json({ ...toBotResponse(result), _intent: "menu" });
+    res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "menu" });
   } catch (error) {
     console.error("[whatsapp-bot] catalog falló", error);
-    res.status(200).json({ success: false, message: "", intencion: "dudas", telefonoSoporte: SUPPORT_PHONE, _intent: "dudas", missingData: [] });
+    res.status(200).json({ ...errorResponse(), _intent: "conversar" });
   }
 }
 
-/** Flujo "envian ubicacion nativa": lat/lng de WhatsApp o mapsUrl. */
+/** Flujo "envian ubicacion nativa": lat/lng de WhatsApp, "lat,lng", link de Google Maps o de Waze. */
 export async function whatsappBotLocation(req: Request, res: Response) {
   try {
-    const body = { ...req.body };
-    if (body.mapsUrl && !readMessage(body)) body.message = String(body.mapsUrl);
-    const result = await runTurn(body);
-    res.status(200).json({ ...toBotResponse(result), _intent: "conversar" });
+    const body = { ...req.query, ...req.body };
+    if (clean(body.mapsUrl) && !readMessage(body)) body.message = String(body.mapsUrl);
+    const result = await runTurn(body, { expectLocation: true });
+    res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "conversar" });
   } catch (error) {
     console.error("[whatsapp-bot] location falló", error);
-    res.status(200).json({ success: false, route: "location", message: "No pude leer tu ubicación. ¿Me la compartes de nuevo?" });
+    res.status(200).json(errorResponse("No pude leer tu ubicación. ¿Me la compartes de nuevo?", { route: "location" }));
   }
 }
 
@@ -459,10 +834,12 @@ export async function whatsappBotLocation(req: Request, res: Response) {
  */
 export async function whatsappBotCheckout(req: Request, res: Response) {
   try {
-    const phone = toE164(req.body?.phone);
-    const session = phone ? await WhatsAppSession.findOne({ phone }) : null;
-    const state = session?.state as BotState | undefined;
+    const body = { ...req.query, ...req.body };
+    const phone = readPhone(body);
     const base = { intencion: "conversar", telefonoSoporte: SUPPORT_PHONE };
+    if (!phone) return res.status(200).json({ ...base, success: false, message: NO_PHONE_MESSAGE });
+    const session: any = await WhatsAppSession.findOne({ phone }).lean();
+    const state = session?.state as BotState | undefined;
     if (!session || !state) return res.status(200).json({ ...base, success: false, message: "Aún no tengo tu pedido. Dime qué te gustaría pedir" });
     if (state.stage === "ordered" && state.lastOrderNumber) {
       return res.status(200).json({
@@ -478,11 +855,18 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
       const next = await nextStep({ ...createInitialState(phone), ...state }, buildDeps());
       return res.status(200).json({ ...base, success: false, message: next.question, step: state.stage });
     }
-    const result = await runTurn({ phone, message: "confirmo" });
-    res.status(200).json({ ...toBotResponse(result), success: result?.decision === "R7:orden_creada" || result?.decision === "R7:ya_confirmado" });
+    // Con el mensaje del cliente (rawMessage/message) se procesa ESE mensaje: la conversación solo crea la orden si
+    // classifyConfirmReply lo da como "confirm" (la misma función que usan /router y R7). "gracias" vuelve a mostrar
+    // el resumen y "sí, pero agrégale un café" aplica el cambio, sin crear la orden. Sin mensaje, se confirma como
+    // siempre (idempotente).
+    const message = readMessage(body);
+    const confirming = !message || classifyConfirmReply(message) === "confirm";
+    const result = await runTurn(message ? { ...body, phone } : { phone, message: "confirmo" });
+    if (!confirming) console.log(`[whatsapp-bot] checkout ${phone}: "${message.slice(0, 60)}" no confirma → ${result?.decision}`);
+    res.status(200).json({ ...toBotResponse(result), success: Boolean(result?.orderNumber) });
   } catch (error) {
     console.error("[whatsapp-bot] checkout falló", error);
-    res.status(200).json({ success: false, intencion: "conversar", telefonoSoporte: SUPPORT_PHONE, message: "No pude crear tu pedido en este momento. Escribe *confirmo* otra vez en un minuto" });
+    res.status(200).json(errorResponse("No pude crear tu pedido en este momento. Escribe *confirmo* otra vez en un minuto"));
   }
 }
 
@@ -501,9 +885,13 @@ const STATUS_LABELS: Record<string, string> = {
 /**
  * Solo pedidos del teléfono que escribe. Antes se aceptaba cualquier correo que el
  * cliente escribiera, y cualquiera podía ver el pedido de otra persona.
+ * Si el cliente pidió un número ("orden 17") y no es suyo, se dice eso: nunca se muestra otro pedido.
  */
-async function trackOrderForPhone(phone: string, message: string) {
-  const orderNumber = extractOrderNumber(message);
+async function trackOrderForPhone(phone: string, message: string, requested = "") {
+  const orderNumber = requested || extractOrderNumber(message);
+  if (isLid(phone)) {
+    return { success: false, message: `No puedo ver tu número de WhatsApp para buscar tus pedidos. Escríbenos al ${SUPPORT_PHONE} con tu número de pedido` } as { success: boolean; message: string; order?: any; trackingLink?: string };
+  }
   const order: any = await Order.findOne({ customerPhone: { $in: phoneVariants(phone) }, ...(orderNumber ? { orderNumber } : {}) })
     .sort({ createdAt: -1 })
     .populate("branch", "name");
@@ -523,21 +911,28 @@ async function trackOrderForPhone(phone: string, message: string) {
     `${order.deliveryType === "pickup" ? "Retiro en" : "Sucursal"}: ${order.branch?.name || "Por confirmar"}`,
     order.items.map((item: any) => `${item.quantity} x ${item.name}`).join("\n"),
     `Total: $${(order.total / 100).toFixed(2)} · ${order.paymentMethod === "card" ? "Tarjeta" : "Efectivo"}`,
-    unpaidCard ? `Aún no registramos el pago. Puedes pagarlo aquí: ${getFrontendUrl()}/pago/${order.orderNumber}?email=${encodeURIComponent(order.customerEmail)}` : "",
+    unpaidCard ? `Aún no registramos el pago. Puedes pagarlo aquí: ${botPaymentLink(order)}` : "",
     trackingLink ? `Sigue tu delivery en vivo: ${trackingLink}` : "",
   ].filter(Boolean);
   return { success: true, message: lines.join("\n"), order, trackingLink };
 }
 
+/** En "consultar orden" un número suelto ("17", "#17") o el campo orderNumber es el número del pedido. */
+function requestedOrderNumber(body: any, message: string) {
+  return extractOrderNumber(clean(body?.orderNumber), { allowBare: true }) || extractOrderNumber(message, { allowBare: true });
+}
+
 export async function whatsappBotTrackOrder(req: Request, res: Response) {
   try {
-    const phone = toE164(req.query.phone || req.body?.phone);
-    if (!phone) return res.status(200).json({ success: false, route: "tracking", message: "" });
-    const message = `${req.query.orderNumber || req.body?.orderNumber || ""} ${readMessage(req.body)}`;
-    const result = await trackOrderForPhone(phone, message);
+    const body = { ...req.query, ...req.body };
+    const phone = readPhone(body);
+    if (!phone) return res.status(200).json({ success: false, route: "tracking", intencion: "consultar_pedido", message: NO_PHONE_MESSAGE });
+    const message = readMessage(body);
+    const result = await trackOrderForPhone(phone, message, requestedOrderNumber(body, message));
     res.status(200).json({
       success: result.success,
       route: "tracking",
+      intencion: "consultar_pedido",
       message: result.message,
       orderNumber: result.order?.orderNumber || "",
       status: result.order?.status || "",
@@ -545,26 +940,36 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("[whatsapp-bot] track falló", axios.isAxiosError(error) ? error.message : error);
-    res.status(200).json({ success: false, route: "tracking", message: "No pude consultar tu pedido en este momento" });
+    res.status(200).json({ success: false, route: "tracking", intencion: "consultar_pedido", message: `No pude consultar tu pedido en este momento. Intenta en un minuto o escríbenos al ${SUPPORT_PHONE}` });
   }
 }
 
 // Compatibilidad con el flujo "consultar orden" de BuilderBot que llama /search-order.
 export async function whatsappBotSearchOrder(req: Request, res: Response) {
   try {
-    const phone = toE164(req.query.phone || req.body?.phone);
-    const result = phone ? await trackOrderForPhone(phone, `${req.query.orderNumber || req.body?.orderNumber || ""} ${readMessage(req.body)}`) : null;
+    const body = { ...req.query, ...req.body };
+    const phone = readPhone(body);
+    const message = readMessage(body);
+    const result = phone ? await trackOrderForPhone(phone, message, requestedOrderNumber(body, message)) : null;
     res.status(200).json({
       success: Boolean(result?.success),
-      message: result?.message || "",
+      message: result?.message || NO_PHONE_MESSAGE,
       intencion: "consultar_pedido",
       telefonoSoporte: SUPPORT_PHONE,
       _intent: "consultar_pedido",
       missingData: [],
+      orderNumber: result?.order?.orderNumber || "",
       trackingLink: result?.trackingLink || "",
     });
   } catch (error) {
     console.error("[whatsapp-bot] search-order falló", error);
-    res.status(200).json({ success: false, message: "", intencion: "dudas", telefonoSoporte: SUPPORT_PHONE, _intent: "dudas", missingData: [] });
+    res.status(200).json({
+      success: false,
+      message: `No pude consultar tu pedido en este momento. Intenta en un minuto o escríbenos al ${SUPPORT_PHONE}`,
+      intencion: "consultar_pedido",
+      telefonoSoporte: SUPPORT_PHONE,
+      _intent: "consultar_pedido",
+      missingData: [],
+    });
   }
 }

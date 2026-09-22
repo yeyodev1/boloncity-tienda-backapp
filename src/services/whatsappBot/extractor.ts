@@ -1,5 +1,6 @@
 import axios from "axios";
 import { env } from "../../config/env";
+import { meaningfulTokens, tokenSimilarity } from "./catalog";
 import {
   detectDeliveryType,
   detectPaymentMethod,
@@ -50,6 +51,15 @@ const DATA_PHRASES = [
   /\b(?:con )?factura\b|\bconsumidor final\b/gi,
 ];
 
+/**
+ * Muletillas alrededor de un cambio de entrega o pago ("no, mejor delivery", "quiero delivery a mi casa"):
+ * no son productos. Solo se quitan si el mensaje sí trae entrega o pago (si no, "mejor 2 cafés" es un pedido).
+ */
+const FILLER_WITH_DATA = /(?<![\p{L}\p{N}])(?:mejor que sea|que sea|no|s[ií]|mejor|prefiero|quiero|quisiera|cambia(?:lo)?|c[aá]mbialo|a mi casa|mi casa|a domicilio|domicilio|entonces|porfa|por favor|gracias|ok|dale)(?![\p{L}\p{N}])/giu;
+
+/** Verbos de quitar: sin uno de ellos, un "remove" de la IA que no nombra el producto se descarta. */
+const REMOVAL_VERB = /\b(quit|saca|sacar|sacal|elimin|borra|cancel|ya no|no quiero|sin )/i;
+
 /** Extracción por reglas. Es el respaldo si Gemini falla y lo que usan las pruebas. */
 export const heuristicExtract: Extractor = async (message) => {
   const removal = parseRemoval(message);
@@ -60,7 +70,8 @@ export const heuristicExtract: Extractor = async (message) => {
   const deliveryType = detectDeliveryType(message) || undefined;
   const paymentMethod = detectPaymentMethod(message) || undefined;
   // "quita el café" / "que sean 3" hablan del carrito: no son productos nuevos.
-  const itemText = removal || quantityChange ? "" : DATA_PHRASES.reduce((text, pattern) => text.replace(pattern, " "), message);
+  let itemText = removal || quantityChange ? "" : DATA_PHRASES.reduce((text, pattern) => text.replace(pattern, " "), message);
+  if (deliveryType || paymentMethod) itemText = itemText.replace(FILLER_WITH_DATA, " ");
   return {
     items: splitItemPhrases(itemText),
     remove: removal ? [removal] : [],
@@ -89,6 +100,8 @@ Reglas:
 - notes: indicaciones de preparación ("sin cebolla", "bien cocido").
 - Si el mensaje solo responde la pregunta del bot, usa esa pregunta para interpretarlo (ej. pregunta "¿Cómo te llamas?" y responde "Ana Pérez" -> customerName).
 - Todo lo que no aplique va null o [].`;
+
+const normalizeForVerb = (text: string) => text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 /** Extracción con Gemini: entiende frases libres. Si falla o tarda, cae a las reglas. */
 export const aiExtract: Extractor = async (message, context) => {
@@ -123,11 +136,22 @@ export const aiExtract: Extractor = async (message, context) => {
     const fallback = await heuristicExtract(message, context);
     const str = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
     const oneOf = <T extends string>(value: unknown, allowed: T[]) => (allowed.includes(value as T) ? (value as T) : undefined);
+    // La IA a veces copia el ejemplo del prompt ("bolon mixto verde") cuando el mensaje no trae nada.
+    // Solo se aceptan productos con al menos una palabra que el cliente sí escribió.
+    const messageTokens = meaningfulTokens(message);
+    const saidByCustomer = (query: string) =>
+      meaningfulTokens(query).some((token) => messageTokens.some((word) => tokenSimilarity(word, token) >= 0.7 || tokenSimilarity(token, word) >= 0.7));
     return {
       items: Array.isArray(parsed.items)
-        ? parsed.items.filter((item: any) => str(item?.query)).map((item: any) => ({ query: str(item.query)!, quantity: Number(item.quantity) || 1 }))
+        ? parsed.items
+            .filter((item: any) => str(item?.query) && saidByCustomer(str(item.query)!))
+            .map((item: any) => ({ query: str(item.query)!, quantity: Number(item.quantity) || 1 }))
         : [],
-      remove: Array.isArray(parsed.remove) ? parsed.remove.map(str).filter(Boolean) : [],
+      // "no, mejor delivery" con una humita en el carrito: la IA a veces lo lee como "quitar la humita".
+      // Solo se quita algo si el cliente nombró el producto o usó un verbo de quitar.
+      remove: Array.isArray(parsed.remove)
+        ? parsed.remove.map(str).filter((query: string | undefined): query is string => Boolean(query) && (saidByCustomer(query!) || REMOVAL_VERB.test(normalizeForVerb(message))))
+        : [],
       setQuantity: Array.isArray(parsed.setQuantity)
         ? parsed.setQuantity.filter((item: any) => str(item?.query)).map((item: any) => ({ query: str(item.query)!, quantity: Number(item.quantity) || 0 }))
         : [],

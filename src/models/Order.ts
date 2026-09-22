@@ -36,7 +36,7 @@ export interface IPayphoneData {
 }
 
 export interface IOrderAudit {
-  action: "created" | "status_change" | "payment_confirmed" | "user_assigned" | "note_added" | "branch_assigned" | "refund_requested" | "refunded" | "refund_failed";
+  action: "created" | "status_change" | "payment_confirmed" | "user_assigned" | "note_added" | "branch_assigned" | "refund_requested" | "refunded" | "refund_failed" | "payment_mismatch";
   performedBy?: Types.ObjectId | null;
   performedByEmail?: string;
   fromValue?: string;
