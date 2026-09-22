@@ -44,7 +44,7 @@ bot vuelve a preguntar lo que corresponda.
 | R1 Ubicación primero | Una ubicación de WhatsApp no tiene texto; nada más la reconoce. Cambia sucursal, precio y disponibilidad. |
 | R2 Persona / reclamo | Un cliente molesto no debe recibir "¿qué te gustaría pedir?". |
 | R3 Consultar pedido | "¿Dónde está mi pedido?" no es un pedido nuevo. |
-| R4 Pregunta pendiente | Si el bot preguntó "¿verde, maduro o pintón?", un "2" o "maduro" responde ESO. Si el cliente escribe otra cosa, la pregunta se descarta y el mensaje sigue por las demás reglas. "¿En qué local lo retiras?" también se descarta cuando el cliente cambia a delivery ("mejor delivery"): se pide la ubicación. |
+| R4 Pregunta pendiente | Si el bot preguntó "¿verde, maduro o pintón?", el cliente contesta hablando normal ("el verde", "boon de queso verde porf avor, me encantaria", "el más barato", "el primero") o con el número ("2", "la 2", "#2"): las dos formas valen (ver *Elegir hablando normal*). Si el cliente escribe otra cosa, la pregunta se descarta y el mensaje sigue por las demás reglas. "¿En qué local lo retiras?" también se descarta cuando el cliente cambia a delivery ("mejor delivery"): se pide la ubicación. |
 | R5 Repetir pedido | Frase fija del negocio: se detecta con reglas, sin IA. |
 | R7 Confirmo | Solo crea la orden si el resumen ya se mostró (paso `confirm`). El mensaje se clasifica con `classifyConfirmReply` (intents.ts), la MISMA función que usa el router de la Bienvenida, así `/router` y `/brain` nunca se contradicen. Ver la tabla de abajo. Antes de crear, revisa todo otra vez (el local pudo cerrar). Un segundo "confirmo" no crea otra orden. Con la orden ya creada, cualquier confirmación ("sí", "claro", "correcto", "de una", 👍…) responde `R7:ya_confirmado` con el link: no reinicia el pedido. Si el mismo mensaje llega otra vez en menos de 5 s justo después de crear la orden, es un reintento (`R0:duplicado`). |
 | Pregunta en la dirección | En el paso `address`, una pregunta ("¿cuánto cuesta el envío?", "cuánto se demora", "hacen delivery a …?") NO se guarda como dirección: se responde con lo que el bot sabe (el costo ya cotizado) y se vuelve a pedir la dirección. Si todavía no eligió cómo paga y Picker cobra distinto en efectivo, dice los dos precios ("$3.10 pagando con tarjeta y $2.80 pagando en efectivo"). |
@@ -54,6 +54,31 @@ bot vuelve a preguntar lo que corresponda.
 | Elección de producto + otra cosa | "no, mejor para retirar" cuando el bot preguntó "¿cuál bolón?": descarta la opción Y aplica el retiro. |
 | Datos adelantados | Lo que el cliente dice antes de que se le pregunte (pago, nombre, correo, cédula) se guarda y se confirma con un acuse corto: "Anoté: efectivo ✅". |
 | Nombre | En el paso `name`, "retiro", "tarjeta", "sí", "menú"… no se guardan como nombre: se aplica esa intención o se vuelve a pedir el nombre. |
+
+## Elegir hablando normal
+
+El bot muestra la lista numerada (ayuda a quien quiere responder con el número) pero **nunca pide que se responda
+con un número**: cierra con "Dime cuál prefieres 😊". La respuesta se interpreta en `services/whatsappBot/choice.ts`,
+comparando el mensaje SOLO con las opciones mostradas (nunca con todo el catálogo):
+
+| El cliente escribe | Qué pasa |
+|---|---|
+| "el verde", "verde porfa", "boon de queso verde porf avor, me encantaria" | Se agrega esa opción. Tolera tildes, plurales, errores de tipeo y cortesías ("porfa", "me encantaría", "gracias", "quiero", "dame"). |
+| "el más barato", "el de 3.50" | Se resuelve con los precios de las opciones (que salen de Mongo). |
+| "el primero", "la segunda opción", "el último" | Posición dentro de la lista. |
+| "2", "la 2", "opción 2", "#2" | Sigue funcionando igual que antes. |
+| "los dos", "uno de cada uno" | Agrega TODAS las opciones mostradas, una unidad de cada una. |
+| "el de queso" (cuando todas son de queso) | Sigue ambiguo: se repregunta mostrando SOLO lo que las diferencia ("1. Verde · 2. Maduro · 3. Pintón"). |
+| "ninguno gracias", "no, mejor no" | Se descarta la pregunta ("Dale, no lo agrego 👍"). |
+| "mejor un tigrillo mixto verde" | Nombró otro producto: la pregunta se descarta y se procesa el producto nuevo. |
+
+Primero las reglas (instantáneas y gratis). Si no alcanzan, **Gemini desempata eligiendo un número de esa misma
+lista** (`aiChooseOption` en extractor.ts): recibe solo las opciones ya mostradas y devuelve el índice o `null`.
+Nunca inventa productos ni precios, y si falla o no hay API key, las reglas resuelven los casos comunes.
+
+Las demás preguntas con opciones se contestan igual de suelto: "a domicilio" / "me lo mandan" / "para llevar" /
+"paso por ahí", "el de la kennedy" / "urdesa" ("el más cercano" pide la ubicación o el sector), "con tarjeta" /
+"al motorizado" / "link de pago" (la transferencia se sigue rechazando), "dale repite lo mismo", "la misma de siempre".
 
 **En el resumen (paso `confirm`)** cada palabra del mensaje debe ser una afirmación, un relleno o "el pedido":
 

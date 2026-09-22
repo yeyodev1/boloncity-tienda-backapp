@@ -2,6 +2,7 @@ import axios from "axios";
 import { env } from "../../config/env";
 import { meaningfulTokens, tokenSimilarity } from "./catalog";
 import {
+  additionAfterRemoval,
   detectDeliveryType,
   detectPaymentMethod,
   extractDeclaredName,
@@ -70,7 +71,8 @@ export const heuristicExtract: Extractor = async (message) => {
   const deliveryType = detectDeliveryType(message) || undefined;
   const paymentMethod = detectPaymentMethod(message) || undefined;
   // "quita el café" / "que sean 3" hablan del carrito: no son productos nuevos.
-  let itemText = removal || quantityChange ? "" : DATA_PHRASES.reduce((text, pattern) => text.replace(pattern, " "), message);
+  // "quita el bolón crunch y ponme el de queso verde": lo que pide a cambio SÍ es un producto nuevo.
+  let itemText = removal ? additionAfterRemoval(message) : quantityChange ? "" : DATA_PHRASES.reduce((text, pattern) => text.replace(pattern, " "), message);
   if (deliveryType || paymentMethod) itemText = itemText.replace(FILLER_WITH_DATA, " ");
   return {
     items: splitItemPhrases(itemText),
@@ -172,3 +174,45 @@ export const aiExtract: Extractor = async (message, context) => {
     return heuristicExtract(message, context);
   }
 };
+
+/**
+ * DESEMPATE CON IA ENTRE LAS OPCIONES YA MOSTRADAS.
+ *
+ * Solo se usa cuando las reglas de choice.ts no alcanzan. La IA NO ve el catálogo, no escribe el
+ * mensaje y no puede inventar nada: recibe la lista que el bot ya mostró (con los nombres y precios
+ * que salieron de Mongo) y devuelve el NÚMERO de la opción, o null si el cliente no eligió ninguna.
+ */
+const CHOICE_PROMPT = `Eres parte de un bot de pedidos por WhatsApp en Ecuador. El bot le mostró al cliente una lista numerada de opciones y el cliente respondió hablando normal, con errores de tipeo, cortesías y modismos ecuatorianos.
+Tu única tarea: decir a QUÉ OPCIÓN DE LA LISTA se refiere.
+
+Devuelve SOLO JSON: {"index": <número de la opción o null>}
+
+Reglas:
+- index es el número de la lista (1..N). Si el cliente no eligió ninguna, si nombra algo que NO está en la lista, o si sigue siendo ambiguo entre dos opciones, devuelve null.
+- Ignora cortesías ("porfa", "me encantaría", "gracias") y errores de tipeo ("boon" = bolón).
+- "el más barato" / "el de 3.50" se resuelven por el precio de la lista.
+- "el primero", "la segunda", "el último" son posiciones de la lista.
+- NUNCA inventes productos, nombres ni precios. Solo eliges un número de la lista.`;
+
+export async function aiChooseOption(input: { message: string; question: string; options: Array<{ name: string; price?: number }> }): Promise<number | null> {
+  if (!env.GEMINI_API_KEY || input.options.length < 2) return null;
+  const list = input.options.map((option, index) => `${index + 1}. ${option.name}${option.price != null ? ` $${option.price.toFixed(2)}` : ""}`).join("\n");
+  try {
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${env.GEMINI_MODEL}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+      {
+        systemInstruction: { parts: [{ text: CHOICE_PROMPT }] },
+        contents: [{ role: "user", parts: [{ text: `Pregunta del bot: ${input.question}\nOpciones:\n${list}\nMensaje del cliente: ${input.message}` }] }],
+        generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 100, thinkingConfig: { thinkingBudget: 0 } },
+      },
+      { timeout: 8000 }
+    );
+    const text = response.data?.candidates?.[0]?.content?.parts?.map((part: any) => part.text || "").join("") || "";
+    const parsed = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || "{}");
+    const index = Number(parsed.index);
+    return Number.isInteger(index) && index >= 1 && index <= input.options.length ? index : null;
+  } catch (error) {
+    console.error("[whatsapp-bot] el desempate con IA falló, sigo con reglas:", error instanceof Error ? error.message : error);
+    return null;
+  }
+}

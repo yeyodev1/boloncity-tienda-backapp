@@ -19,7 +19,7 @@ import { parseMapsUrl, resolveMapsCoordinates } from "../utils/parseMapsUrl";
 import { normalizePhone } from "../utils/phone";
 import { isAvailableAt } from "../utils/productAvailability";
 import { loadCatalog, searchCatalog } from "../services/whatsappBot/catalog";
-import { aiExtract } from "../services/whatsappBot/extractor";
+import { aiChooseOption, aiExtract } from "../services/whatsappBot/extractor";
 import { classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
 import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, nextStep, publicRoute, TurnResult } from "../services/whatsappBot/router";
 
@@ -549,6 +549,7 @@ function defaultDeps(): BotDeps {
     createOrder: createOrderWithLock,
     trackOrder: async (phone, message) => (await trackOrderForPhone(phone, message)).message,
     extract: aiExtract,
+    chooseOption: aiChooseOption,
     menuUrl: `${getFrontendUrl()}/catalogo`,
     supportPhone: SUPPORT_PHONE,
   };

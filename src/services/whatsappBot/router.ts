@@ -1,14 +1,17 @@
 import { addToCart, CartItem, findInCart, MAX_QUANTITY, removeFromCart, setCartQuantity } from "./cart";
-import { CatalogProduct, displayCategoryName, findCategory, listCategories, normalizeText, pickOption, SearchResult, tokenSimilarity, meaningfulTokens } from "./catalog";
+import { CatalogProduct, displayCategoryName, findCategory, listCategories, normalizeText, SearchResult, tokenSimilarity, meaningfulTokens } from "./catalog";
+import { asksForNearest, distinctiveLabel, negatedPhrase, pickChoice } from "./choice";
 import { Extraction, Extractor } from "./extractor";
 import {
   detectDeliveryType,
   detectPaymentMethod,
+  extractDeclaredName,
   extractDocNumber,
   extractMapsUrl,
   extractOrderNumber,
   hasDocLikeNumber,
   isNo,
+  parseRemovalUnits,
   classifyConfirmReply,
   isGreeting,
   isNotAName,
@@ -90,7 +93,16 @@ export interface LastOrder {
 }
 
 export type PendingChoice =
-  | { kind: "product"; query: string; quantity: number; options: ProductOption[]; /** Categoría mostrada ("Bebidas"), para preguntar natural. */ label?: string }
+  | {
+      kind: "product";
+      query: string;
+      quantity: number;
+      options: ProductOption[];
+      /** Categoría mostrada ("Bebidas"), para preguntar natural. */
+      label?: string;
+      /** El cliente habló de algo que varias opciones comparten: se repregunta con lo que las diferencia. */
+      clarify?: boolean;
+    }
   | { kind: "reorder"; order: LastOrder }
   | { kind: "reuse_location"; address: string; coords: { lat: number; lng: number }; mapsUrl: string }
   | { kind: "branch"; options: BranchOption[] };
@@ -156,6 +168,12 @@ export interface BotDeps {
   createOrder(state: BotState): Promise<{ ok: true; orderNumber: string; total: number; paymentLink?: string } | { ok: false; message: string }>;
   trackOrder(phone: string, message: string): Promise<string>;
   extract: Extractor;
+  /**
+   * Desempate con IA cuando las reglas no alcanzan. SIEMPRE elige entre las opciones dadas
+   * (devuelve el índice 1..N o null): nunca inventa productos ni precios. Es opcional: sin
+   * ella —o si falla— las reglas resuelven los casos comunes.
+   */
+  chooseOption?(input: { message: string; question: string; options: Array<{ name: string; price?: number }> }): Promise<number | null>;
   menuUrl: string;
   supportPhone: string;
 }
@@ -385,7 +403,9 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     // Vale aunque quede una elección de producto pendiente ("¿cuál bolón mixto?"): el local ya quedó dicho.
     if (message && state.deliveryType === "pickup" && !state.branchId && state.pendingChoice?.kind !== "reorder" && state.pendingChoice?.kind !== "reuse_location") {
       const options = state.pendingChoice?.kind === "branch" ? state.pendingChoice.options : await deps.pickupBranches();
-      const named = matchBranchInMessage(message, options);
+      // "urdesa no": nombrar un local para DESCARTARLO no lo elige (antes el pedido quedaba para
+      // retirar justo en el local que el cliente acababa de rechazar).
+      const named = negatedPhrase(message) ? null : matchBranchInMessage(message, options);
       if (named) {
         const pending = state.pendingChoice?.kind === "product" ? state.pendingChoice : null;
         await pickBranch(state, named, deps, notes);
@@ -606,14 +626,16 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return finish("R10:delivery_repetido", "location");
   }
 
-  // R8 · Ver el carrito.
+  // R8 · Ver el carrito. Lo que está a medias (esperando que elija) también se cuenta: si no, el cliente
+  // que pidió algo mientras había una pregunta abierta lee "tu carrito está vacío" y cree que lo perdió.
+  const pendientes = pendingItemsLabel(state);
   if (wantsCart(message) && state.cart.length) {
-    notes.push(`Por ahora llevas 🧾\n${state.cart.map(cartLine).join("\n")}`);
+    notes.push(`Por ahora llevas 🧾\n${state.cart.map(cartLine).join("\n")}${pendientes}`);
     return finish("R8:ver_carrito");
   }
   // "¿qué llevo?" con el carrito vacío: se dice y se sigue con el paso (antes sumaba "no entendido" y derivaba).
   if (wantsCart(message) && !state.cart.length && !wantsMenu(message)) {
-    notes.push("Tu carrito está vacío por ahora 🙂");
+    notes.push(pendientes ? `Todavía no tienes nada confirmado 🙂${pendientes}` : "Tu carrito está vacío por ahora 🙂");
     return finish("R8:carrito_vacio");
   }
 
@@ -690,7 +712,16 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   }
 
   if (!answered && state.pendingChoice) {
-    // No eligió ni pidió nada nuevo: se repite la pregunta pendiente.
+    // No eligió ni pidió nada nuevo. NUNCA se repite el mismo mensaje palabra por palabra (es la queja
+    // del dueño): se pide perdón y se repregunta con lo que diferencia a las opciones.
+    if (state.pendingChoice.kind === "product") {
+      notes.push(
+        state.pendingChoice.clarify
+          ? "Perdona, sigo sin cacharte 🙈 Dímelo con tus palabras (o dime *menú* y vemos todo)"
+          : "Perdona, no te cacho 🙈"
+      );
+      state.pendingChoice = { ...state.pendingChoice, clarify: true };
+    }
     return finish("R4:eleccion_repetida", "choice");
   }
   if (!answered && state.stage === "confirm") {
@@ -786,6 +817,18 @@ function stageQuestionHint(state: BotState) {
 }
 
 // ─── Aplicar cambios ─────────────────────────────────────────────────────────
+
+/** Lo que el cliente pidió y todavía está esperando que elija ("un café", "el de queso verde"). */
+function pendingItemsLabel(state: BotState) {
+  // Solo lo que está en cola: lo que el bot pregunta en este mismo mensaje ya se ve abajo.
+  const pending = state.choiceQueue.map((item) => item.query).filter(Boolean);
+  return pending.length ? `\n\nY me falta preguntarte por: ${pending.join(", ")} 👇` : "";
+}
+
+/** ¿Esto parece el nombre de un producto y no una muletilla ("mejor", "para retirar")? */
+function looksLikeProductQuery(query: string) {
+  return meaningfulTokens(query).some((token) => token.length >= 4) && !onlyControlWords(query);
+}
 
 async function addSearchedItem(state: BotState, query: string, quantity: number, deps: BotDeps, notes: string[], strict = false) {
   // "hola", "ok", "gracias": sin palabras con significado no se busca ni se responde "no tenemos".
@@ -886,9 +929,18 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
     changed = true;
   }
 
+  // "quita uno de los bolones, con uno basta": el cliente quiere bajar la cantidad, no borrar el producto.
+  const units = parseRemovalUnits(message);
   for (const query of extraction.remove) {
     const item = findInCart(state.cart, query);
     if (item) {
+      const left = units?.keep != null ? units.keep : units?.remove != null ? item.quantity - units.remove : 0;
+      if (left > 0 && left < item.quantity) {
+        state.cart = setCartQuantity(state.cart, item.productId, left);
+        notes.push(`Listo, te dejo ${left} x ${prettyName(item.name)} ✅`);
+        changed = true;
+        continue;
+      }
       state.cart = removeFromCart(state.cart, item.productId);
       notes.push(`Quité ${prettyName(item.name)} ✅`);
     } else {
@@ -925,8 +977,26 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
   // Productos: el primero ambiguo abre una elección y los demás esperan en cola.
   for (const item of extraction.items) {
     if (state.pendingChoice) {
-      state.choiceQueue.push(item);
-      changed = true;
+      // Hay una pregunta abierta ("¿cuál café?", "¿en qué local?") y el cliente pide otra cosa.
+      // Si ese producto es UNO solo, se agrega ya mismo y se sigue con la pregunta: antes el bot
+      // repetía la lista tal cual y el producto aparecía recién un turno después (el carrito
+      // incluso se veía vacío en "qué llevo").
+      const held = state.pendingChoice;
+      state.pendingChoice = null;
+      const added = looksLikeProductQuery(item.query) && (await addSearchedItem(state, item.query, item.quantity, deps, notes, true));
+      state.pendingChoice = held;
+      if (added) {
+        changed = true;
+        continue;
+      }
+      // No es un producto exacto: solo se anota si de verdad se parece a algo del menú
+      // ("mmm no se jaja" no se anota ni se contesta "no tenemos").
+      const found = looksLikeProductQuery(item.query) ? await deps.search(item.query, state.branchId) : null;
+      if (found && (found.kind !== "none" || found.suggestions.length)) {
+        state.choiceQueue.push(item);
+        notes.push(`Anotado lo de "${item.query}" 📝 Apenas cerremos esto te pregunto por eso`);
+        changed = true;
+      }
       continue;
     }
     if (await addSearchedItem(state, item.query, item.quantity, deps, notes, strict)) changed = true;
@@ -969,6 +1039,13 @@ async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps
       return true;
     }
     case "name": {
+      // "me llamo Diego Reyes", "soy Ana": el cliente presenta su nombre hablando (antes quedaba
+      // como cliente "Me Llamo Diego Reyes").
+      const declared = extractDeclaredName(message);
+      if (declared) {
+        state.customerName = declared;
+        return true;
+      }
       // "Ana Pérez" es un nombre; "humita" también parece uno, por eso se descarta si es un producto.
       if (!looksLikeBareName(message) || (await deps.search(message, state.branchId)).kind === "exact") return false;
       state.customerName = titleCaseName(message);
@@ -981,6 +1058,11 @@ async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps
       return true;
     }
     case "email": {
+      const declaredInEmail = extractDeclaredName(message);
+      if (declaredInEmail) {
+        state.customerName = declaredInEmail;
+        return true;
+      }
       // Dio su nombre cuando se le pidió el correo ("Ana Pérez"): se toma como nombre del pedido.
       if (!looksLikeBareName(message) || (await deps.search(message, state.branchId)).kind === "exact") return false;
       state.customerName = titleCaseName(message);
@@ -1076,27 +1158,125 @@ async function revalidateCartForBranch(state: BotState, deps: BotDeps, notes: st
   notes.push(`En ${state.branchName} no hay disponible: ${missing.map((item) => prettyName(item.name)).join(", ")} 😕 Lo saqué de tu pedido`);
 }
 
+/**
+ * Desempate con IA ENTRE LAS OPCIONES MOSTRADAS. Devuelve la opción elegida o null.
+ * La IA no ve el catálogo ni escribe el mensaje: solo dice cuál de la lista quiso el cliente.
+ * Si no hay IA configurada, si falla o si devuelve algo fuera de la lista, se sigue con las reglas.
+ */
+async function chooseWithAi<T extends { name: string; price?: number }>(
+  message: string,
+  options: T[],
+  choice: { kind: "product"; query: string; label?: string } | { kind: "branch" },
+  deps: BotDeps
+): Promise<T | null> {
+  if (!deps.chooseOption || options.length < 2) return null;
+  const question = choice.kind === "branch" ? "¿En qué local lo retiras?" : choice.label ? `Opciones de ${choice.label}` : `¿Cuál ${choice.query} quieres?`;
+  try {
+    const index = await deps.chooseOption({ message, question, options: options.map((option) => ({ name: option.name, price: option.price })) });
+    return index && index >= 1 && index <= options.length ? options[index - 1] : null;
+  } catch (error) {
+    console.error("[whatsapp-bot] la IA no pudo desempatar la elección, sigo con reglas:", error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+/**
+ * ¿Las palabras que no son de la lista mostrada nombran OTRO producto del menú?
+ * "kero" no es nada (es "quiero" mal escrito) → la elección sigue en pie.
+ * "tigrillo" sí existe → el cliente cambió de idea y lo resuelve el router como pedido nuevo.
+ */
+async function namesAnotherProduct(words: string[], state: BotState, deps: BotDeps) {
+  const query = words.filter((word) => word.length >= 4).join(" ").trim();
+  if (!query) return false;
+  const result = await deps.search(query, state.branchId);
+  return result.kind === "exact" || result.kind === "ambiguous";
+}
+
 async function resolvePendingChoice(state: BotState, message: string, deps: BotDeps, notes: string[]): Promise<string | null> {
   const choice = state.pendingChoice!;
   switch (choice.kind) {
     case "product": {
+      const pick = pickChoice(message, choice.options);
+      // "no quiero el maduro", "el verde no": está descartando UNA opción, no toda la pregunta.
+      // Va antes del "no" suelto: si no, el bot descartaba todo y de paso ofrecía justo lo negado.
+      if (negatedPhrase(message) && (pick.kind === "one" || (pick.kind === "several" && pick.negated))) {
+        if (pick.kind === "one") {
+          state.pendingChoice = null;
+          notes.push(addCapped(state, pick.option, pick.quantity || choice.quantity));
+          return "producto";
+        }
+        state.pendingChoice = { ...choice, options: pick.options, clarify: true };
+        notes.push("Dale, ese lo descartamos 👍");
+        return "producto_descartado_parcial";
+      }
       if (isNo(message) || /\b(ninguno|ninguna|ninguno de esos|otro)\b/.test(normalizeText(message))) {
         state.pendingChoice = null;
         notes.push("Dale, no lo agrego 👍");
         return "producto_descartado";
       }
-      const picked = pickOption(message, choice.options);
-      if (!picked) return null;
-      state.pendingChoice = null;
-      notes.push(addCapped(state, picked, choice.quantity));
-      return "producto";
+      if (pick.kind === "one") {
+        state.pendingChoice = null;
+        // "cualquiera", "el que me recomiendes": se dice cuál se eligió para que nadie se lleve una sorpresa.
+        if (pick.any) notes.push("Dale, te pongo la que más sale 😋");
+        notes.push(addCapped(state, pick.option, pick.quantity || choice.quantity));
+        return "producto";
+      }
+      // "los dos", "uno de cada uno": se agregan TODAS las opciones mostradas, una unidad de cada una
+      // (o la cantidad que pidió: "2 de cada uno" no existe todavía, así que se usa la del pedido original).
+      if (pick.kind === "all") {
+        state.pendingChoice = null;
+        for (const option of pick.options) notes.push(addCapped(state, option, choice.quantity));
+        return "producto_todos";
+      }
+      // Sigue ambiguo ("el de queso" cuando todas son de queso): antes de repreguntar, la IA intenta
+      // desempatar entre ESTAS opciones (nunca inventa: solo devuelve cuál de la lista).
+      // Si el cliente nombró OTRA cosa, no se fuerza una elección de esta lista.
+      if (pick.kind === "none" && pick.reason === "foreign") {
+        // "mejor un tigrillo", "cambia, quiero una humita": cambió de idea. Se descarta la pregunta y el
+        // mensaje sigue por las demás reglas, que buscan el producto nuevo.
+        if (/^(?:mejor|cambia\w*|olvida\w*|prefiero otr[ao]|no importa)\b/.test(normalizeText(message))) {
+          state.pendingChoice = null;
+          notes.push("Dale, no lo agrego 👍");
+          return "producto_descartado";
+        }
+        // "kero el maduro": lo distintivo se entendió y lo raro ("kero") no es ningún producto del menú.
+        // Se toma la opción que el cliente sí nombró en vez de repetirle la lista igualita.
+        if (pick.best && !(await namesAnotherProduct(pick.words || [], state, deps))) {
+          state.pendingChoice = null;
+          notes.push(addCapped(state, pick.best, choice.quantity));
+          return "producto";
+        }
+        return null;
+      }
+      // "el verde no": se repregunta SOLO entre las que quedan, reconociendo lo que descartó.
+      if (pick.kind === "several" && pick.negated) {
+        state.pendingChoice = { ...choice, options: pick.options, clarify: true };
+        notes.push("Dale, ese lo descartamos 👍");
+        return "producto_descartado_parcial";
+      }
+      const candidates = pick.kind === "several" ? pick.options : choice.options;
+      // Con una negación de por medio ("el de queso no") la IA no desempata: podría agregar justo
+      // lo que el cliente descartó. Se prefiere repreguntar.
+      const byAi = negatedPhrase(message) ? null : await chooseWithAi(message, candidates, choice, deps);
+      if (byAi) {
+        state.pendingChoice = null;
+        notes.push(addCapped(state, byAi, choice.quantity));
+        return "producto_ia";
+      }
+      if (pick.kind === "several") {
+        // Se repregunta mostrando SOLO lo que las diferencia.
+        state.pendingChoice = { ...choice, options: candidates, clarify: true };
+        return "producto_ambiguo";
+      }
+      return null;
     }
     case "reorder": {
       if (isNo(message)) {
         state.pendingChoice = null;
         return "repetir_no";
       }
-      if (!isYes(message) && !wantsReorder(message)) return null;
+      // "sí, lo mismo", "dale repite", "el mismo de siempre", "ya, repítelo".
+      if (!isYes(message) && !wantsReorder(message) && !/\b(repite\w*|repetir|repitelo|lo mismo|el mismo|igual que antes|igualito)\b/.test(normalizeText(message))) return null;
       state.pendingChoice = null;
       const available = new Map((await deps.catalog(state.branchId)).map((product) => [product.productId, product]));
       const missing: string[] = [];
@@ -1117,7 +1297,8 @@ async function resolvePendingChoice(state: BotState, message: string, deps: BotD
         state.pendingChoice = null;
         return "misma_direccion_no";
       }
-      if (!isYes(message)) return null;
+      // "sí", "la misma de siempre", "sí la de antes", "a la misma": todas dicen lo mismo.
+      if (!isYes(message) && !isAddressReference(message)) return null;
       state.pendingChoice = null;
       state.deliveryAddress = choice.address;
       await applyLocation(state, choice.coords, choice.mapsUrl, deps, notes);
@@ -1130,9 +1311,33 @@ async function resolvePendingChoice(state: BotState, message: string, deps: BotD
         state.pendingChoice = null;
         return null;
       }
-      // "2", "Kennedy" o "retiro en Boloncity Kennedy".
-      const picked = pickOption(message, choice.options) || matchBranchInMessage(message, choice.options);
-      if (!picked) return null;
+      // "el de la kennedy", "urdesa", "el primero", "2" o "retiro en Boloncity Kennedy".
+      const byRules = pickChoice(message, choice.options);
+      // "urdesa no": se descarta ese local y se repregunta con los que quedan. Nunca se fija el
+      // que el cliente acaba de rechazar (iría a buscar su pedido a la tienda equivocada).
+      if (byRules.kind === "several" && byRules.negated) {
+        state.pendingChoice = { kind: "branch", options: byRules.options };
+        notes.push("Dale, ese local lo descartamos 👍");
+        return "sucursal_descartada";
+      }
+      // En los locales "cualquiera" no alcanza: hay que saber a dónde va a ir de verdad.
+      if (byRules.kind === "one" && byRules.any) {
+        notes.push("Para el retiro sí necesito saber a cuál vas 🙏");
+        return "sucursal_cualquiera";
+      }
+      const picked =
+        byRules.kind === "one"
+          ? byRules.option
+          : (!negatedPhrase(message) && matchBranchInMessage(message, choice.options)) ||
+            (negatedPhrase(message) ? null : await chooseWithAi(message, choice.options, { kind: "branch" }, deps));
+      if (!picked) {
+        // "el más cercano": sin la ubicación del cliente no se puede saber cuál le queda más cerca.
+        if (asksForNearest(message)) {
+          notes.push("Para saber cuál te queda más cerca, mándame tu ubicación desde el clip 📎 o dime por qué sector andas 📍");
+          return "sucursal_cercana";
+        }
+        return null;
+      }
       await pickBranch(state, picked, deps, notes);
       return "sucursal";
     }
@@ -1283,19 +1488,25 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
   if (choice) {
     state.stage = "choosing";
     if (choice.kind === "product") {
+      // El cliente ya dijo algo que varias comparten ("el de queso"): se repregunta mostrando SOLO
+      // lo que las diferencia, sin pedirle que responda con un número.
+      if (choice.clarify) {
+        const differences = choice.options.map((option, index) => `${index + 1}. ${prettyName(distinctiveLabel(option, choice.options, index))} ${money(option.price)}`).join("\n");
+        return { question: `Uy, tengo varias parecidas 😅 ¿cuál prefieres?\n${differences}\n\nDime cuál y te la agrego`, route: "choice" };
+      }
       const ask = choice.label ? `Estas son nuestras opciones de ${choice.label} 😋` : `¿Cuál ${choice.query} quieres?`;
-      return { question: `${ask}\n${optionsList(choice.options)}\n\nRespóndeme con el número nomás`, route: "choice" };
+      return { question: `${ask}\n${optionsList(choice.options)}\n\nDime cuál prefieres 😊`, route: "choice" };
     }
     if (choice.kind === "reorder") {
       return {
-        question: `Tu último pedido (${choice.order.orderNumber}) fue:\n${describeLastOrder(choice.order)}\n\n¿Te lo repito? Responde *sí* o dime qué se te antoja hoy 🫓`,
+        question: `Tu último pedido (${choice.order.orderNumber}) fue:\n${describeLastOrder(choice.order)}\n\n¿Te lo repito? Dime que sí o cuéntame qué se te antoja hoy 🫓`,
         route: "choice",
       };
     }
     if (choice.kind === "reuse_location") {
-      return { question: `¿Te lo mandamos a la misma dirección de la vez pasada? 📍\n${choice.address}\n\nResponde *sí* o mándame otra ubicación`, route: "choice" };
+      return { question: `¿Te lo mandamos a la misma dirección de la vez pasada? 📍\n${choice.address}\n\nDime si te sirve esa misma o mándame otra ubicación`, route: "choice" };
     }
-    return { question: `¿En qué local lo retiras? 🏠\n${optionsList(choice.options)}\n\nRespóndeme con el número nomás`, route: "choice" };
+    return { question: `¿En qué local lo retiras? 🏠\n${optionsList(choice.options)}\n\nDime cuál te queda mejor 😊`, route: "choice" };
   }
 
   if (state.stage === "ordered") return { question: "" };
@@ -1318,7 +1529,7 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
 
   if (!state.deliveryType) {
     state.stage = "delivery_type";
-    return { question: "¿Te lo mandamos a domicilio o lo retiras en el local? 🛵\n1. Delivery\n2. Retiro en local" };
+    return { question: "¿Te lo mandamos a domicilio o lo retiras en el local? 🛵\n1. Delivery\n2. Retiro en local\n\nDime cuál te acomoda 😊" };
   }
 
   if (state.deliveryType === "delivery" && !state.deliveryCoordinates) {
@@ -1371,7 +1582,7 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
   if (!state.paymentMethod) {
     state.stage = "payment";
     const cashLabel = state.deliveryType === "pickup" ? "Efectivo al retirar" : "Efectivo al motorizado";
-    return { question: `¿Cómo prefieres pagar?\n1. Tarjeta 💳 (te mando un link de pago)\n2. ${cashLabel} 💵` };
+    return { question: `¿Cómo prefieres pagar?\n1. Tarjeta 💳 (te mando un link de pago)\n2. ${cashLabel} 💵\n\nDime cómo te queda mejor 😊` };
   }
 
   if (state.billingPreference === "invoice" && !state.billingDocNumber) {
