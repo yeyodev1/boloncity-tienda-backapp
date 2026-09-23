@@ -978,6 +978,15 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     notes.push("No vi ningún cambio en tu pedido, te lo dejo igualito 👇");
     return finish("R7:resumen_sin_cambios", "summary");
   }
+  // Una PREGUNTA que no es del negocio ("¿tienen wifi?", "¿hacen pedidos para 20 personas?") no se resuelve
+  // repitiendo "¿qué te gustaría pedir?": se pasa el contacto del equipo y se sigue tomando el pedido.
+  if (!answered && isQuestion(message) && !faqTopic(message) && state.stage !== "confirm" && !state.pendingChoice) {
+    // Sin pasar a soporte: este bot toma pedidos y solo los RECLAMOS van a una persona (R2).
+    notes.push("Uy, de eso no tengo info por aquí 🙈 Lo mío son los pedidos: dime qué se te antoja y lo armamos 🫓");
+    state.misunderstood = 0;
+    return finish("R11:fuera_de_alcance");
+  }
+
   if (!answered) {
     // Con el local cerrado no hay nada que entender: se repite solo el aviso de horario.
     // Si ya se dijo algo ("no tenemos X en el menú"), no se apila otra disculpa encima: suena a bot roto.
@@ -1267,6 +1276,11 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
       }
       state.cart = removeFromCart(state.cart, item.productId);
       notes.push(`Quité ${prettyName(item.name)} ✅`);
+    } else if (state.pendingChoice?.kind === "product" && sameProductQuery(state.pendingChoice.query || "", query)) {
+      // "quita el bolón" mientras el bot pregunta CUÁL bolón: no está en el carrito todavía, está a medias.
+      // Antes respondía "No encontré bolon en tu pedido" y volvía a preguntar lo mismo.
+      state.pendingChoice = null;
+      notes.push(`Dale, no agrego ${prettyName(query)} 👍`);
     } else {
       notes.push(`No encontré "${query}" en tu pedido 🤔`);
     }
