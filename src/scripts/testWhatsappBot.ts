@@ -2035,6 +2035,14 @@ test("PAGO-13: una venta con id pero SIN aprobar deja el pedido pendiente (nunca
   assert.equal(aprobada.next === "confirm" && aprobada.transactionId, 12345);
 });
 
+test("con el local cerrado, 'confirmo' explica que primero hay que elegir", async () => {
+  const { deps, created } = fakeDeps({ closed: true });
+  const { state, last } = await chat(deps, ["una humita", "retiro", "1", "confirmo"]);
+  assert.equal(state.stage, "closed");
+  assert.match(last.reply, /primero dime cómo lo quieres/i, last.reply);
+  assert.equal(created.length, 0, "no se crea la orden con el local cerrado");
+});
+
 (async () => {
   let failed = 0;
   for (const [name, run] of tests) {
