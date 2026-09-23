@@ -792,6 +792,12 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
       return { state, reply: notes.join("\n\n"), route: "checkout", intent: "orden_creada", step: state.stage, decision: "R7:ya_confirmado", orderNumber: state.lastOrderNumber, paymentLink: state.lastPaymentLink };
     }
     if (state.stage === "confirm") return confirmOrder(state, deps);
+    // Con el local cerrado el pedido no puede salir hasta que elija: repetir la pregunta tal cual
+    // dejaba al cliente dando vueltas sin entender qué le faltaba.
+    if (state.stage === "closed") {
+      notes.push("Para enviarlo primero dime cómo lo quieres 👇");
+      return finish("R7:falta_elegir_horario");
+    }
     // Dijo "confirmo" antes de tiempo: se le pide lo que falta.
     return finish("R7:confirmo_incompleto");
   }
@@ -857,12 +863,6 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (state.stage === "closed") {
     const decided = await handleClosedReply(state, message, deps, notes);
     if (decided) return finish(`R10:${decided}`);
-    // "confirmo" con el local cerrado: el pedido no puede salir hasta que elija, y repetir la misma
-    // pregunta tal cual dejaba al cliente dando vueltas sin entender qué le faltaba.
-    if (classifyConfirmReply(message) === "confirm" || wantsConfirm(message)) {
-      notes.push("Para enviarlo primero dime cómo lo quieres 👇");
-      return finish("R7:falta_elegir_horario");
-    }
   }
 
   // Saludos y cortesías ("hola", "buenas tardes", "gracias", "👍"): se responde con el paso actual.
