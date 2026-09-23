@@ -942,6 +942,9 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
   }
 }
 
+/** Nunca se responde en blanco: si un turno no produjo texto, al menos se le pregunta al cliente. */
+export const FALLBACK_MESSAGE = "¿Qué te gustaría pedir hoy? 🫓 Escríbeme algo como \"2 bolones mixtos de verde y un café\", o pídeme el *menú* si quieres ver todo";
+
 const NO_PHONE_MESSAGE = `No logré leer tu número de WhatsApp 🙏 Escríbenos al ${SUPPORT_PHONE} y te ayudamos enseguida`;
 const ERROR_MESSAGE = "Dame un segundito 🙏 Se me cruzaron los cables con ese mensaje, ¿me lo repites?";
 
@@ -957,7 +960,8 @@ function toBotResponse(result: TurnResult | null) {
     intencion: result.intent,
     telefonoSoporte: SUPPORT_PHONE,
     route: publicRoute(result.route),
-    message: result.reply,
+    // Nunca en blanco: si un turno no produjo texto, igual se le responde algo útil al cliente.
+    message: result.reply || FALLBACK_MESSAGE,
     step: result.step,
     decision: result.decision,
     readyToCheckout: result.step === "confirm",
@@ -997,7 +1001,16 @@ export async function whatsappBotRouter(req: Request, res: Response) {
     // "reiniciatodo" siempre va a la conversación, que es la que borra la sesión.
     const route = isResetKeyword(message) ? "conversation" : classifyRoute(state, message, Boolean(readLocation(body, message)) || readEvent(body) === "location");
     console.log(`[whatsapp-bot] router ${phone} → ${route} (paso ${state?.stage || "nuevo"})`);
-    res.status(200).json({ success: true, route, intencion: ROUTE_INTENT[route], step: state?.stage || "idle", telefonoSoporte: SUPPORT_PHONE, message: "" });
+    // `message` ya NO va vacío: si el flow lo envía al cliente, este endpoint no debe dejarlo sin respuesta.
+    // El flow recomendado (un solo nodo a /brain o /assistant) sigue funcionando igual.
+    res.status(200).json({
+      success: true,
+      route,
+      intencion: ROUTE_INTENT[route],
+      step: state?.stage || "idle",
+      telefonoSoporte: SUPPORT_PHONE,
+      message: FALLBACK_MESSAGE,
+    });
   } catch (error) {
     console.error("[whatsapp-bot] router falló", error);
     // Ante la duda, a la conversación: ahí el cliente siempre recibe una respuesta.
@@ -1021,7 +1034,9 @@ export async function whatsappBotAssistant(req: Request, res: Response) {
     const result = await runTurn({ ...req.query, ...req.body }, { endpoint: "assistant" });
     res.status(200).json({
       success: Boolean(result),
-      message: result?.reply || NO_PHONE_MESSAGE,
+      // Con teléfono pero sin texto (el nodo de {history} a veces llega vacío) se pregunta, no se dice
+      // "no logré leer tu número": ese no era el problema y confundía al cliente.
+      message: result ? result.reply || FALLBACK_MESSAGE : NO_PHONE_MESSAGE,
       intencion: result?.intent || "conversar",
       telefonoSoporte: SUPPORT_PHONE,
       _intent: result?.intent || "conversar",
