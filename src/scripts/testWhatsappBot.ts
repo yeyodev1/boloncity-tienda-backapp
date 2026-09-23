@@ -2080,6 +2080,16 @@ test("preguntas frecuentes: horarios, dirección, envío, promos, factura y pago
   assert.equal(state.billingDocNumber, "0912345675");
 });
 
+test("una pregunta no elige forma de pago ni tipo de entrega", async () => {
+  const { deps } = fakeDeps();
+  const preguntas = await chat(deps, ["una humita", "¿puedo pagar mitad en efectivo y mitad con tarjeta?", "¿hacen delivery a Samborondón?"]);
+  assert.equal(preguntas.state.paymentMethod, undefined, "no se fija el pago por preguntar");
+  assert.equal(preguntas.state.deliveryType, undefined, "no se fija la entrega por preguntar");
+  // En el paso donde el bot SÍ pregunta eso, responder con una pregunta sigue eligiendo.
+  const { state } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "¿con tarjeta?"]);
+  assert.equal(state.paymentMethod, "card");
+});
+
 (async () => {
   let failed = 0;
   for (const [name, run] of tests) {
