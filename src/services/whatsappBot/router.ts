@@ -1187,6 +1187,13 @@ async function processChoiceQueue(state: BotState, deps: BotDeps, notes: string[
 
 async function applyExtraction(state: BotState, message: string, extraction: Extraction, deps: BotDeps, notes: string[], strict = false) {
   let changed = false;
+  // Una PREGUNTA no elige nada: "¿puedo pagar mitad en efectivo y mitad con tarjeta?" dejaba el pedido en
+  // tarjeta, y "¿hacen delivery a Samborondón?" lo pasaba a domicilio. Salvo en el paso donde el bot
+  // justo pregunta eso ("¿cómo prefieres pagar?" → "¿con tarjeta?" sí elige).
+  if (isQuestion(message)) {
+    if (state.stage !== "payment") extraction.paymentMethod = undefined;
+    if (state.stage !== "delivery_type") extraction.deliveryType = undefined;
+  }
   // Datos adelantados (lo que el bot todavía no preguntó): se guardan y se confirman con un acuse corto
   // ("Anoté: efectivo ✅") para que el cliente sepa que no hace falta repetirlos.
   const before = { paymentMethod: state.paymentMethod, customerName: state.customerName, customerEmail: state.customerEmail, billingDocNumber: state.billingDocNumber };
@@ -1332,6 +1339,9 @@ async function applyExtraction(state: BotState, message: string, extraction: Ext
  * "2 humitas para llevar" en el paso de entrega trae productos y va por la extracción completa.
  */
 async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps, notes: string[]) {
+  // Una pregunta del negocio no es la respuesta al paso: "¿hacen delivery a Samborondón?" en el paso de
+  // entrega pasaba el pedido a domicilio sin que el cliente lo eligiera. La contesta R9 y se vuelve a preguntar.
+  if (isQuestion(message) && faqTopic(message)) return false;
   const text = normalizeText(message);
   const short = text.split(" ").length <= 4;
   switch (state.stage) {
@@ -1875,6 +1885,9 @@ async function answerFaq(state: BotState, message: string, deps: BotDeps): Promi
     return `Ahorita no tenemos promos activas 🙂 Mira el menú con fotos aquí: ${deps.menuUrl}`;
   }
 
+  if (topic === "cobertura") {
+    return "Llegamos a buena parte de Guayaquil 🛵 Mándame tu ubicación desde el clip 📎 y te digo al toque si llegamos y cuánto sale el envío 📍";
+  }
   if (topic === "factura") return "Sí, hacemos factura 🧾 Al cerrar el pedido te pido la cédula o el RUC y el nombre";
   if (topic === "pagos") return "Puedes pagar con tarjeta 💳 (te mando un link) o en efectivo 💵 al recibirlo. Transferencias por aquí no recibimos 🙏";
   if (topic === "llamada") return `Para llamadas escríbele al ${deps.supportPhone} 👋 Por aquí yo te tomo el pedido cuando quieras`;

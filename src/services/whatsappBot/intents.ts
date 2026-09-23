@@ -243,7 +243,7 @@ export const wantsReorder = test(
 export const wantsMenu = test(/\b(menu|carta|que (\w+ ){0,2}(tienen|venden|hay)|que (tienen|venden|hay)( \w+){0,3}|catalogo|productos|opciones|recomienda|recomiendas|recomendacion)\b/);
 
 // "ver carrito" / "carrito" solos también: "agrega al carrito un café" NO (ese agrega un producto).
-export const wantsCart = test(/\b(^(?:ver |mostrar |muestrame )?(?:el |mi )?carrito$|mi carrito|que llevo|que tengo|resumen|mi pedido actual|como va (mi )?pedido|ver (el )?pedido|total)\b/);
+export const wantsCart = test(/\b(^(?:ver |mostrar |muestrame )?(?:el |mi )?carrito$|mi carrito|que llevo|que tengo|resumen|mi pedido actual|como va (mi )?pedido|ver (el )?pedido|total|cuanto es todo|cuanto seria todo|cuanto va|cuanto llevo|cuanto me sale todo)\b/);
 
 export const wantsClearCart = test(/\b(vaciar|borra(r)? todo|empezar de nuevo|desde cero|cancela(r)? (todo|el pedido|mi pedido|la orden|mi orden)|^cancela(r|lo)?$|ya no quiero)\b/);
 
@@ -610,16 +610,19 @@ export const asksOpeningHours = test(
  * ("¿hasta qué hora abren?", "¿cuánto cuesta el envío?", "¿hacen factura?") y antes se le respondía
  * "¿qué te gustaría pedir?" sin contestarle. Todas se responden con datos reales (Mongo), nunca inventados.
  */
-export type FaqTopic = "horario" | "direccion" | "envio" | "promos" | "factura" | "pagos" | "llamada" | null;
+export type FaqTopic = "horario" | "direccion" | "envio" | "cobertura" | "promos" | "factura" | "pagos" | "llamada" | null;
 
 const FAQ_PATTERNS: Array<[FaqTopic, RegExp]> = [
   ["horario", /\b(que|cual|a que|hasta que|desde que) hora\w*\b|\bhorario\w*\b|\b(estan|esta|siguen) abiert\w*\b|\b(cierran|abren|atienden)\b/],
   ["direccion", /\b(direccion|ubicacion|donde (queda|esta|estan)|como llego|por donde)\b/],
+  ["cobertura", /\b(hacen|tienen|llegan con|llega el|hay) (delivery|domicilio|entrega)\b|\b(llegan|llega|reparten) (hasta |a )\w+/],
   ["envio", /\b(cuanto|que) (cuesta|vale|sale|es) (el |la )?(envio|delivery|domicilio)\b|\bcosto del (envio|delivery)\b|\bcuanto (cobran|es) (por )?(el )?(envio|delivery)\b/],
   ["promos", /\b(promo|promos|promocion\w*|descuento\w*|oferta\w*|2x1)\b/],
   ["factura", /\b(factura|facturan|facturacion|ruc|comprobante)\b/],
   // "aceptan" solo cuenta si habla de un medio de pago: "¿aceptan cupones?" no es esta pregunta.
-  ["pagos", /\b(aceptan|reciben|puedo pagar con|pagar con)\s+(tarjeta|efectivo|transferencia|deuna|debito|credito|dinero)\b|\b(formas|metodos|medios) de pago\b|\bcomo puedo pagar\b/],
+  // "aceptan" solo con un medio de pago detrás; "pagar … tarjeta/efectivo" en cualquier orden ("¿puedo pagar
+  // mitad en efectivo y mitad con tarjeta?", que además fijaba "tarjeta" sin que el cliente la eligiera).
+  ["pagos", /\b(aceptan|reciben)\s+(pagos?\s+)?(con\s+)?(tarjeta|efectivo|transferencia|deuna|debito|credito)\b|\bpag\w*\b[^?]*\b(tarjeta|efectivo|transferencia|deuna|debito|credito)\b|\b(formas|metodos|medios) de pago\b|\bcomo puedo pagar\b/],
   ["llamada", /\b(me (pueden )?llam\w*|llamar\w*|una llamada|telefono de contacto|numero de contacto)\b/],
 ];
 
