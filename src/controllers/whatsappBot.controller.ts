@@ -648,15 +648,22 @@ function defaultDeps(): BotDeps {
     lastOrder: findLastOrder,
     resolveMapsUrl: async (url) => parseMapsUrl(url) || (await resolveMapsCoordinates(url, undefined, env.GOOGLE_MAPS_API_KEY)),
     quoteLocation: quoteBotLocation,
-    pickupBranches: async () =>
-      (await activeBranchesQuery().sort({ name: 1 })).map((branch) => ({
+    pickupBranches: async (near?: { lat: number; lng: number }) => {
+      const list = (await activeBranchesQuery().sort({ name: 1 })).map((branch) => ({
         branchId: String(branch._id),
         name: branch.name,
         address: branch.address || undefined,
         // El bot marca cuáles están abiertos y ofrece programar en los cerrados.
         open: isOpen(branch),
         nextOpening: toOpeningWindow(getBranchAvailability(branch).nextOpening, branch.timezone),
-      })),
+        distanceKm:
+          near && branch.coordinates?.lat != null && branch.coordinates?.lng != null
+            ? distanceKm(near, { lat: branch.coordinates.lat, lng: branch.coordinates.lng })
+            : undefined,
+      }));
+      // Con una ubicación, primero las más cercanas: así el bot puede decir cuál local le queda mejor.
+      return near ? [...list].sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity)) : list;
+    },
     branchStatus,
     quote: quoteState,
     createOrder: createOrderWithLock,
