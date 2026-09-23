@@ -2140,6 +2140,18 @@ test("el bot SIEMPRE responde algo: ningún turno puede salir en blanco", async 
   assert.ok(FALLBACK_MESSAGE.trim().length > 0);
 });
 
+test("después del pedido, un '?' o un emoji no responden '¡Gracias a ti!'", async () => {
+  const { deps } = fakeDeps();
+  const { state } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "tarjeta", "confirmo"]);
+  for (const message of ["?", "😀", "👋"]) {
+    const result = await handleTurn(state, { message }, deps);
+    assert.ok(result.reply.trim().length > 0, message);
+    assert.doesNotMatch(result.reply, /Gracias a ti/i, `${message} no es un agradecimiento`);
+  }
+  const gracias = await handleTurn(state, { message: "gracias" }, deps);
+  assert.match(gracias.reply, /Gracias a ti/i);
+});
+
 (async () => {
   let failed = 0;
   for (const [name, run] of tests) {
