@@ -857,6 +857,12 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (state.stage === "closed") {
     const decided = await handleClosedReply(state, message, deps, notes);
     if (decided) return finish(`R10:${decided}`);
+    // "confirmo" con el local cerrado: el pedido no puede salir hasta que elija, y repetir la misma
+    // pregunta tal cual dejaba al cliente dando vueltas sin entender qué le faltaba.
+    if (classifyConfirmReply(message) === "confirm" || wantsConfirm(message)) {
+      notes.push("Para enviarlo primero dime cómo lo quieres 👇");
+      return finish("R7:falta_elegir_horario");
+    }
   }
 
   // Saludos y cortesías ("hola", "buenas tardes", "gracias", "👍"): se responde con el paso actual.

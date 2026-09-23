@@ -115,7 +115,7 @@ export async function settleCardPaymentByOrderNumber(orderNumber: string): Promi
   let payphoneResult: any;
   try {
     // La fase de confirmación obligatoria (evita el auto-reverso de los 5 minutos).
-    payphoneResult = await confirmPayphoneTransaction(decision.transactionId, clientTxId);
+    payphoneResult = await confirmPayphoneTransaction(decision.transactionId, clientTxId, order.total);
   } catch (error) {
     return { outcome: "error", order, detail: error instanceof Error ? error.message : "No se pudo confirmar con PayPhone" };
   }
