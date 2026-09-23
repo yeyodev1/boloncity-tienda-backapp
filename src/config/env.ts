@@ -20,6 +20,14 @@ export const env = {
   JWT_SECRET: required("JWT_SECRET"),
   PAYPHONE_TOKEN: optional("PAYPHONE_TOKEN", ""),
   PAYPHONE_STORE_ID: optional("PAYPHONE_STORE_ID", ""),
+  /**
+   * MODO PRUEBAS SOLO PARA EL BOT DE WHATSAPP. Con BOT_PAYPHONE_TEST=1 los pedidos del bot se cobran con la
+   * aplicación de PRUEBAS de PayPhone (aprueba sin cobrar de verdad); la WEB sigue con las credenciales de
+   * producción. Si falta el token de prueba, el interruptor se ignora y todo sigue como siempre.
+   */
+  PAYPHONE_TEST_TOKEN: optional("PAYPHONE_TEST_TOKEN", ""),
+  PAYPHONE_TEST_STORE_ID: optional("PAYPHONE_TEST_STORE_ID", ""),
+  BOT_PAYPHONE_TEST: optional("BOT_PAYPHONE_TEST", ""),
   RESEND_API_KEY: optional("RESEND_API_KEY", ""),
   RESEND_FROM_EMAIL: optional("RESEND_FROM_EMAIL", "Boloncity <team@boloncity.com>"),
   PICKER_MASTER_KEY: optional("PICKER_MASTER_KEY", ""),

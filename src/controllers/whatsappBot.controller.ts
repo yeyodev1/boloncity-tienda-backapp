@@ -12,6 +12,7 @@ import { bookPickerForOrder, reportPurchaseToMeta, sendOrderToRunfood } from "./
 import { getBranchAvailability, getBranchPayphoneStoreId, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
 import { quoteDelivery } from "../services/deliveryQuote.service";
 import { calculateEarnedPoints } from "../services/points.service";
+import { botPayphoneTestOn } from "../services/payphone.service";
 import { sendEmail } from "../services/resend.service";
 import { getOrderDetailUrl, getOrderStatusEmailHtml } from "../services/email-templates";
 import { distanceKm } from "../utils/haversine";
@@ -509,7 +510,14 @@ async function createBotOrder(state: BotState) {
       : {}),
     source: "whatsapp",
     audit: [{ action: "created", details: `Pedido creado desde WhatsApp · Sucursal: ${branch.name}`, toValue: "pending", timestamp: new Date() }],
-    payphone: { clientTransactionId: `BOL-${Date.now()}`, storeId: getBranchPayphoneStoreId(branch.payphone) },
+    payphone: {
+      clientTransactionId: `BOL-${Date.now()}`,
+      // En modo PRUEBAS manda el storeId de la app de pruebas (si se configuró uno distinto).
+      storeId: botPayphoneTestOn() && env.PAYPHONE_TEST_STORE_ID ? env.PAYPHONE_TEST_STORE_ID : getBranchPayphoneStoreId(branch.payphone),
+      // Queda grabado con qué app se cobra: así se confirma con ese mismo token aunque luego se apague
+      // el interruptor, y la página de pago sabe que debe abrir la cajita de PRUEBAS.
+      mode: botPayphoneTestOn() ? "test" : "",
+    },
   });
 
   // Efectivo: exactamente lo que hace createOrder. Tarjeta: todo esto ocurre en confirmOrder al pagar;

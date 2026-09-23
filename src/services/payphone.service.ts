@@ -19,14 +19,25 @@ function simulatedTransactionId(clientTxId: string) {
 }
 
 /** `simulatedAmount` (centavos) solo se usa con la simulación encendida: es el total del pedido a aprobar. */
-export async function confirmPayphoneTransaction(id: number, clientTxId: string, simulatedAmount?: number) {
+/** Token con el que se cobra: el de PRUEBAS cuando la orden se creó en modo test, si no el de siempre. */
+export function payphoneTokenFor(mode?: string) {
+  return mode === "test" && env.PAYPHONE_TEST_TOKEN ? env.PAYPHONE_TEST_TOKEN : env.PAYPHONE_TOKEN;
+}
+
+/** ¿El bot debe cobrar en modo PRUEBAS? Necesita el interruptor Y el token de prueba cargado. */
+export function botPayphoneTestOn() {
+  return process.env.BOT_PAYPHONE_TEST === "1" && Boolean(env.PAYPHONE_TEST_TOKEN);
+}
+
+export async function confirmPayphoneTransaction(id: number, clientTxId: string, simulatedAmount?: number, mode?: string) {
   if (payphoneSimulationOn()) {
     const amount = Number(simulatedAmount) || 0;
     console.warn(`[payphone] SIMULACIÓN: se aprueba ${clientTxId} por ${amount} centavos sin llamar a PayPhone`);
     return { transactionId: id, clientTransactionId: clientTxId, transactionStatus: "Approved", statusCode: 3, amount, authorizationCode: "SIMULADO", cardBrand: "VISA", lastDigits: "0000" };
   }
 
-  if (!env.PAYPHONE_TOKEN) {
+  const token = payphoneTokenFor(mode);
+  if (!token) {
     throw new Error("PAYPHONE_TOKEN is not configured");
   }
 
@@ -38,7 +49,7 @@ export async function confirmPayphoneTransaction(id: number, clientTxId: string,
     },
     {
       headers: {
-        Authorization: `Bearer ${env.PAYPHONE_TOKEN}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
     }
@@ -146,12 +157,13 @@ export type PayphoneSaleLookup =
  *
  * No lanza nunca: cualquier 4xx, cuerpo raro, timeout o caida de red devuelve `found: false`.
  */
-export async function getPayphoneSaleByClientTxId(clientTransactionId: string): Promise<PayphoneSaleLookup> {
+export async function getPayphoneSaleByClientTxId(clientTransactionId: string, mode?: string): Promise<PayphoneSaleLookup> {
   if (payphoneSimulationOn()) {
     console.warn(`[payphone] SIMULACIÓN: ${clientTransactionId} se responde como aprobada`);
     return { found: true, statusCode: 3, transactionStatus: "Approved", transactionId: simulatedTransactionId(clientTransactionId) };
   }
-  if (!env.PAYPHONE_TOKEN) return { found: false, error: "PAYPHONE_TOKEN is not configured" };
+  const lookupToken = payphoneTokenFor(mode);
+  if (!lookupToken) return { found: false, error: "PAYPHONE_TOKEN is not configured" };
   if (!clientTransactionId) return { found: false, error: "Sin clientTransactionId" };
 
   try {
@@ -159,7 +171,7 @@ export async function getPayphoneSaleByClientTxId(clientTransactionId: string): 
       `https://pay.payphonetodoesposible.com/api/Sale/client/${encodeURIComponent(clientTransactionId)}`,
       {
         headers: {
-          Authorization: `Bearer ${env.PAYPHONE_TOKEN}`,
+          Authorization: `Bearer ${lookupToken}`,
           "Content-Type": "application/json",
         },
         // Mismo timeout que el resto de integraciones del repo (Picker): un turno de WhatsApp
