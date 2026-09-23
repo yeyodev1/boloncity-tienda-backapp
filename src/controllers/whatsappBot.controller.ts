@@ -20,8 +20,9 @@ import { normalizePhone } from "../utils/phone";
 import { isAvailableAt } from "../utils/productAvailability";
 import { loadCatalog, searchCatalog } from "../services/whatsappBot/catalog";
 import { aiChooseOption, aiExtract } from "../services/whatsappBot/extractor";
-import { classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
-import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, LocationQuote, nextStep, OpeningWindow, publicRoute, TurnResult } from "../services/whatsappBot/router";
+import { claimsPaid, classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
+import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, LocationQuote, nextStep, OpeningWindow, PaymentSettlement, publicRoute, TurnResult } from "../services/whatsappBot/router";
+import { settleCardPaymentByOrderNumber } from "../services/cardPaymentSettlement.service";
 
 /** Las pruebas verifican con esto que ninguna ruta interna se escape hacia BuilderBot. */
 export const botResponseRoute = publicRoute;
@@ -609,6 +610,29 @@ async function createOrderWithLock(state: BotState) {
   }
 }
 
+/**
+ * "PAGADO" DEL CLIENTE → estado real del pago.
+ *
+ * Llama al caso de uso compartido (cardPaymentSettlement.service.ts), que consulta PayPhone por el
+ * clientTransactionId, ejecuta la fase de confirmación obligatoria y, si está cobrado, cierra el
+ * pedido por el MISMO camino que el regreso del navegador (settleApprovedCardOrder): pagada, cocina
+ * (RunFood), Picker con CARD, Meta, puntos y correo. Idempotente.
+ */
+async function settleBotPayment(orderNumber: string): Promise<PaymentSettlement> {
+  const result = await settleCardPaymentByOrderNumber(orderNumber);
+  const order: any = result.order;
+  console.log(`[whatsapp-bot] pagado ${orderNumber} → ${result.outcome}${result.detail ? ` (${result.detail})` : ""}`);
+  return {
+    outcome: result.outcome,
+    total: order ? order.total / 100 : undefined,
+    // El seguimiento en vivo existe recién cuando Picker acepta la reserva (delivery inmediato).
+    trackingUrl: order?.picker?.smrURL || undefined,
+    paymentLink: order && order.paymentMethod === "card" ? botPaymentLink(order) : undefined,
+    deliveryType: order?.deliveryType,
+    branchName: order?.branch?.name || undefined,
+  };
+}
+
 /** Dependencias reales. `overrides` permite probar en vivo sin crear órdenes (src/scripts/liveWhatsappBot.ts). */
 export function buildDeps(overrides: Partial<BotDeps> = {}): BotDeps {
   return {
@@ -636,6 +660,7 @@ function defaultDeps(): BotDeps {
     branchStatus,
     quote: quoteState,
     createOrder: createOrderWithLock,
+    settlePayment: settleBotPayment,
     trackOrder: async (phone, message) => (await trackOrderForPhone(phone, message)).message,
     extract: aiExtract,
     chooseOption: aiChooseOption,
@@ -1034,7 +1059,10 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
     const session: any = await WhatsAppSession.findOne({ phone }).lean();
     const state = session?.state as BotState | undefined;
     if (!session || !state) return res.status(200).json({ ...base, success: false, message: "Todavía no tengo tu pedido 🙂 Dime qué se te antoja y lo armamos" });
-    if (state.stage === "ordered" && state.lastOrderNumber) {
+    const claimedPaid = state.stage === "ordered" && Boolean(state.lastOrderNumber) && claimsPaid(readMessage(body));
+    // "pagado" por el flow de checkout de BuilderBot: el corto circuito de abajo respondía "ya está
+    // registrado" sin verificar nada. Se deja pasar el turno para que R7:pago_* consulte a PayPhone.
+    if (state.stage === "ordered" && state.lastOrderNumber && !claimedPaid) {
       return res.status(200).json({
         ...base,
         intencion: "orden_creada",
@@ -1043,6 +1071,10 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
         orderNumber: state.lastOrderNumber,
         paymentLink: state.lastPaymentLink || "",
       });
+    }
+    if (claimedPaid) {
+      const paidTurn = await runTurn({ ...body, phone }, { endpoint: "checkout" });
+      return res.status(200).json({ ...toBotResponse(paidTurn), success: Boolean(paidTurn?.orderNumber) });
     }
     if (state.stage !== "confirm") {
       const next = await nextStep({ ...createInitialState(phone), ...state }, buildDeps());

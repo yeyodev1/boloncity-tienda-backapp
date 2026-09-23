@@ -18,11 +18,12 @@ import { pickChoice } from "../services/whatsappBot/choice";
 import axios from "axios";
 import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
-import { classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
+import { claimsPaid, classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
 import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
+import { decideFromSale } from "../services/cardPaymentSettlement.service";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { isBotPath } from "../app";
-import { BotDeps, BotState, classifyRoute, cleanQueryLabel, createInitialState, handleTurn, LastOrder, sameProductQuery, TurnResult } from "../services/whatsappBot/router";
+import { BotDeps, BotState, classifyRoute, cleanQueryLabel, createInitialState, handleTurn, LastOrder, PaymentSettlement, sameProductQuery, TurnResult } from "../services/whatsappBot/router";
 
 const MENU: CatalogProduct[] = menuSeedItems
   .filter((item) => item.price > 0)
@@ -39,6 +40,8 @@ interface FakeOptions {
   closedBranches?: string[];
   /** Picker cobra distinto en efectivo. */
   cashFee?: number;
+  /** Qué contesta PayPhone (a través del caso de uso compartido) cuando el cliente escribe "pagado". */
+  settlement?: PaymentSettlement | PaymentSettlement[];
   extract?: Extractor;
 }
 
@@ -57,6 +60,7 @@ const FAKE_BRANCHES = [
 
 function fakeDeps(options: FakeOptions = {}) {
   const created: BotState[] = [];
+  const settled: string[] = [];
   const isClosed = (branchId: string) => Boolean(options.closed || options.closedBranches?.includes(branchId));
   const opening = fakeNextOpening();
   const deps: BotDeps = {
@@ -103,12 +107,22 @@ function fakeDeps(options: FakeOptions = {}) {
       created.push(JSON.parse(JSON.stringify(state)));
       return { ok: true, orderNumber: `ORD-0099${created.length}`, total: 12.5, paymentLink: state.paymentMethod === "card" ? "https://boloncity.com/pago/ORD-00991?email=x" : undefined };
     },
+    // PayPhone simulado: nunca se llama a la API real. `settled` cuenta los llamados efectivos para
+    // comprobar que dos "pagado" seguidos no disparan dos cierres.
+    settlePayment: async (orderNumber) => {
+      settled.push(orderNumber);
+      const configured = options.settlement;
+      const fallback: PaymentSettlement = { outcome: "pending" };
+      if (!configured) return fallback;
+      if (Array.isArray(configured)) return configured[Math.min(settled.length - 1, configured.length - 1)] || fallback;
+      return configured;
+    },
     trackOrder: async () => "Pedido ORD-00123 · En camino",
     extract: options.extract || heuristicExtract,
     menuUrl: "https://boloncity.com/catalogo",
     supportPhone: "+593 99 315 7333",
   };
-  return { deps, created };
+  return { deps, created, settled };
 }
 
 /** Simula una conversación y devuelve cada turno para revisar paso a paso. */
@@ -1878,6 +1892,147 @@ test("PROG-12: una programación que ya pasó con el local CERRADO se vuelve a o
   assert.match(revalidado.reply, /\*programo\* para mañana/i, revalidado.reply);
   const reprogramado = await handleTurn(revalidado.state, { message: "prográmalo" }, deps);
   assert.equal(reprogramado.state.scheduledFor, fakeNextOpening().at, "queda para la PRÓXIMA apertura");
+});
+
+
+// ─── "Pagado": verificación del pago con PayPhone ────────────────────────────
+
+/** Pedido de TARJETA recién creado, listo para que el cliente escriba "pagado". */
+async function cardOrder(options: FakeOptions = {}) {
+  const fake = fakeDeps(options);
+  const { state } = await chat(fake.deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "tarjeta", "confirmo"]);
+  return { ...fake, state };
+}
+
+test("PAGO-1: al crear la orden con tarjeta el bot pide escribir *pagado*", async () => {
+  const { deps } = fakeDeps();
+  const { last } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "tarjeta", "confirmo"]);
+  assert.match(last.reply, /escríbeme \*pagado\*/i, last.reply);
+  assert.match(last.reply, /https:\/\/boloncity\.com\/pago/, last.reply);
+});
+
+test("PAGO-2: 'pagado' con el pago APROBADO responde total, cocina y aviso del motorizado", async () => {
+  const { deps, state, settled } = await cardOrder({ settlement: { outcome: "paid_now", total: 12.5, deliveryType: "delivery", trackingUrl: "https://picker.test/smr/1" } });
+  const result = await handleTurn(state, { message: "pagado" }, deps);
+  assert.equal(settled.length, 1, "se consultó el pago una vez");
+  assert.equal(settled[0], "ORD-00991");
+  assert.equal(result.decision, "R7:pago_paid_now", result.decision);
+  assert.match(result.reply, /Pago confirmado/i, result.reply);
+  assert.match(result.reply, /\$12\.50/, result.reply);
+  assert.match(result.reply, /cocina/i, result.reply);
+  assert.match(result.reply, /motorizado/i, result.reply);
+  assert.match(result.reply, /picker\.test/, result.reply);
+  assert.equal(result.state.paymentConfirmed, true);
+  assert.equal(result.state.lastOrderNumber, "ORD-00991", "la orden no se pierde");
+});
+
+test("PAGO-3: 'ya pague' (sin tilde, con typo) toma el mismo camino que 'pagado'", async () => {
+  for (const frase of ["ya pague", "ya pagué", "listo pagué", "ya está pagado", "hice el pago", "pagué con tarjeta", "pagao", "listo amigo, ya pagué gracias"]) {
+    const { deps, state, settled } = await cardOrder({ settlement: { outcome: "paid_now", total: 12.5 } });
+    const result = await handleTurn(state, { message: frase }, deps);
+    assert.equal(settled.length, 1, `"${frase}" no consultó el pago`);
+    assert.equal(result.decision, "R7:pago_paid_now", `"${frase}" → ${result.decision}: ${result.reply}`);
+  }
+});
+
+test("PAGO-4: si PayPhone dice PENDIENTE no se da por pagado, se reenvía el link y no se toca la orden", async () => {
+  const { deps, state } = await cardOrder({ settlement: { outcome: "pending" } });
+  const result = await handleTurn(state, { message: "pagado" }, deps);
+  assert.equal(result.decision, "R7:pago_pending", result.decision);
+  assert.match(result.reply, /Todavía no nos llega el pago/i, result.reply);
+  assert.match(result.reply, /https:\/\/boloncity\.com\/pago/, result.reply);
+  assert.match(result.reply, /\*pagado\* otra vez/i, result.reply);
+  assert.doesNotMatch(result.reply, /Pago confirmado|cocina/i, result.reply);
+  assert.equal(result.state.paymentConfirmed, undefined, "no se marca como pagada");
+  assert.equal(result.state.stage, "ordered");
+  assert.equal(result.state.lastOrderNumber, "ORD-00991");
+});
+
+test("PAGO-5: pago RECHAZADO se dice claro y se reenvía el link", async () => {
+  const { deps, state } = await cardOrder({ settlement: { outcome: "rejected" } });
+  const result = await handleTurn(state, { message: "pagado" }, deps);
+  assert.equal(result.decision, "R7:pago_rejected", result.decision);
+  assert.match(result.reply, /no se completó/i, result.reply);
+  assert.match(result.reply, /https:\/\/boloncity\.com\/pago/, result.reply);
+  assert.equal(result.state.paymentConfirmed, undefined);
+});
+
+test("PAGO-6: 'pagado' dos veces no duplica nada (la segunda responde 'ya está confirmado')", async () => {
+  const { deps, state, settled } = await cardOrder({ settlement: [{ outcome: "paid_now", total: 12.5 }, { outcome: "already_paid", total: 12.5 }] });
+  const primero = await handleTurn(state, { message: "pagado" }, deps);
+  const segundo = await handleTurn(primero.state, { message: "pagado" }, deps);
+  assert.equal(settled.length, 2, "cada mensaje consulta el estado, no crea nada");
+  assert.equal(segundo.decision, "R7:pago_already_paid", segundo.decision);
+  assert.match(segundo.reply, /ya está confirmado/i, segundo.reply);
+  assert.equal(segundo.state.lastOrderNumber, "ORD-00991", "no se creó otra orden");
+});
+
+test("PAGO-7: un error técnico no da el pago por hecho", async () => {
+  const { deps, state } = await cardOrder({ settlement: { outcome: "error" } });
+  const result = await handleTurn(state, { message: "pagado" }, deps);
+  assert.equal(result.decision, "R7:pago_error", result.decision);
+  assert.match(result.reply, /No pude verificar tu pago/i, result.reply);
+  assert.equal(result.state.paymentConfirmed, undefined);
+});
+
+test("PAGO-8: después del pago, 'mi pedido' sigue mostrando estado y seguimiento", async () => {
+  const { deps, state } = await cardOrder({ settlement: { outcome: "paid_now", total: 12.5 } });
+  const pagado = await handleTurn(state, { message: "pagado" }, deps);
+  const seguimiento = await handleTurn(pagado.state, { message: "mi pedido" }, deps);
+  assert.equal(seguimiento.decision, "R3:consultar_pedido", seguimiento.decision);
+  assert.equal(seguimiento.intent, "consultar_pedido");
+  assert.match(seguimiento.reply, /En camino/, seguimiento.reply);
+});
+
+test("PAGO-9: 'listo pagué' NO cae en R7:ya_confirmado y classifyRoute lo manda a conversación", async () => {
+  const { deps, state } = await cardOrder({ settlement: { outcome: "pending" } });
+  const result = await handleTurn(state, { message: "listo pagué" }, deps);
+  assert.equal(result.decision, "R7:pago_pending", result.decision);
+  assert.equal(classifyRoute(state, "listo pagué"), "conversation");
+  assert.equal(classifyRoute(state, "pagado"), "conversation");
+  assert.equal(classifyRoute(state, "ya pague"), "conversation");
+  // Un "confirmo" repetido sigue siendo checkout idempotente: el reclamo de pago no rompió eso.
+  assert.equal(classifyRoute(state, "confirmo"), "checkout");
+});
+
+test("PAGO-10: 'quiero pagar', 'cómo pago' y 'el link no me abre' NO disparan la verificación", async () => {
+  for (const frase of ["quiero pagar", "cómo pago", "el link no me abre", "¿ya te llegó el pago?", "pásame el link de pago", "todavía no he pagado"]) {
+    assert.equal(claimsPaid(frase), false, `"${frase}" no debería reclamar un pago hecho`);
+    const { deps, state, settled } = await cardOrder();
+    const result = await handleTurn(state, { message: frase }, deps);
+    assert.equal(settled.length, 0, `"${frase}" consultó PayPhone sin motivo → ${result.decision}`);
+  }
+});
+
+test("PAGO-11: efectivo con delivery dice cuánto se le paga al motorizado", async () => {
+  const { deps } = fakeDeps();
+  const { last } = await chat(deps, [
+    "una humita", "delivery", { location: { lat: -2.180796, lng: -79.874258 } },
+    "Kennedy 123", "Ana", "ana@test.com", "efectivo", "confirmo",
+  ]);
+  assert.match(last.reply, /Págale \$12\.50 en efectivo al motorizado/, last.reply);
+  assert.doesNotMatch(last.reply, /escríbeme \*pagado\*/i, "en efectivo no hay nada que verificar");
+});
+
+test("PAGO-12: 'pagado' sin una orden creada no consulta nada", async () => {
+  const { deps, settled } = fakeDeps();
+  const { last } = await chat(deps, ["una humita", "pagado"]);
+  assert.equal(settled.length, 0, `se consultó PayPhone sin orden → ${last.decision}`);
+});
+
+test("PAGO-13: una venta con id pero SIN aprobar deja el pedido pendiente (nunca se cancela a medio pago)", async () => {
+  // El cliente abrió la Cajita y aún no termina: PayPhone ya tiene la transacción, pero en estado 1.
+  assert.deepEqual(decideFromSale({ found: true, statusCode: 1, transactionStatus: "Pending", transactionId: 99 }).next, "pending");
+  assert.deepEqual(decideFromSale({ found: true, statusCode: 1, transactionId: 99 }).next, "pending");
+  // Nunca abrió la Cajita, o PayPhone no respondió.
+  assert.deepEqual(decideFromSale({ found: false, error: "timeout" }).next, "pending");
+  assert.deepEqual(decideFromSale({ found: true, statusCode: 1 }).next, "pending");
+  // Cancelada de verdad y sin nada que confirmar.
+  assert.deepEqual(decideFromSale({ found: true, statusCode: 2, transactionStatus: "Canceled" }).next, "rejected");
+  // Aprobada: recién ahí se confirma, con su id numérico.
+  const aprobada = decideFromSale({ found: true, statusCode: 3, transactionStatus: "Approved", transactionId: 12345 });
+  assert.equal(aprobada.next, "confirm");
+  assert.equal(aprobada.next === "confirm" && aprobada.transactionId, 12345);
 });
 
 (async () => {

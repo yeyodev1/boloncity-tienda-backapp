@@ -257,6 +257,49 @@ export const wantsToWait = test(
 
 export const wantsConfirm = test(/^(confirmo|confirmar|si confirmo|confirmado|dale confirmo|listo confirmo|quiero pagar|pagar|procede|proceder|hazlo|envialo|mandalo)\b/);
 
+/**
+ * "YA PAGUÉ": el cliente dice que YA hizo el pago con tarjeta de una orden que ya existe.
+ * La palabra clave que el negocio le pide escribir es *pagado*.
+ *
+ * Reconoce: "pagado", "ya pagué", "ya pague", "ya lo pagué", "listo pagué", "ya está pagado",
+ * "hice el pago", "ya realicé el pago", "pagué con tarjeta", "pago realizado", "ya cancelé"
+ * (en Ecuador "cancelar" es pagar), con cortesías alrededor ("listo amigo, ya pagué gracias")
+ * y errores de tipeo comunes ("pagago", "paguee", "ya pagé", "pagao").
+ *
+ * NO reconoce lo que habla de pagar en FUTURO ni de cómo pagar — eso ya lo atienden
+ * wantsPaymentLink y el resumen: "quiero pagar", "cómo pago", "dónde pago", "voy a pagar",
+ * "el link no me abre", "todavía no he pagado", "no pude pagar", "puedo pagar en efectivo".
+ * El bot nunca le cree al cliente: esto solo dispara la CONSULTA a PayPhone.
+ */
+const PAID_NEGATIONS =
+  /\b(?:no|todavia no|aun no|sin|nunca)\s+(?:lo |la |le |he |puedo |pude |podido |se |me deja )*(?:pag\w*|cancel\w*|transfer\w*)|\bno se (?:pudo|puede) (?:pagar|el pago)\b|\bsin pagar\b|\bfalta (?:el )?pag\w*\b/;
+const PAID_FUTURE =
+  /\b(?:quiero|queria|deseo|puedo|podria|voy a|vamos a|iba a|para|como|donde|cuando|con que|quisiera|prefiero|mejor|me gustaria|necesito|hay que|debo|tengo que)\s+(?:lo |la |le )?(?:pagar|pago|cancelar)\b|\bcomo (?:pago|se paga|lo pago)\b|\bdonde (?:pago|lo pago)\b|\bformas? de pago\b|\bmetodo de pago\b/;
+/** El núcleo: un pago que YA ocurrió, en pasado o como hecho consumado. */
+const PAID_CLAIM =
+  /\b(?:pagado|pagada|pagao|pagd[oa]|ya pagu?e+|ya lo pagu?e+|ya la pagu?e+|pagu?e+ (?:ya|el pedido|la orden|con (?:la )?tarjeta|por el link|el link|el total)|listo pagu?e+|pagu?e+$|pag[ao]g[oa]|hice (?:ya )?el pago|ya hice el pago|realice (?:ya )?el pago|ya realice el pago|efectue el pago|pago (?:realizado|hecho|enviado|listo|completado)|ya (?:lo )?cancele|ya transfer(?:i|ido)|ya envie el pago|acabo de pagar|acabe de pagar|termine de pagar|ya esta pagad[oa]|ya quedo pagad[oa])\b/;
+
+export function claimsPaid(message: string) {
+  const text = normalizeText(message);
+  if (!text) return false;
+  if (PAID_NEGATIONS.test(text) || PAID_FUTURE.test(text)) return false;
+  if (PAID_CLAIM.test(text)) return true;
+  // "pagado" mal escrito y solo ("pagadoo", "pagao", "paagado", "pgado"): una palabra sola que se
+  // parece a "pagado"/"pague". No se aproxima nada mas: "pagar" y "pagado" son distintos a proposito.
+  const words = text.replace(/\./g, " ").split(" ").filter(Boolean);
+  const meaningful = words.filter((word) => !/^(ya|listo|ok|oki|okay|dale|hola|gracias|amigo|amiga|porfa|por|favor|si|sip|eso|el|la|mi|pedido|orden|todo|bien|ahi|esta|ya esta)$/.test(word));
+  return meaningful.length > 0 && meaningful.every((word) => nearPaid(word));
+}
+
+/** Distancia de edición 1 contra "pagado"/"pagada"/"pague" (palabras de 5+ letras, como el resto del archivo). */
+function nearPaid(word: string) {
+  const collapsed = collapseRepeats(word);
+  if (collapsed.length < 5) return false;
+  // "pagar" / "pagas" / "pagan" NO se aproximan: hablan de pagar, no de haber pagado.
+  if (/^paga[rsn]$/.test(collapsed) || collapsed === "pagos" || collapsed === "pago") return false;
+  return ["pagado", "pagada", "pague"].some((candidate) => editDistance(collapsed, candidate) <= 1);
+}
+
 export const wantsInvoice = test(/\b(factura|facturar|ruc|con datos)\b/);
 export const wantsFinalConsumer = test(/\b(consumidor final|sin factura|no necesito factura|sin datos)\b/);
 

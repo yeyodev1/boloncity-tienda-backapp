@@ -148,6 +148,54 @@ correo. En tarjeta eso ocurre cuando se confirma el pago (igual que la web).
 
 > El cobro automático de la deuda por ausencia todavía no está implementado (ver PLAN.md, Fase 2c). Hoy solo se muestra el aviso.
 
+En efectivo con delivery el bot dice el monto exacto que se le paga al motorizado ("Págale $7.48 en efectivo al
+motorizado"): el motorizado cobra el total (subtotal + envío), que es lo que se le manda a Picker.
+
+### "Escríbeme *pagado*": cómo se cierra un pago de tarjeta desde el chat
+
+El dueño no quiere cobrar dentro del chat: manda el link y el cliente avisa. Por eso el mensaje que crea una orden
+con tarjeta termina con **"Cuando lo hayas pagado, escríbeme *pagado* y verifico el pago al instante"**.
+
+Cuando el cliente escribe *pagado* / "ya pagué" / "listo pagué" / "hice el pago" (`claimsPaid` en intents.ts, con
+tolerancia a typos y cortesías), el bot **no le cree**: la regla `R7:pago_*` de `handleTurn` llama a
+`deps.settlePayment(orderNumber)` → `settleCardPaymentByOrderNumber` (src/services/cardPaymentSettlement.service.ts),
+que hace esto en este orden:
+
+1. Si la orden ya está pagada (status ≠ `pending`, o hay `payphone.transactionId`/`confirmedAt`) → `already_paid`,
+   sin molestar a PayPhone. Eso hace idempotente el escribir "pagado" dos veces.
+2. `GET /api/Sale/client/{clientTransactionId}` (`getPayphoneSaleByClientTxId`): el único identificador que el bot
+   tiene es el `clientTransactionId` que guardó la orden; el `id` numérico de PayPhone solo vuelve por el navegador.
+3. **El GET no cierra el pago.** La doc del botón por redirección dice que si el comercio no ejecuta la fase de
+   confirmación dentro de los 5 minutos siguientes, PayPhone **revierte la venta sola**. Así que con el
+   `transactionId` del GET se llama el `confirmPayphoneTransaction` que ya existía (POST /api/button/V2/Confirm).
+4. Su respuesta pasa por `evaluatePayphoneResult` y, si está aprobada, por `settleApprovedCardOrder`: las MISMAS
+   piezas que usa el regreso del navegador (`confirmOrder`), extraídas de ahí para no duplicar el camino del dinero.
+   Eso marca pagada, reserva Picker con `CARD`, manda RunFood, Meta, puntos y correo.
+
+| PayPhone dice | `outcome` | Qué responde el bot | Qué le pasa a la orden |
+|---|---|---|---|
+| Aprobada | `paid_now` | Total, "ya está en cocina" y "te aviso cuando salga el motorizado" (+ link de seguimiento si Picker ya reservó) | Pagada y despachada |
+| Ya estaba pagada | `already_paid` | "Tu pago ya está confirmado" + lo mismo | **Nada** (no duplica cocina, ni Picker, ni correo) |
+| Pendiente o no encuentra la transacción | `pending` | "Todavía no nos llega el pago… escríbeme *pagado* otra vez" + reenvía el link | **Nada.** No se cancela y no se escribe `confirmedAt` |
+| Rechazada / cancelada | `rejected` | Lo dice claro y reenvía el link | Cancelada (igual que la web) |
+| Aprobada por otro monto | `mismatch` | Manda a soporte | Intacta + auditoría `payment_mismatch` |
+| Error técnico | `error` | "No pude verificar tu pago ahorita" | **Nada** |
+
+La regla vive **antes** de `orderFollowUp` y del reinicio a pedido nuevo: si no, "listo pagué" caía en la frase
+canned "tu pedido ya está registrado" y nadie verificaba nada. Por lo mismo `claimsPaid` está excluida de
+`confirmsPlacedOrder`, `classifyRoute` devuelve `conversation` para un reclamo de pago, y el flow de checkout
+(`/whatsapp-bot/checkout`) deja pasar el turno en vez de contestar con su corto circuito.
+
+**Nunca** se cancela un pedido porque el GET no encuentre la transacción: el cliente que todavía no pagó escribiría
+"pagado" y perdería su pedido (y con `confirmedAt` escrito, el confirm del navegador saldría temprano y el pedido
+real quedaría sin cocina, sin Picker y sin correo).
+
+### El dashboard y las tarjetas sin pagar
+
+`listOrders` esconde a propósito las órdenes de tarjeta sin pagar (`$nor: [{ paymentMethod: card, status: pending,
+payphone.transactionId: null }]`, salvo `?includeUnpaid=true`). En cuanto el pago se cierra —por el navegador o por
+"pagado"— la orden queda `paid` con `transactionId` y **aparece sola en el tablero**: no hay que tocar `listOrders`.
+
 ## Configuración de BuilderBot (los 5 flows que ya existen)
 
 Base: `https://api.boloncity.com/api/orders/whatsapp-bot` (en dev: `https://<api-dev>/api/orders/whatsapp-bot`).
