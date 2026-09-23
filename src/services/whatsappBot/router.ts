@@ -3,6 +3,7 @@ import { CatalogProduct, displayCategoryName, findCategory, listCategories, norm
 import { asksForNearest, distinctiveLabel, negatedPhrase, pickChoice } from "./choice";
 import { Extraction, Extractor } from "./extractor";
 import {
+  claimsPaid,
   detectDeliveryType,
   detectPaymentMethod,
   extractDeclaredName,
@@ -166,6 +167,8 @@ export interface BotState {
   reuseLocationOffered?: boolean;
   lastOrderNumber?: string;
   lastPaymentLink?: string;
+  /** El pago con tarjeta de `lastOrderNumber` ya quedó confirmado (por el navegador o por "pagado"). */
+  paymentConfirmed?: boolean;
   /** Ubicación compartida antes de cambiar a retiro: si vuelve a delivery se reusa y se recotiza. */
   savedDeliveryLocation?: { coords: { lat: number; lng: number }; mapsUrl: string };
   /** Última intención enviada a BuilderBot; se reusa si BuilderBot reintenta el mismo mensaje. */
@@ -218,6 +221,23 @@ export type LocationQuote =
     }
   | { covered: false; reason: string };
 
+/**
+ * Lo que el bot necesita saber del pago de una orden de tarjeta para redactar la respuesta.
+ * `outcome` viene del caso de uso compartido (cardPaymentSettlement.service.ts).
+ */
+export interface PaymentSettlement {
+  outcome: "already_paid" | "paid_now" | "pending" | "rejected" | "mismatch" | "not_applicable" | "error";
+  /** Total del pedido en DOLARES (como `quote.total`), para repetirselo al cliente. */
+  total?: number;
+  /** Seguimiento en vivo del motorizado (picker.smrURL), si ya hay reserva. */
+  trackingUrl?: string;
+  /** Link de pago, para reenviarlo cuando el pago todavia no llega. */
+  paymentLink?: string;
+  /** "delivery" o "pickup" del pedido ya creado: cambia lo que se le promete al cliente. */
+  deliveryType?: "delivery" | "pickup";
+  branchName?: string;
+}
+
 export interface BotDeps {
   search(query: string, branchId?: string): Promise<SearchResult>;
   catalog(branchId?: string): Promise<CatalogProduct[]>;
@@ -232,6 +252,12 @@ export interface BotDeps {
   branchStatus(branchId: string): Promise<{ open: boolean; message?: string; branchName?: string; nextOpening?: OpeningWindow | null }>;
   quote(state: BotState): Promise<Quote | null>;
   createOrder(state: BotState): Promise<{ ok: true; orderNumber: string; total: number; paymentLink?: string } | { ok: false; message: string }>;
+  /**
+   * El cliente escribio *pagado*: se CONSULTA el estado real del pago en PayPhone y, si esta
+   * cobrado, se cierra el pedido (cocina, Picker con CARD, correo). Nunca se le cree al cliente.
+   * Es idempotente: el segundo "pagado" devuelve `already_paid` y no duplica nada.
+   */
+  settlePayment(orderNumber: string): Promise<PaymentSettlement>;
   trackOrder(phone: string, message: string): Promise<string>;
   extract: Extractor;
   /**
@@ -318,6 +344,9 @@ export function classifyRoute(state: BotState | null, message: string, hasLocati
   // es un dato del pedido y lo resuelve la conversación.
   // "sí, pero agrégale un café" NO es checkout: trae un cambio que debe aplicar la conversación.
   // "gracias" / "ya" tampoco: la conversación vuelve a mostrar el resumen. Misma función que R7 (classifyConfirmReply).
+  // "pagado" con la orden ya creada lo resuelve la conversación (verifica el pago en PayPhone): mandarlo
+  // a checkout lo dejaba en el corto circuito "Tu pedido ya está registrado" sin verificar nada.
+  if (stage === "ordered" && claimsPaid(text)) return "conversation";
   if ((stage === "confirm" && classifyConfirmReply(text) === "confirm") || (stage === "ordered" && confirmsPlacedOrder(text))) return "checkout";
   if (wantsMenu(text)) return "catalog";
   return "conversation";
@@ -548,6 +577,28 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return finish("R0:media_no_soportada");
   }
 
+  // R7 · "PAGADO": el cliente dice que ya pagó su orden de tarjeta. Va ANTES del seguimiento de la orden
+  // (orderFollowUp) y del reinicio a pedido nuevo: si no, "listo pagué" se lo comía uno de esos dos y el
+  // cliente recibía la frase de siempre con el link, sin que nadie verifique el pago.
+  // El bot NO le cree: consulta el estado real en PayPhone (deps.settlePayment) y recién ahí responde.
+  // Un reclamo con pedido de persona ("ya pagué pero quiero hablar con alguien") sigue yendo a R2.
+  if (state.stage === "ordered" && state.lastOrderNumber && claimsPaid(message) && !wantsHuman(message)) {
+    const settlement = await deps.settlePayment(state.lastOrderNumber).catch(() => ({ outcome: "error" as const }));
+    const paid = settlement.outcome === "paid_now" || settlement.outcome === "already_paid";
+    if (paid) state.paymentConfirmed = true;
+    return {
+      state,
+      reply: paymentClaimReply(state, settlement, deps),
+      // La orden ya existe y el cobro ya está cerrado o pendiente en PayPhone: no hay nada que cobrar de nuevo.
+      route: "conversation",
+      intent: paid ? "orden_creada" : "conversar",
+      step: state.stage,
+      decision: `R7:pago_${settlement.outcome}`,
+      orderNumber: state.lastOrderNumber,
+      paymentLink: state.lastPaymentLink,
+    };
+  }
+
   // Orden ya creada: "gracias", "👍", "el link no me abre" o "mejor en efectivo" hablan de ESA orden.
   // No se reinicia el pedido ni se borra el link (antes el cliente perdía su link de pago).
   if (state.stage === "ordered" && state.lastOrderNumber && message && !wantsTracking(message) && !confirmsPlacedOrder(message) && !wantsHuman(message)) {
@@ -584,6 +635,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
       paymentMethod: undefined,
       lastOrderNumber: undefined,
       lastPaymentLink: undefined,
+      paymentConfirmed: undefined,
       notes: undefined,
       reorderOffered: true,
       reuseLocationOffered: false,
@@ -1861,7 +1913,58 @@ async function pickBranch(state: BotState, branch: BranchOption, deps: BotDeps, 
 /** Respuesta a lo que el cliente escribe DESPUÉS de crear la orden, si habla de esa orden. */
 /** Con la orden ya creada: "confirmo", "sí", "claro", "de una", "si está bien así" repiten la confirmación. */
 function confirmsPlacedOrder(message: string) {
+  // "listo pagué" / "ya está pagado" NO son una reconfirmación del pedido: son un reclamo de pago
+  // que verifica la regla R7:pago_* contra PayPhone. Sin esta exclusión caían en R7:ya_confirmado.
+  if (claimsPaid(message)) return false;
   return wantsConfirm(message) || classifyConfirmReply(message) === "confirm";
+}
+
+/**
+ * Respuesta al "pagado" del cliente, SEGÚN LO QUE DIJO PAYPHONE (nunca según lo que dijo el cliente).
+ *
+ *   paid_now / already_paid → total, "ya está en cocina" y el aviso del motorizado (+ seguimiento si ya hay).
+ *   pending                 → "todavía no nos llega", que reintente, y se REENVÍA el link.
+ *   rejected / mismatch     → se dice claro y se reenvía el link (mismatch además manda a soporte).
+ *   error / not_applicable  → se pide reintentar; nada se da por pagado.
+ */
+function paymentClaimReply(state: BotState, settlement: PaymentSettlement, deps: BotDeps): string {
+  const order = state.lastOrderNumber!;
+  const link = state.lastPaymentLink;
+  const total = typeof settlement.total === "number" ? ` por ${money(settlement.total)}` : "";
+  const deliveryType = settlement.deliveryType || state.deliveryType;
+  const branchName = settlement.branchName || state.branchName;
+  const retry = `Si ya pagaste, dame un momentito y escríbeme *pagado* otra vez 🙏`;
+
+  if (settlement.outcome === "paid_now" || settlement.outcome === "already_paid") {
+    const head =
+      settlement.outcome === "already_paid"
+        ? `✅ Tu pago del pedido ${order} ya está confirmado${total}`
+        : `✅ ¡Pago confirmado! Tu pedido ${order} quedó pagado${total}`;
+    const body =
+      deliveryType === "pickup"
+        ? `Ya está en cocina 🫓 Te aviso en cuanto esté listo para retirar${branchName ? ` en ${branchName}` : ""}`
+        : `Ya está en cocina 🫓 Te aviso cuando salga el motorizado 🛵`;
+    const tracking = settlement.trackingUrl ? `\n\nSigue a tu motorizado en vivo aquí 🛵\n${settlement.trackingUrl}` : "";
+    return `${head}\n\n${body}${tracking}\n\nEscribe *mi pedido* cuando quieras para ver cómo va`;
+  }
+
+  if (settlement.outcome === "pending") {
+    return `Todavía no nos llega el pago de tu pedido ${order} 💳 A veces se demora un momentito en aparecer.${
+      link ? `\n\nSi aún no lo completaste, págalo aquí:\n${link}` : ""
+    }\n\n${retry}`;
+  }
+
+  if (settlement.outcome === "rejected") {
+    return `Uy, el pago de tu pedido ${order} no se completó ❌ El banco no lo aprobó.${
+      link ? `\n\nIntenta de nuevo aquí:\n${link}` : ""
+    }\n\nSi te vuelve a fallar, escríbele al ${deps.supportPhone} y te ayudan`;
+  }
+
+  if (settlement.outcome === "mismatch") {
+    return `Me llega un pago que no coincide con el total de tu pedido ${order} 😕 Para no cobrarte mal, escríbele al ${deps.supportPhone} y lo revisan enseguida`;
+  }
+
+  return `No pude verificar tu pago ahorita 🙏${link ? `\n\nSi aún no lo completaste, págalo aquí:\n${link}` : ""}\n\n${retry}`;
 }
 
 function orderFollowUp(state: BotState, message: string, deps: BotDeps): string | null {
@@ -2083,6 +2186,17 @@ export function formatSummary(state: BotState, quote: Quote) {
     .join("\n\n");
 }
 
+/**
+ * PALABRA CLAVE DEL NEGOCIO: el dueño no quiere cobrar dentro del chat. Manda el link, y el cliente
+ * avisa escribiendo *pagado*; ahí el bot consulta PayPhone de verdad (ver la regla R7:pago_*).
+ */
+const PAID_KEYWORD_HINT = "Cuando lo hayas pagado, escríbeme *pagado* y verifico el pago al instante ✅";
+
+/** Efectivo con delivery: el motorizado cobra el TOTAL (subtotal + envío). Se le dice cuánto. */
+function cashToDriver(total: number) {
+  return `Págale ${money(total)} en efectivo al motorizado 💵`;
+}
+
 async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult> {
   // Antes de crear se revisa todo otra vez: entre el resumen y el "confirmo" pudo cerrar la sucursal.
   const check = await nextStep(state, deps);
@@ -2100,14 +2214,14 @@ async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult>
   const scheduled = state.scheduledFor && state.scheduledLabel ? `🗓️ Programado para ${state.scheduledLabel}` : "";
   const reply = scheduled
     ? state.paymentMethod === "card"
-      ? `✅ Listo, tu pedido ${result.orderNumber} quedó por ${money(result.total)}\n${scheduled}\n\nPágalo aquí y queda todo listo para esa hora:\n${result.paymentLink}`
+      ? `✅ Listo, tu pedido ${result.orderNumber} quedó por ${money(result.total)}\n${scheduled}\n\nPágalo aquí y queda todo listo para esa hora:\n${result.paymentLink}\n\n${PAID_KEYWORD_HINT}`
       : state.deliveryType === "delivery"
-      ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n${scheduled}\n\nLo preparamos apenas abra ${state.branchName} y te lo mandamos 🛵 Ten el efectivo listo para el motorizado`
-      : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n${scheduled}\n\nTe esperamos en ${state.branchName} a esa hora 🏠 Pagas en efectivo al retirar`
+      ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n${scheduled}\n\nLo preparamos apenas abra ${state.branchName} y te lo mandamos 🛵 ${cashToDriver(result.total)}`
+      : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n${scheduled}\n\nTe esperamos en ${state.branchName} a esa hora 🏠 Pagas ${money(result.total)} en efectivo al retirar`
     : state.paymentMethod === "card"
-    ? `✅ Listo, tu pedido ${result.orderNumber} quedó creado por ${money(result.total)}\n\nPágalo aquí y la cocina se pone de una:\n${result.paymentLink}`
+    ? `✅ Listo, tu pedido ${result.orderNumber} quedó creado por ${money(result.total)}\n\nPágalo aquí y la cocina se pone de una:\n${result.paymentLink}\n\n${PAID_KEYWORD_HINT}`
     : state.deliveryType === "delivery"
-    ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nYa lo estamos preparando 🫓 Ten el efectivo listo para el motorizado`
-    : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nTe esperamos en ${state.branchName} 🏠 Pagas en efectivo al retirar`;
+    ? `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nYa lo estamos preparando 🫓 ${cashToDriver(result.total)}`
+    : `✅ Listo, tu pedido ${result.orderNumber} quedó confirmado por ${money(result.total)}\n\nTe esperamos en ${state.branchName} 🏠 Pagas ${money(result.total)} en efectivo al retirar`;
   return { state, reply, route: "checkout", intent: "orden_creada", step: "ordered", decision: "R7:orden_creada", orderNumber: result.orderNumber, paymentLink: result.paymentLink };
 }

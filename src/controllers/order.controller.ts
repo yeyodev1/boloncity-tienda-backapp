@@ -635,6 +635,222 @@ export async function sendOrderToRunfood(order: InstanceType<typeof Order>) {
   }
 }
 
+/**
+ * Veredicto de PayPhone sobre una transaccion de tarjeta.
+ *
+ * Se extrajo de confirmOrder (sin cambiar una sola comparacion) para que el camino nuevo
+ * "escribeme *pagado*" del bot de WhatsApp valide EXACTAMENTE igual que el regreso del
+ * navegador: mismo monto en centavos y mismo clientTransactionId.
+ *
+ *   approved → cobrado y cuadra: se puede mandar a cocina.
+ *   mismatch → PayPhone aprobo un monto/identificador que no es el de este pedido.
+ *   rejected → PayPhone dice que NO esta cobrada.
+ *
+ * OJO: "rejected" aqui solo se puede usar con una respuesta REAL de la fase de confirmacion.
+ * Una consulta que no encuentra la transaccion (cliente que todavia no paga) NO es esto:
+ * marcarla como rechazada cancelaria un pedido valido.
+ */
+export type PayphoneVerdict = "approved" | "mismatch" | "rejected";
+
+export function evaluatePayphoneResult(order: any, payphoneResult: any, clientTxId: string): PayphoneVerdict {
+  const approved = payphoneResult?.statusCode === 3 || payphoneResult?.transactionStatus === "Approved";
+  // El clientTransactionId es público (va en el link de pago): una transacción aprobada por OTRO monto
+  // no puede marcar la orden como pagada ni mandarla a cocina.
+  const paidAmount = Number(payphoneResult?.amount);
+  const amountMismatch = Number.isFinite(paidAmount) && paidAmount > 0 && paidAmount !== order.total;
+  const txMismatch = payphoneResult?.clientTransactionId && payphoneResult.clientTransactionId !== clientTxId;
+  if (approved && (amountMismatch || txMismatch)) return "mismatch";
+  return approved ? "approved" : "rejected";
+}
+
+/** Pago aprobado que no cuadra con el pedido: se deja la orden intacta y la pista en la auditoría. */
+export async function recordPayphoneMismatch(order: any, payphoneResult: any, clientTxId: string) {
+  const paidAmount = Number(payphoneResult?.amount);
+  console.error(
+    `[payphone] ${order.orderNumber}: pago aprobado que no cuadra (monto ${paidAmount} vs total ${order.total}, clientTxId ${payphoneResult?.clientTransactionId} vs ${clientTxId}, txId ${payphoneResult?.transactionId})`
+  );
+  pushAudit(order, {
+    action: "payment_mismatch",
+    performedBy: null,
+    performedByEmail: "system",
+    fromValue: order.status,
+    toValue: order.status,
+    details: `PayPhone txId ${payphoneResult?.transactionId || ""} aprobado por ${paidAmount} (total ${order.total}). Revisar manualmente`,
+  });
+  await order.save();
+}
+
+/**
+ * Cierre de un pago de tarjeta APROBADO: marca pagada, crea/asocia al usuario, reporta a Meta,
+ * manda la comanda a RunFood, reserva el motorizado en Picker con CARD, suma puntos y manda los
+ * correos. Es el unico lugar donde vive esta secuencia: la usan el regreso del navegador
+ * (confirmOrder) y el "pagado" del bot de WhatsApp.
+ *
+ * El ORDEN importa y se conserva tal cual: save → Meta → RunFood → Picker → puntos/correos.
+ */
+export async function settleApprovedCardOrder(order: any, payphoneResult: any, clientTxId: string) {
+  const previousStatus = order.status;
+  order.status = "paid";
+  order.payphone = {
+    ...(order.payphone?.toObject ? order.payphone.toObject() : order.payphone),
+    clientTransactionId: clientTxId,
+    transactionId: payphoneResult.transactionId,
+    authorizationCode: payphoneResult.authorizationCode,
+    statusCode: payphoneResult.statusCode,
+    cardBrand: payphoneResult.cardBrand,
+    lastDigits: payphoneResult.lastDigits,
+    confirmedAt: new Date(),
+  };
+
+  let user = await User.findOne({ email: order.customerEmail });
+  let tempPassword: string | null = null;
+  if (!user) {
+    const created = await createAutoUser({
+      email: order.customerEmail,
+      name: order.customerName,
+      phone: order.customerPhone,
+    });
+    user = created.user;
+    tempPassword = created.tempPassword;
+    order.user = user._id;
+  } else {
+    order.user = user._id;
+  }
+
+  // pointsEarned ya se calculo al crear la orden (tarifa por dolar + extras por producto).
+  pushAudit(order, {
+    action: "payment_confirmed",
+    performedBy: null,
+    performedByEmail: "system",
+    fromValue: previousStatus,
+    toValue: order.status,
+    details: `PayPhone txId: ${payphoneResult.transactionId || ""}`,
+  });
+  await order.save();
+
+  // Pago confirmado = venta real: recién aquí se le reporta a Meta.
+  await reportPurchaseToMeta(order);
+
+  // Pago confirmado: la comanda entra al POS RunFood del local (si esta configurado).
+  if (!order.scheduledFor) {
+    await sendOrderToRunfood(order);
+  }
+
+  // Tarjeta inmediata: se reserva Picker al confirmar el pago. Los PROGRAMADOS no:
+  // su Picker se pide recién al pasar a "Listas para recolección" (ver updateOrderStatus).
+  if (order.deliveryType === "delivery" && !order.picker?.bookingId && !order.scheduledFor) {
+    await bookPickerForOrder(order, "CARD");
+  }
+
+  if (user) {
+    user.points += order.pointsEarned;
+    user.pointsHistory.push({
+      amount: order.pointsEarned,
+      reason: `Compra ${order.orderNumber}`,
+      orderId: order._id,
+      date: new Date(),
+    });
+    await user.save();
+
+    const itemsRows = order.items
+      .map(
+        (item: any) =>
+          `<tr style="border-bottom:1px solid #e0e0e0"><td style="padding:10px 0">${escapeHtml(item.name)}</td><td style="padding:10px 0;text-align:center">x${item.quantity}</td><td style="padding:10px 0;text-align:right;font-weight:700">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
+      )
+      .join("");
+
+    const branchName = (order.branch as any)?.name || "";
+    const deliveryLabel = order.deliveryType === "delivery" ? "Delivery a domicilio" : "Recoger en sucursal";
+    const deliveryInfo = order.deliveryType === "delivery"
+      ? `${deliveryLabel} · ${branchName}${order.deliveryDistance ? ` (${order.deliveryDistance.toFixed(1)} km)` : ""}`
+      : `${deliveryLabel} · ${branchName || "Sucursal"}`;
+    const trackingLink = order.picker?.smrURL || "";
+    const bookingDetailUrl = order.picker?.bookingDetailUrl || "";
+
+    const orderHtml = `
+      <div style="font-family:Switzer,-apple-system,sans-serif;max-width:600px;margin:0 auto">
+        <div style="background:#235931;padding:28px 24px;border-radius:16px 16px 0 0;text-align:center">
+          <h1 style="color:#fff;margin:0;font-size:26px;letter-spacing:-1px">Boloncity</h1>
+          <p style="color:#efd537;margin:8px 0 0;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase">Pedido confirmado</p>
+        </div>
+        <div style="background:#fff;padding:28px 24px;border:1px solid #e0e0e0;border-top:0;border-radius:0 0 16px 16px">
+          <p style="font-size:20px;font-weight:800;margin:0 0 4px">¡Hola${order.customerName ? " " + escapeHtml(order.customerName) : ""}!</p>
+          <p style="color:#666;margin:0 0 24px">Tu pedido <strong style="color:#235931">#${order.orderNumber}</strong> ha sido confirmado.</p>
+          <div style="background:#f8f6ec;border-radius:12px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:#235931;font-weight:700">
+            ${deliveryInfo}
+          </div>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:16px">${itemsRows}</table>
+          <div style="border-top:2px solid #235931;padding:12px 0;text-align:right;font-size:15px;font-weight:700">
+            Subtotal: $${centsToDollars(order.subtotal).toFixed(2)}<br />
+            ${order.promo?.amount ? `${order.promo.label || "Promoción"}: -$${centsToDollars(order.promo.amount).toFixed(2)}<br />` : ""}
+            ${order.deliveryCost ? `Envío: $${centsToDollars(order.deliveryCost).toFixed(2)}<br />` : ""}
+            <span style="font-size:18px;color:#235931">Total pagado: $${centsToDollars(order.total).toFixed(2)}</span>
+          </div>
+          ${order.deliveryAddress ? `<p style="margin:16px 0 0;color:#666;font-size:14px"><strong>Dirección:</strong> ${escapeHtml(order.deliveryAddress)}</p>` : ""}
+          ${trackingLink ? `
+            <div style="margin:20px 0 0;text-align:center">
+              <a href="${trackingLink}" style="display:inline-block;background:#235931;color:#fff;padding:14px 24px;border-radius:999px;font-size:15px;font-weight:800;text-decoration:none">Seguir delivery en vivo</a>
+            </div>
+          ` : ""}
+          <p style="color:#00a523;font-weight:700;margin:16px 0 0">Puntos ganados: ${order.pointsEarned}</p>
+          <p style="color:#999;font-size:13px;margin:20px 0 0;text-align:center">Puedes seguir tu pedido en <a href="${escapeHtml(getOrderDetailUrl(order))}" style="color:#235931">${escapeHtml(getFrontendUrl().replace(/^https?:\/\//, ""))}/pedido</a></p>
+        </div>
+      </div>`;
+
+    if (tempPassword) {
+      const welcomeHtml = `
+        <div style="font-family:Switzer,sans-serif;max-width:600px;margin:0 auto">
+          <div style="background:#235931;padding:24px;border-radius:16px 16px 0 0;text-align:center">
+            <h1 style="color:#fff;margin:0;font-size:24px">¡Bienvenido a Boloncity!</h1>
+          </div>
+          <div style="background:#fff;padding:24px;border:1px solid #e0e0e0;border-top:0;border-radius:0 0 16px 16px">
+            <p style="font-size:18px;font-weight:700;margin:0 0 4px">Tu cuenta ha sido creada</p>
+            <p style="color:#666;margin:0 0 16px">Con tu primera compra, hemos creado automáticamente una cuenta para ti.</p>
+            <div style="background:#f5f5f5;border-radius:12px;padding:16px;margin-bottom:16px">
+              <p style="margin:0 0 8px"><strong>Email:</strong> ${user.email}</p>
+              <p style="margin:0"><strong>Contraseña temporal:</strong> ${tempPassword}</p>
+            </div>
+            <p style="color:#999;font-size:13px">Te recomendamos cambiar tu contraseña en tu próxima visita. Puedes ingresar en boloncity.com/login</p>
+          </div>
+        </div>`;
+
+      await sendEmail(user.email, "Bienvenido a Boloncity — tu cuenta ha sido creada", welcomeHtml).catch(() => {});
+    }
+
+    await sendEmail(user.email, `Boloncity: pedido #${order.orderNumber} confirmado`, orderHtml).catch(() => {});
+  }
+
+}
+
+/**
+ * PayPhone dijo que el pago NO paso: la orden queda cancelada y con confirmedAt (no se vuelve
+ * a intentar). Solo se llama con una respuesta real de la fase de confirmacion; jamas con un
+ * "todavia no aparece la transaccion".
+ */
+export async function markCardOrderRejected(order: any, payphoneResult: any, clientTxId: string) {
+  const previousStatus = order.status;
+  order.status = "cancelled";
+  order.payphone = {
+    ...(order.payphone?.toObject ? order.payphone.toObject() : order.payphone),
+    clientTransactionId: clientTxId,
+    transactionId: payphoneResult?.transactionId,
+    authorizationCode: payphoneResult?.authorizationCode,
+    statusCode: payphoneResult?.statusCode,
+    cardBrand: payphoneResult?.cardBrand,
+    lastDigits: payphoneResult?.lastDigits,
+    confirmedAt: new Date(),
+  };
+  pushAudit(order, {
+    action: "status_change",
+    performedBy: null,
+    performedByEmail: "system",
+    fromValue: previousStatus,
+    toValue: order.status,
+    details: `PayPhone status: ${payphoneResult?.transactionStatus || "unknown"}`,
+  });
+  await order.save();
+}
+
 export async function confirmOrder(req: Request, res: Response) {
   const { id, clientTxId } = req.body as { id: number; clientTxId: string };
 
@@ -661,190 +877,38 @@ export async function confirmOrder(req: Request, res: Response) {
     return;
   }
 
-  const approved = payphoneResult?.statusCode === 3 || payphoneResult?.transactionStatus === "Approved";
-  // El clientTransactionId es público (va en el link de pago): una transacción aprobada por OTRO monto
-  // no puede marcar la orden como pagada ni mandarla a cocina.
-  const paidAmount = Number(payphoneResult?.amount);
-  const amountMismatch = Number.isFinite(paidAmount) && paidAmount > 0 && paidAmount !== order.total;
-  const txMismatch = payphoneResult?.clientTransactionId && payphoneResult.clientTransactionId !== clientTxId;
-  if (approved && (amountMismatch || txMismatch)) {
-    console.error(
-      `[payphone] ${order.orderNumber}: pago aprobado que no cuadra (monto ${paidAmount} vs total ${order.total}, clientTxId ${payphoneResult?.clientTransactionId} vs ${clientTxId}, txId ${payphoneResult?.transactionId})`
-    );
-    pushAudit(order, {
-      action: "payment_mismatch",
-      performedBy: null,
-      performedByEmail: "system",
-      fromValue: order.status,
-      toValue: order.status,
-      details: `PayPhone txId ${payphoneResult?.transactionId || ""} aprobado por ${paidAmount} (total ${order.total}). Revisar manualmente`,
-    });
-    await order.save();
+  // Carrera con el "pagado" del bot de WhatsApp: los dos confirman la MISMA transacción. Se relee la orden
+  // justo después de PayPhone; si el otro camino ya la cerró, no se vuelve a cobrar puntos, ni se manda otra
+  // comanda, ni se pide un segundo motorizado, ni se cancela un pedido que ya está pagado.
+  const fresh = await Order.findOne({ "payphone.clientTransactionId": clientTxId }).populate("user").populate("branch");
+  if (!fresh) {
+    res.status(404).json({ message: "Order not found" });
+    return;
+  }
+  if (fresh.status !== "pending" || fresh.payphone?.transactionId || fresh.payphone?.confirmedAt) {
+    res.json({ order: fresh, payphoneResult });
+    return;
+  }
+
+  const verdict = evaluatePayphoneResult(fresh, payphoneResult, clientTxId);
+
+  if (verdict === "mismatch") {
+    await recordPayphoneMismatch(fresh, payphoneResult, clientTxId);
     res.status(409).json({ message: "El pago no coincide con el total del pedido. Escríbenos para revisarlo" });
     return;
   }
 
-  if (approved) {
-    const previousStatus = order.status;
-    order.status = "paid";
-    order.payphone = {
-      ...(order.payphone?.toObject ? order.payphone.toObject() : order.payphone),
-      clientTransactionId: clientTxId,
-      transactionId: payphoneResult.transactionId,
-      authorizationCode: payphoneResult.authorizationCode,
-      statusCode: payphoneResult.statusCode,
-      cardBrand: payphoneResult.cardBrand,
-      lastDigits: payphoneResult.lastDigits,
-      confirmedAt: new Date(),
-    };
-
-    let user = await User.findOne({ email: order.customerEmail });
-    let tempPassword: string | null = null;
-    if (!user) {
-      const created = await createAutoUser({
-        email: order.customerEmail,
-        name: order.customerName,
-        phone: order.customerPhone,
-      });
-      user = created.user;
-      tempPassword = created.tempPassword;
-      order.user = user._id;
-    } else {
-      order.user = user._id;
-    }
-
-    // pointsEarned ya se calculo al crear la orden (tarifa por dolar + extras por producto).
-    pushAudit(order, {
-      action: "payment_confirmed",
-      performedBy: null,
-      performedByEmail: "system",
-      fromValue: previousStatus,
-      toValue: order.status,
-      details: `PayPhone txId: ${payphoneResult.transactionId || ""}`,
-    });
-    await order.save();
-
-    // Pago confirmado = venta real: recién aquí se le reporta a Meta.
-    await reportPurchaseToMeta(order);
-
-    // Pago confirmado: la comanda entra al POS RunFood del local (si esta configurado).
-    if (!order.scheduledFor) {
-      await sendOrderToRunfood(order);
-    }
-
-    // Tarjeta inmediata: se reserva Picker al confirmar el pago. Los PROGRAMADOS no:
-    // su Picker se pide recién al pasar a "Listas para recolección" (ver updateOrderStatus).
-    if (order.deliveryType === "delivery" && !order.picker?.bookingId && !order.scheduledFor) {
-      await bookPickerForOrder(order, "CARD");
-    }
-
-    if (user) {
-      user.points += order.pointsEarned;
-      user.pointsHistory.push({
-        amount: order.pointsEarned,
-        reason: `Compra ${order.orderNumber}`,
-        orderId: order._id,
-        date: new Date(),
-      });
-      await user.save();
-
-      const itemsRows = order.items
-        .map(
-          (item: any) =>
-            `<tr style="border-bottom:1px solid #e0e0e0"><td style="padding:10px 0">${escapeHtml(item.name)}</td><td style="padding:10px 0;text-align:center">x${item.quantity}</td><td style="padding:10px 0;text-align:right;font-weight:700">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
-        )
-        .join("");
-
-      const branchName = (order.branch as any)?.name || "";
-      const deliveryLabel = order.deliveryType === "delivery" ? "Delivery a domicilio" : "Recoger en sucursal";
-      const deliveryInfo = order.deliveryType === "delivery"
-        ? `${deliveryLabel} · ${branchName}${order.deliveryDistance ? ` (${order.deliveryDistance.toFixed(1)} km)` : ""}`
-        : `${deliveryLabel} · ${branchName || "Sucursal"}`;
-      const trackingLink = order.picker?.smrURL || "";
-      const bookingDetailUrl = order.picker?.bookingDetailUrl || "";
-
-      const orderHtml = `
-        <div style="font-family:Switzer,-apple-system,sans-serif;max-width:600px;margin:0 auto">
-          <div style="background:#235931;padding:28px 24px;border-radius:16px 16px 0 0;text-align:center">
-            <h1 style="color:#fff;margin:0;font-size:26px;letter-spacing:-1px">Boloncity</h1>
-            <p style="color:#efd537;margin:8px 0 0;font-size:13px;font-weight:700;letter-spacing:2px;text-transform:uppercase">Pedido confirmado</p>
-          </div>
-          <div style="background:#fff;padding:28px 24px;border:1px solid #e0e0e0;border-top:0;border-radius:0 0 16px 16px">
-            <p style="font-size:20px;font-weight:800;margin:0 0 4px">¡Hola${order.customerName ? " " + escapeHtml(order.customerName) : ""}!</p>
-            <p style="color:#666;margin:0 0 24px">Tu pedido <strong style="color:#235931">#${order.orderNumber}</strong> ha sido confirmado.</p>
-            <div style="background:#f8f6ec;border-radius:12px;padding:12px 16px;margin-bottom:20px;font-size:14px;color:#235931;font-weight:700">
-              ${deliveryInfo}
-            </div>
-            <table style="width:100%;border-collapse:collapse;margin-bottom:16px">${itemsRows}</table>
-            <div style="border-top:2px solid #235931;padding:12px 0;text-align:right;font-size:15px;font-weight:700">
-              Subtotal: $${centsToDollars(order.subtotal).toFixed(2)}<br />
-              ${order.promo?.amount ? `${order.promo.label || "Promoción"}: -$${centsToDollars(order.promo.amount).toFixed(2)}<br />` : ""}
-              ${order.deliveryCost ? `Envío: $${centsToDollars(order.deliveryCost).toFixed(2)}<br />` : ""}
-              <span style="font-size:18px;color:#235931">Total pagado: $${centsToDollars(order.total).toFixed(2)}</span>
-            </div>
-            ${order.deliveryAddress ? `<p style="margin:16px 0 0;color:#666;font-size:14px"><strong>Dirección:</strong> ${escapeHtml(order.deliveryAddress)}</p>` : ""}
-            ${trackingLink ? `
-              <div style="margin:20px 0 0;text-align:center">
-                <a href="${trackingLink}" style="display:inline-block;background:#235931;color:#fff;padding:14px 24px;border-radius:999px;font-size:15px;font-weight:800;text-decoration:none">Seguir delivery en vivo</a>
-              </div>
-            ` : ""}
-            <p style="color:#00a523;font-weight:700;margin:16px 0 0">Puntos ganados: ${order.pointsEarned}</p>
-            <p style="color:#999;font-size:13px;margin:20px 0 0;text-align:center">Puedes seguir tu pedido en <a href="${escapeHtml(getOrderDetailUrl(order))}" style="color:#235931">${escapeHtml(getFrontendUrl().replace(/^https?:\/\//, ""))}/pedido</a></p>
-          </div>
-        </div>`;
-
-      if (tempPassword) {
-        const welcomeHtml = `
-          <div style="font-family:Switzer,sans-serif;max-width:600px;margin:0 auto">
-            <div style="background:#235931;padding:24px;border-radius:16px 16px 0 0;text-align:center">
-              <h1 style="color:#fff;margin:0;font-size:24px">¡Bienvenido a Boloncity!</h1>
-            </div>
-            <div style="background:#fff;padding:24px;border:1px solid #e0e0e0;border-top:0;border-radius:0 0 16px 16px">
-              <p style="font-size:18px;font-weight:700;margin:0 0 4px">Tu cuenta ha sido creada</p>
-              <p style="color:#666;margin:0 0 16px">Con tu primera compra, hemos creado automáticamente una cuenta para ti.</p>
-              <div style="background:#f5f5f5;border-radius:12px;padding:16px;margin-bottom:16px">
-                <p style="margin:0 0 8px"><strong>Email:</strong> ${user.email}</p>
-                <p style="margin:0"><strong>Contraseña temporal:</strong> ${tempPassword}</p>
-              </div>
-              <p style="color:#999;font-size:13px">Te recomendamos cambiar tu contraseña en tu próxima visita. Puedes ingresar en boloncity.com/login</p>
-            </div>
-          </div>`;
-
-        await sendEmail(user.email, "Bienvenido a Boloncity — tu cuenta ha sido creada", welcomeHtml).catch(() => {});
-      }
-
-      await sendEmail(user.email, `Boloncity: pedido #${order.orderNumber} confirmado`, orderHtml).catch(() => {});
-    }
-
-    res.json({ order, payphoneResult });
+  if (verdict === "approved") {
+    await settleApprovedCardOrder(fresh, payphoneResult, clientTxId);
+    res.json({ order: fresh, payphoneResult });
     return;
   }
 
-  const previousStatus = order.status;
-  order.status = "cancelled";
-  order.payphone = {
-    ...(order.payphone?.toObject ? order.payphone.toObject() : order.payphone),
-    clientTransactionId: clientTxId,
-    transactionId: payphoneResult?.transactionId,
-    authorizationCode: payphoneResult?.authorizationCode,
-    statusCode: payphoneResult?.statusCode,
-    cardBrand: payphoneResult?.cardBrand,
-    lastDigits: payphoneResult?.lastDigits,
-    confirmedAt: new Date(),
-  };
-  pushAudit(order, {
-    action: "status_change",
-    performedBy: null,
-    performedByEmail: "system",
-    fromValue: previousStatus,
-    toValue: order.status,
-    details: `PayPhone status: ${payphoneResult?.transactionStatus || "unknown"}`,
-  });
-  await order.save();
+  await markCardOrderRejected(fresh, payphoneResult, clientTxId);
 
   res.status(400).json({
     message: "El pago no fue aprobado. Intenta de nuevo.",
-    order,
+    order: fresh,
     payphoneResult,
   });
 }
