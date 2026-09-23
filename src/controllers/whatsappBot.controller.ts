@@ -662,6 +662,12 @@ function defaultDeps(): BotDeps {
     createOrder: createOrderWithLock,
     settlePayment: settleBotPayment,
     trackOrder: async (phone, message) => (await trackOrderForPhone(phone, message)).message,
+    activePromo: async () => {
+      // La promo sale de la configuración del negocio, nunca de la IA.
+      const settings = await getOrCreateSettings();
+      const promo = getActivePromo(settings);
+      return promo.active ? promo.label : "";
+    },
     extract: aiExtract,
     chooseOption: aiChooseOption,
     menuUrl: `${getFrontendUrl()}/catalogo`,
