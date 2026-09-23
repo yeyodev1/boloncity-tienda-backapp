@@ -250,15 +250,15 @@ function readLocation(body: any, message = ""): { lat: number; lng: number } | n
 
 // ─── Dependencias reales del router ──────────────────────────────────────────
 
-async function findLastOrder(phone: string): Promise<LastOrder | null> {
+async function findLastOrder(phone: string, options: { includeUnpaid?: boolean } = {}): Promise<LastOrder | null> {
   if (isLid(phone)) return null;
   const session: any = await WhatsAppSession.findOne({ phone }).select("resetAt").lean();
   const order: any = await Order.findOne({
     customerPhone: { $in: phoneVariants(phone) },
     ...(session?.resetAt ? { createdAt: { $gt: session.resetAt } } : {}),
     status: { $ne: "cancelled" },
-    // Una tarjeta que nunca se pagó no es "lo de la última vez".
-    $nor: [{ status: "pending", paymentMethod: "card" }],
+    // Una tarjeta que nunca se pagó no es "lo de la última vez"… salvo que el cliente pida repetirlo.
+    ...(options.includeUnpaid ? {} : { $nor: [{ status: "pending", paymentMethod: "card" }] }),
     "items.0": { $exists: true },
   })
     .sort({ createdAt: -1 })

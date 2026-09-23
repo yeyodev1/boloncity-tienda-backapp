@@ -2092,6 +2092,20 @@ test("una pregunta no elige forma de pago ni tipo de entrega", async () => {
   assert.equal(state.paymentMethod, "card");
 });
 
+test("pedir repetir encuentra el último pedido aunque la tarjeta siga sin pagar", async () => {
+  const pedido = { orderNumber: "ORD-00099", createdAt: new Date(), items: [{ productId: "p1", name: "HUMITA", quantity: 2 }], deliveryType: "pickup" as const };
+  const vistos: Array<{ includeUnpaid?: boolean }> = [];
+  const { deps } = fakeDeps({ lastOrder: pedido });
+  const original = deps.lastOrder;
+  deps.lastOrder = async (phone, options) => {
+    vistos.push(options || {});
+    return original(phone, options);
+  };
+  const { last } = await chat(deps, ["quiero lo mismo de la ultima vez"]);
+  assert.ok(vistos.some((opciones) => opciones.includeUnpaid), "al pedir repetir se buscan también las no pagadas");
+  assert.match(last.reply, /ORD-00099/, last.reply);
+});
+
 (async () => {
   let failed = 0;
   for (const [name, run] of tests) {

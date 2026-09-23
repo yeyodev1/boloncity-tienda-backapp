@@ -242,7 +242,12 @@ export interface PaymentSettlement {
 export interface BotDeps {
   search(query: string, branchId?: string): Promise<SearchResult>;
   catalog(branchId?: string): Promise<CatalogProduct[]>;
-  lastOrder(phone: string): Promise<LastOrder | null>;
+  /**
+   * Último pedido del teléfono. `includeUnpaid` incluye las tarjetas que quedaron sin pagar: NO se ofrecen
+   * solas al saludar (un checkout abandonado no es "lo de siempre"), pero si el cliente PIDE repetir su
+   * último pedido hay que encontrarlo igual, o el bot responde "no tienes pedidos" recién ordenado.
+   */
+  lastOrder(phone: string, options?: { includeUnpaid?: boolean }): Promise<LastOrder | null>;
   resolveMapsUrl(url: string): Promise<{ lat: number; lng: number } | null>;
   /**
    * `preferBranchId` fuerza a que gane ESA sucursal si cubre la dirección: es la que el cliente eligió
@@ -752,7 +757,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
 
   // R5 · "Lo mismo de la última vez".
   if (wantsReorder(message) && !state.pendingChoice) {
-    const order = await deps.lastOrder(state.phone);
+    const order = await deps.lastOrder(state.phone, { includeUnpaid: true });
     state.reorderOffered = true;
     if (!order) {
       notes.push("No te encuentro pedidos anteriores con este número 🙈");
