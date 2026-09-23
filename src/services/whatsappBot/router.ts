@@ -1981,7 +1981,7 @@ function orderFollowUp(state: BotState, message: string, deps: BotDeps): string 
     if (link && method !== "card") {
       return `Tu pedido ${order} ya quedó creado para pagar con tarjeta 💳\n${link}\n\nSi prefieres pagar ${method === "cash" ? "en efectivo" : "de otra forma"}, escríbele al ${deps.supportPhone} y te lo cambian`;
     }
-    return `Tu pedido ${order} ya está registrado ✅${link ? `\nPuedes pagarlo aquí: ${link}` : ""}`;
+    return `Tu pedido ${order} ya está registrado ✅${link ? `\nPuedes pagarlo aquí: ${link}\n\nCuando lo hayas pagado, escríbeme *pagado* y verifico el pago ✅` : ""}`;
   }
   if (isGreeting(message)) {
     return `¡Hola de nuevo! 👋 Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nEscribe *mi pedido* para ver cómo va, o dime qué se te antoja y armamos uno nuevo`;
