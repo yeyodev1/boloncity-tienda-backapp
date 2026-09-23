@@ -1,7 +1,31 @@
 import axios from "axios";
 import { env } from "../config/env";
 
-export async function confirmPayphoneTransaction(id: number, clientTxId: string) {
+/**
+ * SIMULADOR DE PAGO, SOLO PARA PROBAR. Con PAYPHONE_SIMULATE_APPROVED=1 y APP_ENV distinto de "production",
+ * PayPhone no se llama: la consulta dice que la venta está aprobada y la confirmación la aprueba por el monto
+ * exacto del pedido. Sirve para recorrer el ciclo completo (pagado → cocina → motorizado → tablero) sin gastar
+ * una tarjeta de verdad. En producción esta función devuelve false SIEMPRE, aunque la variable esté puesta.
+ */
+export function payphoneSimulationOn() {
+  return process.env.PAYPHONE_SIMULATE_APPROVED === "1" && env.APP_ENV !== "production";
+}
+
+/** Id de transacción falso y estable para un clientTransactionId simulado. */
+function simulatedTransactionId(clientTxId: string) {
+  let hash = 0;
+  for (const char of clientTxId) hash = (hash * 31 + char.charCodeAt(0)) % 900_000_000;
+  return 900_000_000 + hash;
+}
+
+/** `simulatedAmount` (centavos) solo se usa con la simulación encendida: es el total del pedido a aprobar. */
+export async function confirmPayphoneTransaction(id: number, clientTxId: string, simulatedAmount?: number) {
+  if (payphoneSimulationOn()) {
+    const amount = Number(simulatedAmount) || 0;
+    console.warn(`[payphone] SIMULACIÓN: se aprueba ${clientTxId} por ${amount} centavos sin llamar a PayPhone`);
+    return { transactionId: id, clientTransactionId: clientTxId, transactionStatus: "Approved", statusCode: 3, amount, authorizationCode: "SIMULADO", cardBrand: "VISA", lastDigits: "0000" };
+  }
+
   if (!env.PAYPHONE_TOKEN) {
     throw new Error("PAYPHONE_TOKEN is not configured");
   }
@@ -123,6 +147,10 @@ export type PayphoneSaleLookup =
  * No lanza nunca: cualquier 4xx, cuerpo raro, timeout o caida de red devuelve `found: false`.
  */
 export async function getPayphoneSaleByClientTxId(clientTransactionId: string): Promise<PayphoneSaleLookup> {
+  if (payphoneSimulationOn()) {
+    console.warn(`[payphone] SIMULACIÓN: ${clientTransactionId} se responde como aprobada`);
+    return { found: true, statusCode: 3, transactionStatus: "Approved", transactionId: simulatedTransactionId(clientTransactionId) };
+  }
   if (!env.PAYPHONE_TOKEN) return { found: false, error: "PAYPHONE_TOKEN is not configured" };
   if (!clientTransactionId) return { found: false, error: "Sin clientTransactionId" };
 
