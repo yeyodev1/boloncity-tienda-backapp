@@ -2152,6 +2152,36 @@ test("después del pedido, un '?' o un emoji no responden '¡Gracias a ti!'", as
   assert.match(gracias.reply, /Gracias a ti/i);
 });
 
+test("pago confirmado: en RETIRO dice dónde queda el local; en DELIVERY, el seguimiento", async () => {
+  const retiro = await cardOrder({
+    settlement: {
+      outcome: "paid_now",
+      total: 12.5,
+      deliveryType: "pickup",
+      branchName: "Boloncity Kennedy",
+      branchAddress: "Víctor Hugo Sicouret y Emma Gonzáles",
+      branchMapsUrl: "https://maps.google.com/?q=boloncity+kennedy",
+      branchHours: "07:00 a 13:00",
+    },
+  });
+  const pagoRetiro = await handleTurn(retiro.state, { message: "pagado" }, retiro.deps);
+  assert.match(pagoRetiro.reply, /Pago confirmado/i);
+  assert.match(pagoRetiro.reply, /Víctor Hugo Sicouret/);
+  assert.match(pagoRetiro.reply, /Cómo llegar/);
+  assert.match(pagoRetiro.reply, /07:00 a 13:00/);
+  assert.doesNotMatch(pagoRetiro.reply, /motorizado/i, "en retiro no se habla de motorizado");
+
+  const envio = await cardOrder({ settlement: { outcome: "paid_now", total: 12.5, deliveryType: "delivery", trackingUrl: "https://picker.test/smr/9" } });
+  const pagoEnvio = await handleTurn(envio.state, { message: "pagado" }, envio.deps);
+  assert.match(pagoEnvio.reply, /Sigue a tu motorizado/i);
+  assert.match(pagoEnvio.reply, /picker\.test\/smr\/9/);
+
+  // Delivery pagado pero Picker todavía sin asignar: se avisa que el link llega después.
+  const sinPicker = await cardOrder({ settlement: { outcome: "paid_now", total: 12.5, deliveryType: "delivery" } });
+  const pagoSinPicker = await handleTurn(sinPicker.state, { message: "pagado" }, sinPicker.deps);
+  assert.match(pagoSinPicker.reply, /te paso el link para seguirlo/i, pagoSinPicker.reply);
+});
+
 (async () => {
   let failed = 0;
   for (const [name, run] of tests) {

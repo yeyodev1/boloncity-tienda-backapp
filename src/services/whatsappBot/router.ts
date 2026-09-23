@@ -239,6 +239,12 @@ export interface PaymentSettlement {
   /** "delivery" o "pickup" del pedido ya creado: cambia lo que se le promete al cliente. */
   deliveryType?: "delivery" | "pickup";
   branchName?: string;
+  /** Dirección del local: en un RETIRO pagado, el cliente necesita saber a dónde ir. */
+  branchAddress?: string;
+  /** Link para abrir el local en el mapa (el que el local tiene configurado, o una búsqueda por dirección). */
+  branchMapsUrl?: string;
+  /** Horario de hoy del local, para que sepa hasta cuándo puede pasar. */
+  branchHours?: string;
 }
 
 export interface BotDeps {
@@ -2073,11 +2079,22 @@ function paymentClaimReply(state: BotState, settlement: PaymentSettlement, deps:
       settlement.outcome === "already_paid"
         ? `✅ Tu pago del pedido ${order} ya está confirmado${total}`
         : `✅ ¡Pago confirmado! Tu pedido ${order} quedó pagado${total}`;
-    const body =
-      deliveryType === "pickup"
-        ? `Ya está en cocina 🫓 Te aviso en cuanto esté listo para retirar${branchName ? ` en ${branchName}` : ""}`
-        : `Ya está en cocina 🫓 Te aviso cuando salga el motorizado 🛵`;
-    const tracking = settlement.trackingUrl ? `\n\nSigue a tu motorizado en vivo aquí 🛵\n${settlement.trackingUrl}` : "";
+    if (deliveryType === "pickup") {
+      // Retiro pagado: lo que el cliente necesita es DÓNDE ir, no un seguimiento de motorizado.
+      const donde = [
+        `Ya está en cocina 🫓 Te aviso en cuanto esté listo para retirar${branchName ? ` en ${branchName}` : ""}`,
+        settlement.branchAddress ? `📍 ${settlement.branchAddress}` : "",
+        settlement.branchMapsUrl ? `Cómo llegar: ${settlement.branchMapsUrl}` : "",
+        settlement.branchHours ? `🕒 Hoy atiende de ${settlement.branchHours}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return `${head}\n\n${donde}\n\nEscribe *mi pedido* cuando quieras para ver cómo va`;
+    }
+    const body = `Ya está en cocina 🫓 Te aviso cuando salga el motorizado 🛵`;
+    const tracking = settlement.trackingUrl
+      ? `\n\nSigue a tu motorizado en vivo aquí 🛵\n${settlement.trackingUrl}`
+      : `\n\nEn cuanto Picker asigne al motorizado te paso el link para seguirlo en vivo 🛵`;
     return `${head}\n\n${body}${tracking}\n\nEscribe *mi pedido* cuando quieras para ver cómo va`;
   }
 
