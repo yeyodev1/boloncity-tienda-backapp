@@ -869,7 +869,8 @@ export async function confirmOrder(req: Request, res: Response) {
   let payphoneResult;
 
   try {
-    payphoneResult = await confirmPayphoneTransaction(id, clientTxId);
+    // Si la orden se creó con la app de PRUEBAS (solo bot), se confirma con ese mismo token.
+    payphoneResult = await confirmPayphoneTransaction(id, clientTxId, undefined, (order as any).payphone?.mode);
   } catch (error) {
     res.status(503).json({
       message: error instanceof Error ? error.message : "PayPhone is not configured",

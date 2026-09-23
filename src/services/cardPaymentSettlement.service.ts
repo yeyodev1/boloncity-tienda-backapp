@@ -106,7 +106,9 @@ export async function settleCardPaymentByOrderNumber(orderNumber: string): Promi
   const clientTxId = order.payphone?.clientTransactionId;
   if (!clientTxId) return { outcome: "error", order, detail: "El pedido no tiene clientTransactionId de PayPhone" };
 
-  const sale = await getPayphoneSaleByClientTxId(clientTxId);
+  // La orden recuerda con qué app se cobró: las del bot en modo prueba se consultan con el token de PRUEBAS.
+  const mode = order.payphone?.mode;
+  const sale = await getPayphoneSaleByClientTxId(clientTxId, mode);
 
   const decision = decideFromSale(sale);
   if (decision.next === "pending") return { outcome: "pending", order, detail: decision.detail };
@@ -115,7 +117,7 @@ export async function settleCardPaymentByOrderNumber(orderNumber: string): Promi
   let payphoneResult: any;
   try {
     // La fase de confirmación obligatoria (evita el auto-reverso de los 5 minutos).
-    payphoneResult = await confirmPayphoneTransaction(decision.transactionId, clientTxId, order.total);
+    payphoneResult = await confirmPayphoneTransaction(decision.transactionId, clientTxId, order.total, mode);
   } catch (error) {
     return { outcome: "error", order, detail: error instanceof Error ? error.message : "No se pudo confirmar con PayPhone" };
   }

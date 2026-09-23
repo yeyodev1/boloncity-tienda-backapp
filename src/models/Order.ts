@@ -160,6 +160,8 @@ const orderSchema = new Schema<IOrder>(
     payphone: {
       clientTransactionId: { type: String, default: "" },
       storeId: { type: String, default: "" },
+      /** "test" = cobrado con la app de PRUEBAS de PayPhone (solo pedidos del bot, ver BOT_PAYPHONE_TEST). */
+      mode: { type: String, default: "" },
       transactionId: { type: Number, default: null },
       authorizationCode: { type: String, default: "" },
       statusCode: { type: Number, default: null },
