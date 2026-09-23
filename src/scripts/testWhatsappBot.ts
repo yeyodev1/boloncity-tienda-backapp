@@ -22,6 +22,7 @@ import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/
 import { claimsPaid, classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
 import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
 import { decideFromSale } from "../services/cardPaymentSettlement.service";
+import { FALLBACK_MESSAGE } from "../controllers/whatsappBot.controller";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { isBotPath } from "../app";
 import { BotDeps, BotState, classifyRoute, cleanQueryLabel, createInitialState, handleTurn, LastOrder, PaymentSettlement, sameProductQuery, TurnResult } from "../services/whatsappBot/router";
@@ -2120,6 +2121,23 @@ test("'pagado' en un pedido en EFECTIVO explica que se paga al recibir", async (
   const result = await handleTurn(state, { message: "pagado" }, deps);
   assert.match(result.reply, /es en efectivo/i, result.reply);
   assert.doesNotMatch(result.reply, /No pude verificar/i, result.reply);
+});
+
+test("el bot SIEMPRE responde algo: ningún turno puede salir en blanco", async () => {
+  const { deps } = fakeDeps();
+  const mensajes = ["", "   ", "?", "🙂", "{body}", "asdkjh", "...", "1", "ok", "hola", "el verde", "mi pedido", "menu"];
+  for (const message of mensajes) {
+    const result = await handleTurn(createInitialState("+593999"), { message }, deps);
+    assert.ok(result.reply && result.reply.trim().length > 0, `sin respuesta para ${JSON.stringify(message)}`);
+  }
+  // Y en medio de un pedido, con una elección abierta, tampoco.
+  const { deps: deps2 } = fakeDeps();
+  const { state } = await chat(deps2, ["un bolon"]);
+  for (const message of ["", "??", "🙃", "xyz"]) {
+    const result = await handleTurn(state, { message }, deps2);
+    assert.ok(result.reply && result.reply.trim().length > 0, `sin respuesta con elección abierta para ${JSON.stringify(message)}`);
+  }
+  assert.ok(FALLBACK_MESSAGE.trim().length > 0);
 });
 
 (async () => {

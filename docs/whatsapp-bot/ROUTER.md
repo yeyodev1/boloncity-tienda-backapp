@@ -408,3 +408,17 @@ responde con datos REALES (sucursales de Mongo, promo configurada en Settings), 
 
 No se dispara en los pasos donde el bot ESPERA ese dato (nombre, correo, dirección, factura): ahí "0912345675"
 o "a nombre de Ana" son la respuesta al paso, no una pregunta.
+
+## Regla: el bot SIEMPRE responde
+
+Ningún endpoint puede devolver `message` vacío, pase lo que pase:
+
+- Turno sin texto (el nodo de `{history}` a veces llega vacío) → se pregunta qué quiere pedir.
+- Body ilegible, JSON roto o sin teléfono → HTTP 200 con un mensaje que explica qué hacer.
+- `/router` ya no devuelve `message: ""`: si un flow lo envía al cliente, igual ve algo útil.
+- Una prueba (`npm run test:bot`) recorre mensajes vacíos, emojis sueltos, variables sin reemplazar y texto
+  basura, con y sin elección abierta, y falla si alguna respuesta sale en blanco.
+
+Lo que el backend NO puede garantizar: que BuilderBot llame. Si el flow se despublica o pierde la conexión con
+WhatsApp, no llega nada al backend (pasó el 2026-09-22 y el 23: cero llamadas en los logs mientras el bot
+respondía perfecto por HTTP). Ahí se revisa el panel de BuilderBot, no el backend.
