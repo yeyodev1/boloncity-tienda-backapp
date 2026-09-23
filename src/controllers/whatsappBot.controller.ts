@@ -630,7 +630,20 @@ async function settleBotPayment(orderNumber: string): Promise<PaymentSettlement>
     paymentLink: order && order.paymentMethod === "card" ? botPaymentLink(order) : undefined,
     deliveryType: order?.deliveryType,
     branchName: order?.branch?.name || undefined,
+    branchAddress: order?.branch?.address || undefined,
+    branchMapsUrl:
+      order?.branch?.googleMapsUrl ||
+      (order?.branch?.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.branch.address)}` : undefined),
+    branchHours: order?.branch ? todaysHours(order.branch) : undefined,
   };
+}
+
+/** "07:00 a 13:00" del local para HOY, tal como lo tiene configurado. Vacío si no hay horario cargado. */
+function todaysHours(branch: any): string | undefined {
+  const availability = getBranchAvailability(branch);
+  const window = availability.nextOpening;
+  if (!window?.opensAt || !window?.closesAt) return undefined;
+  return `${window.opensAt} a ${window.closesAt}`;
 }
 
 /** Dependencias reales. `overrides` permite probar en vivo sin crear órdenes (src/scripts/liveWhatsappBot.ts). */
