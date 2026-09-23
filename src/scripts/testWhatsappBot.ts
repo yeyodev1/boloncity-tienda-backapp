@@ -594,11 +594,13 @@ test("fuera de cobertura: ofrece retiro en el local", async () => {
   assert.equal(state.deliveryType, undefined);
 });
 
-test("sucursal cerrada: no deja confirmar", async () => {
+test("sucursal cerrada: no se crea la orden, se ofrece programar", async () => {
   const { deps, created } = fakeDeps({ closed: true });
-  const { last } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "efectivo", "confirmo"]);
-  assert.match(last.reply, /cerrada/);
-  assert.equal(created.length, 0);
+  const { results, last } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "efectivo", "confirmo"]);
+  assert.match(results[2].reply, /cerrad[ao]/, "al elegir el local avisa que está cerrado");
+  // "confirmo" con el local cerrado acepta lo único ofrecido (programar) y sigue pidiendo los datos.
+  assert.match(last.reply, /queda programado para/i, last.reply);
+  assert.equal(created.length, 0, "todavía no se crea la orden");
 });
 
 test("producto no disponible en la sucursal: se quita al fijar la sucursal", async () => {
@@ -2035,12 +2037,20 @@ test("PAGO-13: una venta con id pero SIN aprobar deja el pedido pendiente (nunca
   assert.equal(aprobada.next === "confirm" && aprobada.transactionId, 12345);
 });
 
-test("con el local cerrado, 'confirmo' explica que primero hay que elegir", async () => {
-  const { deps, created } = fakeDeps({ closed: true });
-  const { state, last } = await chat(deps, ["una humita", "retiro", "1", "confirmo"]);
+test("con el local cerrado y DOS opciones, 'confirmo' explica que primero hay que elegir", async () => {
+  // Hay otra sucursal abierta que cubre: un "confirmo" no dice cuál de las dos quiere.
+  const { deps, created } = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const { state, last } = await chat(deps, ["una humita", "delivery", { location: { lat: -2.15, lng: -79.9 } }, "confirmo"]);
   assert.equal(state.stage, "closed");
   assert.match(last.reply, /primero dime cómo lo quieres/i, last.reply);
   assert.equal(created.length, 0, "no se crea la orden con el local cerrado");
+});
+
+test("retiro con el local cerrado: 'dale' programa cuando es lo único ofrecido", async () => {
+  const { deps } = fakeDeps({ closed: true });
+  const { state, last } = await chat(deps, ["una humita", "retiro", "1", "dale"]);
+  assert.ok(state.scheduledFor, "debió quedar programado");
+  assert.match(last.reply, /queda programado para/i, last.reply);
 });
 
 (async () => {

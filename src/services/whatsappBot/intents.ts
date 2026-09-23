@@ -566,7 +566,8 @@ const testUnnegated = (pattern: RegExp) => {
  * Solo se consulta en el paso `closed`, donde el bot acaba de ofrecer programar: fuera de ahí
  * "mañana" puede ser cualquier cosa.
  */
-const SCHEDULE_PATTERN = /\b(programa|programalo|programala|programar|programado|programada|programame|agenda|agendalo|agendar|agendame|dejalo programado|lo programamos|para manana|manana|manana mismo|manana temprano|primera hora|cuando abran|cuando abra|apenas abran|apenas abra|desde las|a las 7|a las siete|espero a manana|el otro dia|otro dia|luego|despues)\b/;
+// Typos frecuentes escribiendo rápido: "progrmalo", "programlo", "prográmamelo", "agendamelo".
+const SCHEDULE_PATTERN = /\b(progr[ao]?m\w*|agend\w*|programa|programalo|programala|programar|programado|programada|programame|agenda|agendalo|agendar|agendame|dejalo programado|lo programamos|para manana|manana|manana mismo|manana temprano|primera hora|cuando abran|cuando abra|apenas abran|apenas abra|desde las|a las 7|a las siete|espero a manana|el otro dia|otro dia|luego|despues)\b/;
 export const wantsSchedule = testUnnegated(SCHEDULE_PATTERN);
 
 /** "mejor ahora", "lo quiero ya", "ahorita mismo": no quiere esperar a la próxima apertura. */

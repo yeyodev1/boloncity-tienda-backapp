@@ -767,6 +767,14 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return finish("R6:vaciar_carrito");
   }
 
+  // Local cerrado: el cliente elige entre programar para la próxima apertura o irse con una sucursal
+  // abierta. Va ANTES de la confirmación y del saludo porque "dale", "sí" o "ahora" responden a ESA
+  // pregunta: si no, la regla de confirmar se los comía y el pedido no avanzaba.
+  if (state.stage === "closed") {
+    const decided = await handleClosedReply(state, message, deps, notes);
+    if (decided) return finish(`R10:${decided}`);
+  }
+
   // R7 · Confirmación del pedido (solo cuenta si el resumen ya se mostró). En el resumen solo confirma un "sí"
   // sin nada más (classifyConfirmReply, la MISMA función que usa classifyRoute): "sí, pero agrégale un café"
   // aplica el cambio y vuelve a mostrar el resumen; "gracias", "ya" o "nada más" no crean la orden.
@@ -856,13 +864,6 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (wantsMenu(message) || (await isBareCategory(state, message, deps))) {
     skipIdleQuestion = await showMenu(state, message, deps, notes);
     return finish("R9:menu", "catalog");
-  }
-
-  // Local cerrado: el cliente elige entre programar para la próxima apertura o irse con una sucursal
-  // abierta. Va ANTES del saludo porque "dale" o "ahora" responden a esa pregunta, no son cortesía.
-  if (state.stage === "closed") {
-    const decided = await handleClosedReply(state, message, deps, notes);
-    if (decided) return finish(`R10:${decided}`);
   }
 
   // Saludos y cortesías ("hola", "buenas tardes", "gracias", "👍"): se responde con el paso actual.
@@ -1837,7 +1838,10 @@ async function handleClosedReply(state: BotState, message: string, deps: BotDeps
   const asksNow = !asksSchedule && wantsNow(message);
   const schedules =
     Boolean(offer.nextOpeningAt) &&
-    (asksSchedule || (!asksNow && ((scheduleNumber > 0 && numbered === scheduleNumber) || (isYes(message) && !offer.alternative && !otherBranchNumber))));
+    (asksSchedule ||
+      // "dale" / "sí" cuando programar es lo ÚNICO que se ofreció (no hay otra sucursal abierta que cubra):
+      // en retiro el "otro local" no se imprime como opción, así que un sí es un sí a programar.
+      (!asksNow && ((scheduleNumber > 0 && numbered === scheduleNumber) || (isYes(message) && !offer.alternative))));
   if (schedules) {
     state.scheduledFor = offer.nextOpeningAt;
     state.scheduledLabel = `${offer.nextOpeningLabel} a las ${offer.opensAt}`;
@@ -2186,7 +2190,9 @@ export function formatSummary(state: BotState, quote: Quote) {
       state.notes && `Indicaciones: ${state.notes}`
     ),
     cashWarning.trim(),
-    "Escribe *confirmo* y lo mandamos a la cocina 🙌 O dime qué quieres cambiar",
+    state.scheduledFor && state.scheduledLabel
+      ? `Escribe *confirmo* y te lo dejo agendado para ${state.scheduledLabel} 🙌 O dime qué quieres cambiar`
+      : "Escribe *confirmo* y lo mandamos a la cocina 🙌 O dime qué quieres cambiar",
   ]
     .filter(Boolean)
     .join("\n\n");
