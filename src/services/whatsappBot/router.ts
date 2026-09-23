@@ -2128,7 +2128,10 @@ function orderFollowUp(state: BotState, message: string, deps: BotDeps): string 
     return `¡Hola de nuevo! 👋 Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nEscribe *mi pedido* para ver cómo va, o dime qué se te antoja y armamos uno nuevo`;
   }
   if (isSmallTalk(message)) {
-    return `¡Gracias a ti! 🙌 Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nY si se te antoja algo más, dime nomás`;
+    // "gracias" agradece; un "?" suelto o un emoji NO son un agradecimiento (respondía "¡Gracias a ti!").
+    const agradece = /\bgracias\b|🙏/.test(normalizeText(message)) || /gracias/i.test(message);
+    const saludo = agradece ? "¡Gracias a ti! 🙌" : "¡Aquí estoy! 🙌";
+    return `${saludo} Tu pedido ${order} está registrado${link ? `\nSi aún no lo pagas, hazlo aquí: ${link}` : ""}\n\nY si se te antoja algo más, dime nomás`;
   }
   return null;
 }
