@@ -9,6 +9,7 @@ import {
   extractDeclaredName,
   extractDocNumber,
   extractMapsUrl,
+  faqTopic,
   extractOrderNumber,
   hasDocLikeNumber,
   isNo,
@@ -268,6 +269,8 @@ export interface BotDeps {
   chooseOption?(input: { message: string; question: string; options: Array<{ name: string; price?: number }> }): Promise<number | null>;
   menuUrl: string;
   supportPhone: string;
+  /** Promo activa del negocio ("20% de descuento"), tal como la configuró el local. Vacío = no hay. */
+  activePromo?(): Promise<string>;
 }
 
 export interface TurnInput {
@@ -872,6 +875,20 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
 
   // R10 · Respuesta corta y directa a la pregunta del paso actual ("1", "efectivo", "Ana Pérez", la cédula).
   if (await applyDirectAnswer(state, message, deps, notes)) return finish("R10:respuesta_al_paso");
+
+  // R9 · Preguntas frecuentes del negocio (horarios, direcciones, envío, promos, factura, pagos). Solo si el
+  // mensaje ES una pregunta: "una humita con factura" es un pedido, "¿hacen factura?" no. Se responde con
+  // datos reales (sucursales de Mongo, promo configurada), nunca con la IA.
+  const FAQ_SKIP_STEPS: Stage[] = ["invoice_doc", "invoice_name", "name", "email", "address"];
+  if (!state.pendingChoice && !FAQ_SKIP_STEPS.includes(state.stage) && isQuestion(message)) {
+    const faq = await answerFaq(state, message, deps);
+    if (faq) {
+      notes.push(faq);
+      skipIdleQuestion = state.stage === "idle" && !state.cart.length;
+      state.misunderstood = 0;
+      return finish("R9:pregunta_frecuente");
+    }
+  }
 
   // R10 · Todo lo demás: se extraen datos del mensaje (IA con respaldo de reglas) y se aplican.
   const lastBotQuestion = stageQuestionHint(state);
@@ -1813,6 +1830,57 @@ async function closedQuestion(
  * "mejor ahora", "que me lo mande la otra", "¿a qué hora abren?", o el número de la opción.
  * Devuelve el nombre de la decisión, o null si el mensaje no hablaba de esto.
  */
+/**
+ * Responde una PREGUNTA FRECUENTE con datos reales (sucursales de Mongo, promo del negocio). Devuelve el
+ * texto o "" si no hay nada que decir. El bot toma pedidos, pero antes de pedir la gente pregunta horarios,
+ * direcciones o si hacen factura: contestarle "¿qué te gustaría pedir?" era dejarlo hablando solo.
+ */
+async function answerFaq(state: BotState, message: string, deps: BotDeps): Promise<string> {
+  const topic = faqTopic(message);
+  if (!topic) return "";
+  const branches = await deps.pickupBranches().catch(() => [] as BranchOption[]);
+  const named = matchBranchInMessage(message, branches);
+  const hours = (branch?: BranchOption) => {
+    const window = branch?.nextOpening;
+    if (!window) return "";
+    return `${branch?.name}: atiende de ${window.opensAt} a ${window.closesAt}${branch?.open ? " · abierto ahorita ✅" : ` · cerrado, abre ${window.label} a las ${window.opensAt}`}`;
+  };
+
+  if (topic === "horario") {
+    const chosen = named || branches.find((branch) => branch.branchId === state.branchId);
+    if (chosen) return hours(chosen) || `${chosen.name} no tiene horario cargado, escríbenos al ${deps.supportPhone} 🙏`;
+    const abiertos = branches.filter((branch) => branch.open);
+    if (!abiertos.length) {
+      const proxima = branches.map(hours).filter(Boolean).slice(0, 3);
+      return `Ahorita están todas cerradas 😴\n${proxima.join("\n")}\n\nSi quieres te tomo el pedido igual y lo dejamos programado 🗓️`;
+    }
+    return `Abiertos ahorita 🕒\n${abiertos.map((branch) => `• ${branch.name} (hasta ${branch.nextOpening?.closesAt || "el cierre"})`).join("\n")}\n\n¿Te tomo el pedido?`;
+  }
+
+  if (topic === "direccion") {
+    const chosen = named || branches.find((branch) => branch.branchId === state.branchId);
+    if (chosen?.address) return `${chosen.name} queda en ${chosen.address} 📍${chosen.open ? " (abierto ahorita ✅)" : ""}`;
+    if (!branches.length) return "";
+    return `Estos son nuestros locales 🏠\n${branches.map((branch) => `• ${branch.name}${branch.address ? ` · ${branch.address}` : ""}`).join("\n")}`;
+  }
+
+  if (topic === "envio") {
+    if (state.deliveryFee != null && state.branchName) return `El envío desde ${state.branchName} te cuesta ${money(state.deliveryFee)} 🛵`;
+    return "El envío depende de qué tan lejos estés del local 🛵 Mándame tu ubicación desde el clip 📎 y te digo el precio exacto";
+  }
+
+  if (topic === "promos") {
+    const promo = deps.activePromo ? await deps.activePromo().catch(() => "") : "";
+    if (promo) return `Sí 🎉 Ahorita tenemos ${promo}. Se aplica sola al cerrar el pedido`;
+    return `Ahorita no tenemos promos activas 🙂 Mira el menú con fotos aquí: ${deps.menuUrl}`;
+  }
+
+  if (topic === "factura") return "Sí, hacemos factura 🧾 Al cerrar el pedido te pido la cédula o el RUC y el nombre";
+  if (topic === "pagos") return "Puedes pagar con tarjeta 💳 (te mando un link) o en efectivo 💵 al recibirlo. Transferencias por aquí no recibimos 🙏";
+  if (topic === "llamada") return `Para llamadas escríbele al ${deps.supportPhone} 👋 Por aquí yo te tomo el pedido cuando quieras`;
+  return "";
+}
+
 async function handleClosedReply(state: BotState, message: string, deps: BotDeps, notes: string[]): Promise<string | null> {
   const offer = state.closedOffer;
   if (!offer || offer.branchId !== state.branchId) return null;

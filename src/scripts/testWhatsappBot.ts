@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import { menuSeedItems } from "../seeds/menuItems";
 import { CatalogProduct, findCategory, listCategories, rankProducts } from "../services/whatsappBot/catalog";
 import { pickChoice } from "../services/whatsappBot/choice";
+import { faqTopic } from "../services/whatsappBot/intents";
 import axios from "axios";
 import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
@@ -91,7 +92,8 @@ function fakeDeps(options: FakeOptions = {}) {
         name: branch.name,
         address: branch.address,
         open: !isClosed(branch.branchId),
-        nextOpening: isClosed(branch.branchId) ? opening : null,
+        // Como en producción: una sucursal ABIERTA también trae su ventana (la que está en curso).
+        nextOpening: opening,
       })),
     branchStatus: async (branchId) =>
       isClosed(branchId)
@@ -2051,6 +2053,31 @@ test("retiro con el local cerrado: 'dale' programa cuando es lo único ofrecido"
   const { state, last } = await chat(deps, ["una humita", "retiro", "1", "dale"]);
   assert.ok(state.scheduledFor, "debió quedar programado");
   assert.match(last.reply, /queda programado para/i, last.reply);
+});
+
+test("preguntas frecuentes: horarios, dirección, envío, promos, factura y pagos se responden", async () => {
+  assert.equal(faqTopic("hasta que hora abren?"), "horario");
+  assert.equal(faqTopic("cual es la direccion del local de urdesa"), "direccion");
+  assert.equal(faqTopic("cuanto cuesta el envio?"), "envio");
+  assert.equal(faqTopic("tienen promociones?"), "promos");
+  assert.equal(faqTopic("hacen factura?"), "factura");
+  assert.equal(faqTopic("puedo pagar con tarjeta?"), "pagos");
+  assert.equal(faqTopic("me pueden llamar?"), "llamada");
+  // Un pedido NO es una pregunta frecuente, aunque nombre la factura.
+  assert.equal(faqTopic("quiero 2 humitas"), null);
+  assert.equal(faqTopic("aceptan cupones?"), null, "no es una pregunta de medios de pago");
+
+  const { deps } = fakeDeps();
+  const horario = await handleTurn(createInitialState("+593999"), { message: "¿hasta qué hora abren?" }, deps);
+  assert.equal(horario.decision, "R9:pregunta_frecuente", horario.reply);
+  assert.match(horario.reply, /\d{2}:\d{2}/, "dice horas reales");
+
+  const factura = await handleTurn(createInitialState("+593999"), { message: "¿hacen factura?" }, deps);
+  assert.match(factura.reply, /factura/i);
+
+  // Con factura pedida, la cédula sigue siendo la respuesta al paso (no una pregunta frecuente).
+  const { state } = await chat(deps, ["una humita con factura", "retiro", "1", "Ana", "ana@test.com", "tarjeta", "0912345675"]);
+  assert.equal(state.billingDocNumber, "0912345675");
 });
 
 (async () => {

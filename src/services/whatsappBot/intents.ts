@@ -604,3 +604,31 @@ export const rejectsClosedOption = (message: string) =>
 export const asksOpeningHours = test(
   /\b(a que hora (abren|abre|atienden|atiende|empiezan)|desde que hora|hasta que hora|que horario|cual es el horario|horario de atencion|cuando abren|cuando abre|a que hora cierran|hasta cuando atienden)\b/
 );
+
+/**
+ * PREGUNTAS FRECUENTES. El bot toma pedidos, pero un cliente pregunta cosas normales antes de pedir
+ * ("¿hasta qué hora abren?", "¿cuánto cuesta el envío?", "¿hacen factura?") y antes se le respondía
+ * "¿qué te gustaría pedir?" sin contestarle. Todas se responden con datos reales (Mongo), nunca inventados.
+ */
+export type FaqTopic = "horario" | "direccion" | "envio" | "promos" | "factura" | "pagos" | "llamada" | null;
+
+const FAQ_PATTERNS: Array<[FaqTopic, RegExp]> = [
+  ["horario", /\b(que|cual|a que|hasta que|desde que) hora\w*\b|\bhorario\w*\b|\b(estan|esta|siguen) abiert\w*\b|\b(cierran|abren|atienden)\b/],
+  ["direccion", /\b(direccion|ubicacion|donde (queda|esta|estan)|como llego|por donde)\b/],
+  ["envio", /\b(cuanto|que) (cuesta|vale|sale|es) (el |la )?(envio|delivery|domicilio)\b|\bcosto del (envio|delivery)\b|\bcuanto (cobran|es) (por )?(el )?(envio|delivery)\b/],
+  ["promos", /\b(promo|promos|promocion\w*|descuento\w*|oferta\w*|2x1)\b/],
+  ["factura", /\b(factura|facturan|facturacion|ruc|comprobante)\b/],
+  // "aceptan" solo cuenta si habla de un medio de pago: "¿aceptan cupones?" no es esta pregunta.
+  ["pagos", /\b(aceptan|reciben|puedo pagar con|pagar con)\s+(tarjeta|efectivo|transferencia|deuna|debito|credito|dinero)\b|\b(formas|metodos|medios) de pago\b|\bcomo puedo pagar\b/],
+  ["llamada", /\b(me (pueden )?llam\w*|llamar\w*|una llamada|telefono de contacto|numero de contacto)\b/],
+];
+
+/** Tema de la pregunta frecuente, o null si el mensaje no es una de ellas. */
+export function faqTopic(message: string): FaqTopic {
+  const text = normalizeText(message);
+  if (!text) return null;
+  for (const [topic, pattern] of FAQ_PATTERNS) {
+    if (pattern.test(text)) return topic;
+  }
+  return null;
+}

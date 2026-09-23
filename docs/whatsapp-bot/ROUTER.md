@@ -390,3 +390,21 @@ antes de responder: si salieran, una Rule por `route` mandaría al cliente a un 
 Recordatorio: lo más simple y lo recomendado es **un solo flow, sin Rules**, que llame a `/assistant` (o
 `/brain`) y envíe `{message}`. Ese endpoint conversa hasta tener productos, entrega, local o dirección,
 nombre, correo y forma de pago, muestra el resumen y crea la orden con su link.
+
+## Preguntas frecuentes (R9)
+
+Antes de pedir, la gente pregunta. Si el mensaje ES una pregunta y no hay nada que aplicar al pedido, el bot
+responde con datos REALES (sucursales de Mongo, promo configurada en Settings), nunca con la IA:
+
+| Pregunta | Qué responde |
+|---|---|
+| "¿hasta qué hora abren?" | Los locales abiertos ahorita con su hora de cierre; si están todos cerrados, cuándo abren y ofrece programar |
+| "¿dónde queda Urdesa?" | La dirección de esa sucursal; sin nombrar ninguna, la lista de locales |
+| "¿cuánto cuesta el envío?" | El fee ya cotizado si hay ubicación; si no, pide el pin |
+| "¿tienen promociones?" | La promo activa del negocio, o el link del menú |
+| "¿hacen factura?" | Sí, y que pedirá cédula o RUC al cerrar |
+| "¿puedo pagar con tarjeta?" | Tarjeta o efectivo; transferencia no |
+| "¿me pueden llamar?" | El número de soporte |
+
+No se dispara en los pasos donde el bot ESPERA ese dato (nombre, correo, dirección, factura): ahí "0912345675"
+o "a nombre de Ana" son la respuesta al paso, no una pregunta.
