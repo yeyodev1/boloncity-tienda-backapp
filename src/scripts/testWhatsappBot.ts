@@ -2114,6 +2114,14 @@ test("pedir repetir encuentra el último pedido aunque la tarjeta siga sin pagar
   assert.match(last.reply, /ORD-00099/, last.reply);
 });
 
+test("'pagado' en un pedido en EFECTIVO explica que se paga al recibir", async () => {
+  const { deps } = fakeDeps({ settlement: { outcome: "not_applicable" } });
+  const { state } = await chat(deps, ["una humita", "retiro", "1", "Ana", "ana@test.com", "efectivo", "confirmo"]);
+  const result = await handleTurn(state, { message: "pagado" }, deps);
+  assert.match(result.reply, /es en efectivo/i, result.reply);
+  assert.doesNotMatch(result.reply, /No pude verificar/i, result.reply);
+});
+
 (async () => {
   let failed = 0;
   for (const [name, run] of tests) {
