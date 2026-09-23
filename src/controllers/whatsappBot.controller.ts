@@ -1067,7 +1067,10 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
         ...base,
         intencion: "orden_creada",
         success: true,
-        message: `Tu pedido ${state.lastOrderNumber} ya está registrado ✅${state.lastPaymentLink ? `\nPágalo aquí: ${state.lastPaymentLink}` : ""}`,
+        // Con link pendiente se repite la palabra clave: el cliente tiene que saber cómo avisar que pagó.
+        message: `Tu pedido ${state.lastOrderNumber} ya está registrado ✅${state.scheduledLabel ? `\n🗓️ Programado para ${state.scheduledLabel}` : ""}${
+          state.lastPaymentLink ? `\nPágalo aquí: ${state.lastPaymentLink}\n\nCuando lo hayas pagado, escríbeme *pagado* y verifico el pago ✅` : ""
+        }`,
         orderNumber: state.lastOrderNumber,
         paymentLink: state.lastPaymentLink || "",
       });
