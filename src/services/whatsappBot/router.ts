@@ -2097,6 +2097,14 @@ function paymentClaimReply(state: BotState, settlement: PaymentSettlement, deps:
     return `Me llega un pago que no coincide con el total de tu pedido ${order} 😕 Para no cobrarte mal, escríbele al ${deps.supportPhone} y lo revisan enseguida`;
   }
 
+  // Pedido en EFECTIVO: no hay nada que verificar, se paga al recibir. Antes respondía "no pude verificar tu
+  // pago", que deja al cliente pensando que algo falló.
+  if (settlement.outcome === "not_applicable" && state.paymentMethod === "cash") {
+    return deliveryType === "delivery"
+      ? `Tu pedido ${order} es en efectivo 💵 No tienes que pagar nada por aquí: le pagas${total} al motorizado cuando llegue 🛵`
+      : `Tu pedido ${order} es en efectivo 💵 No tienes que pagar nada por aquí: pagas${total} al retirarlo${branchName ? ` en ${branchName}` : ""} 🏠`;
+  }
+
   return `No pude verificar tu pago ahorita 🙏${link ? `\n\nSi aún no lo completaste, págalo aquí:\n${link}` : ""}\n\n${retry}`;
 }
 
