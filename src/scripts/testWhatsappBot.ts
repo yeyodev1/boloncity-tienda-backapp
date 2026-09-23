@@ -682,8 +682,12 @@ test("mensajes que no se entienden NO derivan a una persona: el bot sigue ofreci
     assert.notEqual(result.route, "human", result.reply);
     assert.doesNotMatch(result.reply, /\+593 99 315 7333/, "solo un reclamo pasa a soporte");
   }
-  assert.equal(results[1].decision, "R11:ayuda");
-  assert.match(results[1].reply, /men\u00fa/);
+  // Una pregunta que el bot no puede responder se contesta sin derivar a nadie.
+  assert.equal(results[1].decision, "R11:fuera_de_alcance");
+  assert.match(results[1].reply, /no tengo info/i);
+  // Y los mensajes ininteligibles siguen ofreciendo ayuda concreta.
+  assert.equal(results[3].decision, "R11:ayuda");
+  assert.match(results[3].reply, /men\u00fa/);
 });
 
 test("querer comprar nunca deriva a una persona; un reclamo sí", async () => {

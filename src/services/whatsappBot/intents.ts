@@ -613,7 +613,7 @@ export const asksOpeningHours = test(
 export type FaqTopic = "horario" | "direccion" | "envio" | "cobertura" | "promos" | "factura" | "pagos" | "llamada" | null;
 
 const FAQ_PATTERNS: Array<[FaqTopic, RegExp]> = [
-  ["horario", /\b(que|cual|a que|hasta que|desde que) hora\w*\b|\bhorario\w*\b|\b(estan|esta|siguen) abiert\w*\b|\b(cierran|abren|atienden)\b/],
+  ["horario", /\b(que|cual|a que|hasta que|desde que) hora\w*\b|\bhorario\w*\b|\b(estan|esta|siguen) abiert\w*\b|\b(cierran|abren|atienden|atendiendo)\b|\b(estan|siguen) atend\w*\b/],
   ["direccion", /\b(direccion|ubicacion|donde (queda|esta|estan)|como llego|por donde)\b/],
   ["cobertura", /\b(hacen|tienen|llegan con|llega el|hay) (delivery|domicilio|entrega)\b|\b(llegan|llega|reparten) (hasta |a )\w+/],
   ["envio", /\b(cuanto|que) (cuesta|vale|sale|es) (el |la )?(envio|delivery|domicilio)\b|\bcosto del (envio|delivery)\b|\bcuanto (cobran|es) (por )?(el )?(envio|delivery)\b/],
