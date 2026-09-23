@@ -84,6 +84,8 @@ export interface BranchOption {
   branchId: string;
   name: string;
   address?: string;
+  /** Kilómetros desde la ubicación que mandó el cliente (solo cuando se pide `pickupBranches(coords)`). */
+  distanceKm?: number;
   /** ¿Está atendiendo ahorita? Se usa para marcar los locales abiertos y ofrecer alternativa. */
   open?: boolean;
   nextOpening?: OpeningWindow | null;
@@ -254,7 +256,8 @@ export interface BotDeps {
    * a mano cuando la más cercana estaba cerrada. Sin ella gana siempre la más cercana que cubra.
    */
   quoteLocation(coords: { lat: number; lng: number }, paymentMethod?: "card" | "cash", preferBranchId?: string): Promise<LocationQuote>;
-  pickupBranches(): Promise<BranchOption[]>;
+  /** Con `near` vienen ordenadas por cercanía a esa ubicación, con su distancia. */
+  pickupBranches(near?: { lat: number; lng: number }): Promise<BranchOption[]>;
   branchStatus(branchId: string): Promise<{ open: boolean; message?: string; branchName?: string; nextOpening?: OpeningWindow | null }>;
   quote(state: BotState): Promise<Quote | null>;
   createOrder(state: BotState): Promise<{ ok: true; orderNumber: string; total: number; paymentLink?: string } | { ok: false; message: string }>;
@@ -667,6 +670,20 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     if (!coords) {
       notes.push("Mmm, no pude leer esa ubicación 🙈 Mándamela desde el clip 📎 de WhatsApp o pásame un enlace de Google Maps");
       return finish("R1:ubicacion_invalida", "location");
+    }
+    // Con el pedido en RETIRO, la ubicación sirve para saber qué local le queda más cerca: no lo convierte en
+    // delivery (antes compartir el pin para elegir local cambiaba el pedido a domicilio sin avisar).
+    if (state.deliveryType === "pickup") {
+      const cercanos = await deps.pickupBranches(coords);
+      const abierto = cercanos.find((branch) => branch.open) || cercanos[0];
+      if (abierto) {
+        state.pendingChoice = null;
+        state.branchId = abierto.branchId;
+        state.branchName = abierto.name;
+        const distancia = abierto.distanceKm != null ? ` (a ${abierto.distanceKm.toFixed(1)} km)` : "";
+        notes.push(`El local que te queda más cerca es ${abierto.name}${distancia} 🏠 Si prefieres que te lo llevemos, dime *delivery*`);
+        return finish("R1:local_mas_cercano");
+      }
     }
     // Una ubicación responde "¿en qué local lo retiras?" o "¿a la misma dirección?": el cliente eligió delivery aquí.
     if (state.pendingChoice?.kind === "branch" || state.pendingChoice?.kind === "reuse_location") state.pendingChoice = null;

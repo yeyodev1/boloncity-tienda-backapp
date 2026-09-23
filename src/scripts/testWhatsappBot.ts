@@ -769,12 +769,16 @@ test("efectivo en delivery: el resumen usa la tarifa de efectivo (la que se cobr
   assert.match(last.reply, /Delivery \$1\.90/);
 });
 
-test("ubicación mientras se elige local: pasa a delivery y no deja la elección pendiente", async () => {
+test("ubicación mientras se elige local: sirve para elegir el MÁS CERCANO, no para cambiar a delivery", async () => {
   const { deps } = fakeDeps();
-  const { state, last } = await chat(deps, ["una humita", "retiro", { location: { lat: -2.15, lng: -79.89 } }, "1"]);
-  assert.equal(state.deliveryType, "delivery");
-  assert.equal(state.branchId, "b-urdesa", "la sucursal es la que cotizó Picker, no la opción 1 de retiro");
-  assert.notEqual(last.decision, "R4:eleccion_sucursal");
+  const { state, results } = await chat(deps, ["una humita", "retiro", { location: { lat: -2.15, lng: -79.89 } }]);
+  assert.equal(state.deliveryType, "pickup", "el cliente ya había dicho retiro");
+  assert.equal(results[2].decision, "R1:local_mas_cercano");
+  assert.match(results[2].reply, /más cerca es/i, results[2].reply);
+  assert.ok(state.branchId, "queda elegido un local");
+  // Y si en realidad quería delivery, lo dice y se cambia.
+  const cambio = await handleTurn(state, { message: "mejor delivery" }, deps);
+  assert.equal(cambio.state.deliveryType, "delivery");
 });
 
 test("el local nombrado en el mensaje se toma directo (sin lista ni producto fantasma)", async () => {
