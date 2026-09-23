@@ -291,7 +291,9 @@ test("editar el carrito: quitar, cambiar cantidad y ver resumen", async () => {
   const { results, state } = await chat(deps, ["una humita, un corviche y una tostada mixta", "quita el corviche", "que sean 3 humitas", "qué llevo"]);
   assert.match(results[1].reply, /Quité Corviche/);
   assert.match(results[2].reply, /Ahora son 3 x Humita/);
-  assert.match(results[3].reply, /3 x Humita\n1 x Tostada Mixta/);
+  // La vista del carrito ahora trae precios y total ("¿cuánto es todo?" preguntaba justo eso).
+  assert.match(results[3].reply, /3 x Humita \$[\d.]+\n1 x Tostada Mixta \$[\d.]+/);
+  assert.match(results[3].reply, /\*Total \$[\d.]+\*/);
   assert.deepEqual(state.cart.map((item) => item.name), ["HUMITA", "TOSTADA MIXTA"]);
 });
 

@@ -854,7 +854,13 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   // que pidió algo mientras había una pregunta abierta lee "tu carrito está vacío" y cree que lo perdió.
   const pendientes = pendingItemsLabel(state);
   if (wantsCart(message) && state.cart.length) {
-    notes.push(`Por ahora llevas 🧾\n${state.cart.map(cartLine).join("\n")}${pendientes}`);
+    // Con precios y total: "¿cuánto es todo?" preguntaba justo eso y la lista salía sin un solo número.
+    const quote = await deps.quote(state).catch(() => null);
+    const lineas = quote
+      ? quote.lines.map((line) => `${line.quantity} x ${prettyName(line.name)} ${money(line.unitPrice * line.quantity)}`).join("\n")
+      : state.cart.map(cartLine).join("\n");
+    const total = quote ? `\n\n*Total ${money(quote.total)}*${quote.deliveryFee ? ` (incluye ${money(quote.deliveryFee)} de envío)` : ""}` : "";
+    notes.push(`Por ahora llevas 🧾\n${lineas}${total}${pendientes}`);
     return finish("R8:ver_carrito");
   }
   // "¿qué llevo?" con el carrito vacío: se dice y se sigue con el paso (antes sumaba "no entendido" y derivaba).
