@@ -24,8 +24,19 @@ export interface IPayphoneRefund {
 
 export interface IPayphoneData {
   clientTransactionId?: string;
+  /**
+   * Identificadores de intentos ANTERIORES de este mismo pedido.
+   *
+   * PayPhone no deja reusar un clientTransactionId ("Ya existe una transaccion con el
+   * ClientTransactionId especificado"): cada vez que se abre el link de pago hay que
+   * emitir uno nuevo. Los viejos se guardan aca porque el cliente pudo pagar en un
+   * intento anterior y despues recargar la pagina: al verificar hay que consultarlos todos.
+   */
+  previousClientTransactionIds?: string[];
   /** Tienda de PayPhone de la sucursal que cobro este pedido. */
   storeId?: string;
+  /** "test" = cobrado con la app de PRUEBAS de PayPhone (solo pedidos del bot). */
+  mode?: string;
   transactionId?: number;
   authorizationCode?: string;
   statusCode?: number;
@@ -159,6 +170,8 @@ const orderSchema = new Schema<IOrder>(
     },
     payphone: {
       clientTransactionId: { type: String, default: "" },
+      /** Intentos anteriores: PayPhone rechaza un clientTransactionId repetido (ver IPayphoneData). */
+      previousClientTransactionIds: { type: [String], default: [] },
       storeId: { type: String, default: "" },
       /** "test" = cobrado con la app de PRUEBAS de PayPhone (solo pedidos del bot, ver BOT_PAYPHONE_TEST). */
       mode: { type: String, default: "" },

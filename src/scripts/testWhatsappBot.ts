@@ -21,7 +21,7 @@ import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
 import { claimsPaid, classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
 import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
-import { decideFromSale } from "../services/cardPaymentSettlement.service";
+import { candidateClientTxIds, decideFromSale } from "../services/cardPaymentSettlement.service";
 import { FALLBACK_MESSAGE } from "../controllers/whatsappBot.controller";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { isBotPath } from "../app";
@@ -2027,6 +2027,24 @@ test("PAGO-11: efectivo con delivery dice cuánto se le paga al motorizado", asy
   ]);
   assert.match(last.reply, /Págale \$12\.50 en efectivo al motorizado/, last.reply);
   assert.doesNotMatch(last.reply, /escríbeme \*pagado\*/i, "en efectivo no hay nada que verificar");
+});
+
+test("PAGO-14: al reabrir el link de pago se consultan TODOS los intentos, del nuevo al viejo", async () => {
+  // PayPhone no deja repetir un clientTransactionId: cada apertura del link emite uno nuevo. Si el
+  // cliente pagó en el primer intento y recargó después, verificar solo el vigente diría "aún no llega".
+  assert.deepEqual(
+    candidateClientTxIds({ payphone: { clientTransactionId: "BOL-3", previousClientTransactionIds: ["BOL-1", "BOL-2"] } }),
+    ["BOL-3", "BOL-2", "BOL-1"]
+  );
+  // Sin historial (pedido de un solo intento) se consulta el único que hay.
+  assert.deepEqual(candidateClientTxIds({ payphone: { clientTransactionId: "BOL-1" } }), ["BOL-1"]);
+  // Repetidos y vacíos no generan consultas de más a PayPhone (tiene límite por minuto).
+  assert.deepEqual(
+    candidateClientTxIds({ payphone: { clientTransactionId: "BOL-1", previousClientTransactionIds: ["BOL-1", ""] } }),
+    ["BOL-1"]
+  );
+  // Un pedido sin identificador no puede consultarse: quien llame debe responder "error", no cancelar.
+  assert.deepEqual(candidateClientTxIds({ payphone: {} }), []);
 });
 
 test("PAGO-12: 'pagado' sin una orden creada no consulta nada", async () => {
