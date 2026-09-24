@@ -90,6 +90,16 @@ export function decideFromSale(sale: {
   return { next: "confirm", transactionId: sale.transactionId };
 }
 
+/**
+ * Los identificadores de pago del pedido, del intento vigente al mas viejo y sin repetidos.
+ * Exportada para poder probarla sin base ni PayPhone.
+ */
+export function candidateClientTxIds(order: { payphone?: { clientTransactionId?: string; previousClientTransactionIds?: string[] } }): string[] {
+  const vigente = order.payphone?.clientTransactionId;
+  const anteriores = [...(order.payphone?.previousClientTransactionIds || [])].reverse();
+  return [...new Set([vigente, ...anteriores].filter((id): id is string => Boolean(id)))];
+}
+
 export async function settleCardPaymentByOrderNumber(orderNumber: string): Promise<CardSettlementResult> {
   if (!orderNumber) return { outcome: "not_applicable", detail: "Sin número de pedido" };
 
@@ -103,14 +113,27 @@ export async function settleCardPaymentByOrderNumber(orderNumber: string): Promi
   // para el caso en que el navegador ya cerro el pago antes de que escriba.
   if (isSettled(order)) return { outcome: "already_paid", order };
 
-  const clientTxId = order.payphone?.clientTransactionId;
-  if (!clientTxId) return { outcome: "error", order, detail: "El pedido no tiene clientTransactionId de PayPhone" };
+  // Cada vez que el cliente abre el link de pago se emite un clientTransactionId nuevo (PayPhone
+  // no admite repetirlo). Puede haber pagado en el PRIMER intento y recargado despues, asi que se
+  // consultan todos, del mas reciente al mas viejo, hasta encontrar uno que PayPhone reconozca.
+  const intentos = candidateClientTxIds(order);
+  if (!intentos.length) return { outcome: "error", order, detail: "El pedido no tiene clientTransactionId de PayPhone" };
 
   // La orden recuerda con qué app se cobró: las del bot en modo prueba se consultan con el token de PRUEBAS.
   const mode = order.payphone?.mode;
-  const sale = await getPayphoneSaleByClientTxId(clientTxId, mode);
+  let clientTxId = intentos[0];
+  let decision = decideFromSale(await getPayphoneSaleByClientTxId(clientTxId, mode));
+  for (const otro of intentos.slice(1)) {
+    if (decision.next === "confirm") break;
+    const otraDecision = decideFromSale(await getPayphoneSaleByClientTxId(otro, mode));
+    // Un intento viejo solo manda si trae noticias: si tambien esta pendiente, se conserva el
+    // motivo del intento vigente, que es el que el cliente tiene abierto.
+    if (otraDecision.next !== "pending") {
+      clientTxId = otro;
+      decision = otraDecision;
+    }
+  }
 
-  const decision = decideFromSale(sale);
   if (decision.next === "pending") return { outcome: "pending", order, detail: decision.detail };
   if (decision.next === "rejected") return { outcome: "rejected", order, detail: decision.detail };
 

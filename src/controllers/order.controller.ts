@@ -365,7 +365,7 @@ export async function createOrder(req: Request, res: Response) {
     billing,
     audit: [],
     payphone: {
-      clientTransactionId: `BOL-${Date.now()}`,
+      clientTransactionId: newClientTransactionId(),
       storeId: getBranchPayphoneStoreId(branch?.payphone),
     },
   });
@@ -854,7 +854,7 @@ export async function markCardOrderRejected(order: any, payphoneResult: any, cli
 export async function confirmOrder(req: Request, res: Response) {
   const { id, clientTxId } = req.body as { id: number; clientTxId: string };
 
-  const order = await Order.findOne({ "payphone.clientTransactionId": clientTxId }).populate("user").populate("branch");
+  const order = await findOrderByClientTxId(clientTxId).populate("user").populate("branch");
 
   if (!order) {
     res.status(404).json({ message: "Order not found" });
@@ -881,7 +881,7 @@ export async function confirmOrder(req: Request, res: Response) {
   // Carrera con el "pagado" del bot de WhatsApp: los dos confirman la MISMA transacción. Se relee la orden
   // justo después de PayPhone; si el otro camino ya la cerró, no se vuelve a cobrar puntos, ni se manda otra
   // comanda, ni se pide un segundo motorizado, ni se cancela un pedido que ya está pagado.
-  const fresh = await Order.findOne({ "payphone.clientTransactionId": clientTxId }).populate("user").populate("branch");
+  const fresh = await findOrderByClientTxId(clientTxId).populate("user").populate("branch");
   if (!fresh) {
     res.status(404).json({ message: "Order not found" });
     return;
@@ -1142,6 +1142,81 @@ export async function getOrderByNumber(req: Request, res: Response) {
   }
 
   res.json(order);
+}
+
+/**
+ * Identificador de un intento de pago. Lleva algo al azar ademas de la hora porque dos
+ * pedidos creados en el mismo milisegundo compartirian el id y PayPhone rechazaria el segundo.
+ */
+export function newClientTransactionId() {
+  return `BOL-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Busca la orden por CUALQUIERA de sus intentos de pago, no solo por el vigente.
+ *
+ * Si el cliente abre el link de pago dos veces, el primer intento queda en el historial;
+ * cuando PayPhone redirige con ESE identificador, buscar solo por el vigente daria 404 y el
+ * pago quedaria cobrado sin cerrar el pedido.
+ */
+function findOrderByClientTxId(clientTxId: string) {
+  return Order.findOne({
+    $or: [
+      { "payphone.clientTransactionId": clientTxId },
+      { "payphone.previousClientTransactionIds": clientTxId },
+    ],
+  });
+}
+
+/**
+ * Emite un clientTransactionId FRESCO para volver a abrir la Cajita de un pedido pendiente.
+ *
+ * PayPhone no acepta dos veces el mismo identificador: responde "Ya existe una transaccion con
+ * el ClientTransactionId especificado" y la Cajita muestra "Algo salio mal". Pasaba siempre que
+ * el cliente recargaba el link de pago o lo abria en otro dispositivo — sobre todo en WhatsApp,
+ * donde el link vive en el chat y se abre cuantas veces quiera.
+ *
+ * El identificador anterior NO se descarta: se guarda en `previousClientTransactionIds` porque el
+ * cliente pudo pagar con el y recargar despues; al verificar hay que consultarlos todos.
+ */
+export async function issuePaymentIntent(req: Request, res: Response) {
+  const { orderNumber } = req.params;
+  const email = String(req.body?.email || req.query.email || "").trim().toLowerCase();
+  if (!email) {
+    res.status(400).json({ message: "Email is required" });
+    return;
+  }
+
+  const order = await Order.findOne({ orderNumber, customerEmail: email });
+  if (!order) {
+    res.status(404).json({ message: "Order not found" });
+    return;
+  }
+  if (order.paymentMethod !== "card") {
+    res.status(409).json({ message: "Este pedido no se paga con tarjeta" });
+    return;
+  }
+  // Ya cobrada o cancelada: no se emite nada. Sin esto, recargar la pagina de un pedido ya
+  // pagado abriria una Cajita nueva y el cliente podria pagar dos veces.
+  if (order.status !== "pending" || order.payphone?.confirmedAt || order.payphone?.transactionId) {
+    res.status(409).json({ message: "Este pedido ya no tiene un pago pendiente" });
+    return;
+  }
+
+  const anterior = order.payphone?.clientTransactionId;
+  if (anterior) {
+    const historial = order.payphone?.previousClientTransactionIds || [];
+    if (!historial.includes(anterior)) order.set("payphone.previousClientTransactionIds", [...historial, anterior]);
+  }
+  const clientTransactionId = newClientTransactionId();
+  order.set("payphone.clientTransactionId", clientTransactionId);
+  await order.save();
+
+  res.json({
+    clientTransactionId,
+    storeId: order.payphone?.storeId || "",
+    mode: order.payphone?.mode || "",
+  });
 }
 
 export async function streamOrderByNumber(req: Request, res: Response) {

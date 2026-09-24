@@ -8,7 +8,7 @@ import { Product } from "../models/Product";
 import { extractIva, getActivePromo, getOrCreateSettings, promoDiscountCents } from "../models/Setting";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { env, getFrontendUrl } from "../config/env";
-import { bookPickerForOrder, reportPurchaseToMeta, sendOrderToRunfood } from "./order.controller";
+import { bookPickerForOrder, newClientTransactionId, reportPurchaseToMeta, sendOrderToRunfood } from "./order.controller";
 import { getBranchAvailability, getBranchPayphoneStoreId, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
 import { quoteDelivery } from "../services/deliveryQuote.service";
 import { calculateEarnedPoints } from "../services/points.service";
@@ -511,7 +511,7 @@ async function createBotOrder(state: BotState) {
     source: "whatsapp",
     audit: [{ action: "created", details: `Pedido creado desde WhatsApp · Sucursal: ${branch.name}`, toValue: "pending", timestamp: new Date() }],
     payphone: {
-      clientTransactionId: `BOL-${Date.now()}`,
+      clientTransactionId: newClientTransactionId(),
       // En modo PRUEBAS manda el storeId de la app de pruebas (si se configuró uno distinto).
       storeId: botPayphoneTestOn() && env.PAYPHONE_TEST_STORE_ID ? env.PAYPHONE_TEST_STORE_ID : getBranchPayphoneStoreId(branch.payphone),
       // Queda grabado con qué app se cobra: así se confirma con ese mismo token aunque luego se apague
