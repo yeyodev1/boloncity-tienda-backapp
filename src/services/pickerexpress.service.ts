@@ -61,6 +61,8 @@ export interface PickerBookingResponse {
   smrURL: string;
   bookingDetailUrl: string;
   deliveryFee: number;
+  /** Picker factura el envio con impuesto; no siempre manda las dos formas. */
+  deliveryFeeWithTax?: number;
 }
 
 export type StartSearchResponse = Record<string, unknown>;
