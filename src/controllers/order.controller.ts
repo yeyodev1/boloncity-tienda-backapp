@@ -489,6 +489,21 @@ export async function reportPurchaseToMeta(order: InstanceType<typeof Order>) {
  * Se llama para efectivo inmediato (al crear), tarjeta inmediata (al confirmar el pago)
  * y para CUALQUIER pedido al pasar a "Listas para recolección" (incluidos los programados).
  */
+/**
+ * Lo que Picker nos COBRA por ese envio, en dolares.
+ *
+ * Se guardaba `pickerResult.deliveryFee || 0` y quedo en 0 en las 100 reservas creadas hasta hoy,
+ * asi que "Diferencia delivery" del tablero mostraba siempre el mismo numero que "Delivery
+ * cobrado" — como si el motorizado saliera gratis. Se prefiere la forma CON impuesto, que es la
+ * que Picker factura, y se cae a la otra cuando no viene.
+ */
+export function pickerCostoEnvio(pickerResult: { deliveryFee?: number; deliveryFeeWithTax?: number }): number {
+  const conImpuesto = Number(pickerResult?.deliveryFeeWithTax);
+  if (Number.isFinite(conImpuesto) && conImpuesto > 0) return conImpuesto;
+  const simple = Number(pickerResult?.deliveryFee);
+  return Number.isFinite(simple) && simple > 0 ? simple : 0;
+}
+
 export async function bookPickerForOrder(
   order: InstanceType<typeof Order>,
   paymentMethod: "CASH" | "CARD",
@@ -532,7 +547,7 @@ export async function bookPickerForOrder(
       smrURL: pickerResult.smrURL,
       bookingDetailUrl: pickerResult.bookingDetailUrl,
       createdAt: new Date(),
-      deliveryFee: pickerResult.deliveryFee || 0,
+      deliveryFee: pickerCostoEnvio(pickerResult),
     };
     pushAudit(order, { action: "note_added", performedBy: null, performedByEmail: "system", details: `Picker booking #${pickerResult.bookingNumericId} creado` });
     await order.save();
@@ -1627,7 +1642,7 @@ export async function retryPickerBooking(req: AuthRequest, res: Response) {
       smrURL: pickerResult.smrURL,
       bookingDetailUrl: pickerResult.bookingDetailUrl,
       createdAt: new Date(),
-      deliveryFee: pickerResult.deliveryFee || 0,
+      deliveryFee: pickerCostoEnvio(pickerResult),
     };
 
     pushAudit(order, {

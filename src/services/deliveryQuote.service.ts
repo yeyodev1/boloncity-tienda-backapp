@@ -19,6 +19,31 @@ import { preCheckout } from "./pickerexpress.service";
  * que dar exactamente el mismo numero, o el cliente ve un precio y paga otro.
  */
 
+/**
+ * Tope duro de un envio, en dolares. Ningun domicilio de bolones cuesta mas que esto;
+ * un numero mayor solo puede ser un error de unidad o un campo raro de Picker.
+ */
+const ENVIO_MAXIMO_USD = 25;
+
+/**
+ * ?Es creible lo que cotizo Picker?
+ *
+ * ORD-00071, ORD-00109, ORD-00111 y ORD-00112 se cobraron con un envio de $6542.12 (sobre
+ * pedidos de $11 a $39): Picker devolvio un numero absurdo y se le cargo tal cual al cliente
+ * y al tablero, donde "Delivery cobrado" quedo inflado en $26.168.
+ *
+ * Se acepta la cotizacion solo si cabe en el tope duro y no se dispara respecto del precio por
+ * distancia, que es la referencia propia del negocio. Si no, se cobra por distancia: preferible
+ * cobrar de menos a cobrarle al cliente un envio que no existe.
+ */
+export function esEnvioCreible(fee: number, byDistance: number): boolean {
+  if (!Number.isFinite(fee) || fee <= 0) return false;
+  if (fee > ENVIO_MAXIMO_USD) return false;
+  // Con byDistance en 0 (sucursal sin coordenadas utiles) solo manda el tope duro.
+  if (byDistance > 0 && fee > byDistance * 4) return false;
+  return true;
+}
+
 export interface DeliveryQuote {
   covered: boolean;
   /** Por que se rechazo, en palabras que el cliente pueda leer. */
@@ -105,7 +130,7 @@ export async function quoteDelivery({ branch, lat, lng, paymentMethod }: QuoteIn
     const withTax = Number(pickerResult.deliveryFeeWithTax);
     const raw = Number(pickerResult.deliveryFee);
     const fee = Number.isFinite(withTax) && withTax > 0 ? withTax : raw;
-    if (!Number.isFinite(fee) || fee <= 0) {
+    if (!Number.isFinite(fee) || fee <= 0 || !esEnvioCreible(fee, byDistance)) {
       return { covered: true, deliveryFee: byDistance, distance, source: "distance" };
     }
 

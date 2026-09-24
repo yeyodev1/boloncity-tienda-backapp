@@ -22,6 +22,8 @@ import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/
 import { claimsPaid, classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
 import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
 import { candidateClientTxIds, decideFromSale } from "../services/cardPaymentSettlement.service";
+import { esEnvioCreible } from "../services/deliveryQuote.service";
+import { pickerCostoEnvio } from "../controllers/order.controller";
 import { FALLBACK_MESSAGE } from "../controllers/whatsappBot.controller";
 import { WhatsAppSession } from "../models/WhatsAppSession";
 import { isBotPath } from "../app";
@@ -2045,6 +2047,36 @@ test("PAGO-14: al reabrir el link de pago se consultan TODOS los intentos, del n
   );
   // Un pedido sin identificador no puede consultarse: quien llame debe responder "error", no cancelar.
   assert.deepEqual(candidateClientTxIds({ payphone: {} }), []);
+});
+
+test("ENVIO-1: una cotización absurda de Picker no se le cobra al cliente", async () => {
+  // Lo que pasó de verdad: ORD-00071/00109/00111/00112 salieron con $6542.12 de envío sobre
+  // pedidos de $11 a $39, e inflaron "Delivery cobrado" del tablero en $26.168.
+  assert.equal(esEnvioCreible(6542.12, 3.5), false, "un envío de $6542 nunca puede cobrarse");
+  // Tope duro: ningún domicilio de bolones pasa de $25.
+  assert.equal(esEnvioCreible(26, 100), false);
+  // Disparado respecto del precio propio por distancia (más de 4x).
+  assert.equal(esEnvioCreible(20, 2), false);
+  // Cotizaciones normales sí pasan, incluso algo por encima del cálculo por distancia.
+  assert.equal(esEnvioCreible(2.5, 1.5), true);
+  assert.equal(esEnvioCreible(12.21, 5), true);
+  // Basura: se cae al precio por distancia.
+  assert.equal(esEnvioCreible(0, 3), false);
+  assert.equal(esEnvioCreible(Number.NaN, 3), false);
+  assert.equal(esEnvioCreible(-5, 3), false);
+  // Sin referencia de distancia manda solo el tope duro.
+  assert.equal(esEnvioCreible(20, 0), true);
+  assert.equal(esEnvioCreible(6542.12, 0), false);
+});
+
+test("ENVIO-2: se guarda lo que Picker nos cobra, con impuesto cuando viene", async () => {
+  // Quedó en 0 en las 100 reservas creadas hasta hoy: "Diferencia delivery" salía igual a
+  // "Delivery cobrado", como si el motorizado no costara nada.
+  assert.equal(pickerCostoEnvio({ deliveryFee: 2.5, deliveryFeeWithTax: 2.8 }), 2.8);
+  assert.equal(pickerCostoEnvio({ deliveryFee: 2.5 }), 2.5);
+  assert.equal(pickerCostoEnvio({ deliveryFeeWithTax: 2.8 }), 2.8);
+  assert.equal(pickerCostoEnvio({}), 0);
+  assert.equal(pickerCostoEnvio({ deliveryFee: 0 }), 0);
 });
 
 test("PAGO-12: 'pagado' sin una orden creada no consulta nada", async () => {
