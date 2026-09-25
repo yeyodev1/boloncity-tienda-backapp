@@ -23,6 +23,8 @@ import { claimsPaid, classifyConfirmReply, extractDocNumber, extractOrderNumber,
 import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
 import { candidateClientTxIds, decideFromSale } from "../services/cardPaymentSettlement.service";
 import { esEnvioCreible } from "../services/deliveryQuote.service";
+import { linkDeRecuperacion, mensajeDeRecuperacion } from "../services/abandonedCart.service";
+import { isSendablePhone, whatsappChannel } from "../services/whatsappSender.service";
 import { pickerCostoEnvio } from "../controllers/order.controller";
 import { FALLBACK_MESSAGE } from "../controllers/whatsappBot.controller";
 import { WhatsAppSession } from "../models/WhatsAppSession";
@@ -2077,6 +2079,46 @@ test("ENVIO-2: se guarda lo que Picker nos cobra, con impuesto cuando viene", as
   assert.equal(pickerCostoEnvio({ deliveryFeeWithTax: 2.8 }), 2.8);
   assert.equal(pickerCostoEnvio({}), 0);
   assert.equal(pickerCostoEnvio({ deliveryFee: 0 }), 0);
+});
+
+test("CARRITO-1: el mensaje de recuperación lleva el link y saluda por el nombre", async () => {
+  const msg = mensajeDeRecuperacion("Diego Reyes", "abc123");
+  assert.match(msg, /Hola Diego/, "debe saludar solo por el primer nombre");
+  assert.match(msg, /carrito/i);
+  assert.ok(msg.includes(linkDeRecuperacion("abc123")), "el link de recuperación es el punto del mensaje");
+  // Sin nombre no puede quedar un "Hola undefined" ni un "Hola ,".
+  const anonimo = mensajeDeRecuperacion("", "xyz");
+  assert.match(anonimo, /^Hola 👋/);
+  assert.ok(!/undefined|null/.test(anonimo));
+});
+
+test("CARRITO-2: sin teléfono utilizable no se intenta escribir", async () => {
+  // Estos son los teléfonos rotos que ya rompieron Picker antes; aquí solo se descartan.
+  assert.equal(isSendablePhone("0995254965"), true);
+  assert.equal(isSendablePhone("+593995254965"), true);
+  assert.equal(isSendablePhone(""), false);
+  assert.equal(isSendablePhone(undefined), false);
+  assert.equal(isSendablePhone("123"), false);
+});
+
+test("CARRITO-3: sin canal configurado NO se cuenta como mensaje enviado", async () => {
+  // La métrica tiene que decir la verdad: un contador inflado haría creer que la automatización
+  // está funcionando cuando en realidad no salió ni un mensaje.
+  const previo = { bb: process.env.BUILDERBOT_API_KEY, url: process.env.BUILDERBOT_SEND_URL, tok: process.env.META_WHATSAPP_TOKEN, pid: process.env.META_WHATSAPP_PHONE_ID };
+  delete process.env.BUILDERBOT_API_KEY; delete process.env.BUILDERBOT_SEND_URL;
+  delete process.env.META_WHATSAPP_TOKEN; delete process.env.META_WHATSAPP_PHONE_ID;
+  assert.equal(whatsappChannel(), "none");
+  process.env.BUILDERBOT_API_KEY = "x"; process.env.BUILDERBOT_SEND_URL = "https://ejemplo";
+  assert.equal(whatsappChannel(), "builderbot");
+  delete process.env.BUILDERBOT_API_KEY; delete process.env.BUILDERBOT_SEND_URL;
+  process.env.META_WHATSAPP_TOKEN = "x"; process.env.META_WHATSAPP_PHONE_ID = "1";
+  assert.equal(whatsappChannel(), "meta");
+  // Se deja el entorno como estaba para no contaminar las demás pruebas.
+  delete process.env.META_WHATSAPP_TOKEN; delete process.env.META_WHATSAPP_PHONE_ID;
+  if (previo.bb) process.env.BUILDERBOT_API_KEY = previo.bb;
+  if (previo.url) process.env.BUILDERBOT_SEND_URL = previo.url;
+  if (previo.tok) process.env.META_WHATSAPP_TOKEN = previo.tok;
+  if (previo.pid) process.env.META_WHATSAPP_PHONE_ID = previo.pid;
 });
 
 test("PAGO-12: 'pagado' sin una orden creada no consulta nada", async () => {

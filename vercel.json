@@ -14,8 +14,8 @@
   ],
   "crons": [
     {
-      "path": "/api/cron/payment-reminders",
-      "schedule": "*/5 * * * *"
+      "path": "/api/carts/cron/reminders",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

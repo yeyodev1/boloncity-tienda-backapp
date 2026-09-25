@@ -10,6 +10,7 @@ import deliveryRouter from "./delivery.routes";
 import webhookRouter from "./webhook.routes";
 import healthRouter from "./health.routes";
 import metaRouter from "./meta.routes";
+import cartRouter from "./abandonedCart.routes";
 
 function routerApi(app: Application) {
   const router = express.Router();
@@ -24,6 +25,7 @@ function routerApi(app: Application) {
   router.use("/webhooks", webhookRouter);
   router.use("/health", healthRouter);
   router.use("/meta", metaRouter);
+  router.use("/carts", cartRouter);
   app.use("/api", router);
 }
 
