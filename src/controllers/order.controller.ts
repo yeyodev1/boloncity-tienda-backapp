@@ -15,6 +15,7 @@ import { distanceKm } from "../utils/haversine";
 import { parseMapsUrl } from "../utils/parseMapsUrl";
 import { AuthRequest } from "../types/AuthRequest";
 import { publishOrderUpdate, subscribeToOrder } from "../services/orderEvents.service";
+import { marcarCarritoRecuperado } from "../services/abandonedCart.service";
 import { getBranchAvailability, getBranchPayphoneStoreId, getPickerStoreApiKey, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
 import { pushOrderToRunfood } from "../services/runfood.service";
 import { getFrontendUrl } from "../config/env";
@@ -434,6 +435,10 @@ export async function createOrder(req: Request, res: Response) {
     });
     await sendEmail(order.customerEmail, `Boloncity: recibimos tu pedido ${order.orderNumber}`, html).catch(() => {});
   }
+
+  // El carrito de esta persona dejo de estar abandonado: se cierra su embudo y, si habia abierto
+  // el link del WhatsApp, la venta queda atribuida a la automatizacion de recuperacion.
+  await marcarCarritoRecuperado(order as any, typeof req.body?.sessionId === "string" ? req.body.sessionId : undefined).catch(() => undefined);
 
   res.status(201).json(order);
 }
