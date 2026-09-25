@@ -128,3 +128,57 @@ function getStatusDescription(status: string, driverName?: string): string {
   };
   return descriptions[status] || "Tu pedido está siendo procesado. Te mantendremos informado.";
 }
+
+interface CartRecoveryEmailData {
+  customerName: string;
+  /** Precio en dolares, como en el carrito de la web. */
+  items: Array<{ name: string; quantity: number; price: number }>;
+  /** Centavos. */
+  subtotal: number;
+  recoveryUrl: string;
+}
+
+/**
+ * Recordatorio de carrito abandonado. Mismo texto que el WhatsApp, para que el cliente reciba el
+ * mismo mensaje sin importar por donde le llegue.
+ */
+export function getCartRecoveryEmailHtml(data: CartRecoveryEmailData): string {
+  const nombre = data.customerName?.trim().split(" ")[0] || "";
+  const itemsHtml = data.items
+    .map(
+      (item) =>
+        `<tr><td style="padding:8px 0;border-bottom:1px solid #e5e5e5;font-size:14px;color:#111111;">${escapeHtml(item.name)} <span style="color:#111111;">x${Number(item.quantity) || 0}</span></td><td style="padding:8px 0;border-bottom:1px solid #e5e5e5;text-align:right;font-size:14px;color:#111111;">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
+    )
+    .join("");
+
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#111111;">
+  <table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:32px 16px;">
+    <table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #111111;border-radius:12px;overflow:hidden;">
+      <tr><td style="background:#ffffff;border-bottom:1px solid #111111;padding:32px 32px 24px;text-align:center;color:#111111;">
+        <div style="font-size:40px;margin-bottom:8px;">🛒</div>
+        <h1 style="color:#111111;font-size:22px;margin:0;letter-spacing:-0.02em;">Tu carrito todavía te está esperando</h1>
+      </td></tr>
+      <tr><td style="padding:24px 32px 0;">
+        <p style="font-size:15px;margin:0 0 16px;color:#111111;">Hola${nombre ? ` <strong>${escapeHtml(nombre)}</strong>` : ""} 👋</p>
+        <p style="font-size:14px;margin:0 0 16px;color:#111111;line-height:1.5;">Vimos que dejaste pendiente tu pedido en Boloncity 🫓. Te lo guardamos tal cual: solo tienes que continuar y finalizar.</p>
+
+        <table width="100%" style="margin-bottom:8px;">
+          <tr><td colspan="2" style="padding:12px 0 4px;border-top:1px solid #111111;font-size:13px;font-weight:700;color:#111111;text-transform:uppercase;letter-spacing:0.05em;">Tu carrito</td></tr>
+          ${itemsHtml}
+          <tr><td style="padding:12px 0 8px;font-size:15px;font-weight:700;color:#111111;">Subtotal</td><td style="padding:12px 0 8px;text-align:right;font-size:15px;font-weight:700;color:#111111;">$${centsToDollars(data.subtotal).toFixed(2)}</td></tr>
+        </table>
+
+        <a href="${escapeHtml(data.recoveryUrl)}" target="_blank" style="display:block;text-align:center;background:#ffffff;border:1px solid #111111;color:#111111;text-decoration:none;padding:14px 24px;border-radius:8px;font-size:15px;font-weight:700;margin:16px 0 0;">Continuar mi compra</a>
+      </td></tr>
+      <tr><td style="padding:32px;text-align:center;color:#111111;font-size:12px;">
+        Boloncity — Todos los derechos reservados.
+      </td></tr>
+    </table>
+  </td></tr></table>
+</body>
+</html>`;
+}

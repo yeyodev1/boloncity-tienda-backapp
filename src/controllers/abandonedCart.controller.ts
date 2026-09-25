@@ -3,7 +3,7 @@ import { AbandonedCart } from "../models/AbandonedCart";
 import {
   enviarRecordatoriosPendientes,
   linkDeRecuperacion,
-  mensajeDeRecuperacion,
+  notificarCarrito,
   metricasDeCarritos,
   trackCart,
 } from "../services/abandonedCart.service";
@@ -128,11 +128,7 @@ export async function sendCartTestMessage(req: Request, res: Response) {
     return;
   }
 
-  const { sendWhatsapp } = await import("../services/whatsappSender.service");
-  const resultado = await sendWhatsapp({
-    phone: carrito.customerPhone,
-    message: mensajeDeRecuperacion(carrito.customerName, carrito.token),
-  });
+  const resultado = await notificarCarrito(carrito);
 
   if (resultado.sent) {
     carrito.set("status", carrito.status === "pending" ? "notified" : carrito.status);

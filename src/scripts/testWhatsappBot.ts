@@ -24,6 +24,7 @@ import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUser
 import { candidateClientTxIds, decideFromSale } from "../services/cardPaymentSettlement.service";
 import { esEnvioCreible } from "../services/deliveryQuote.service";
 import { linkDeRecuperacion, mensajeDeRecuperacion } from "../services/abandonedCart.service";
+import { getCartRecoveryEmailHtml } from "../services/email-templates";
 import { isSendablePhone, whatsappChannel } from "../services/whatsappSender.service";
 import { pickerCostoEnvio } from "../controllers/order.controller";
 import { FALLBACK_MESSAGE } from "../controllers/whatsappBot.controller";
@@ -2119,6 +2120,19 @@ test("CARRITO-3: sin canal configurado NO se cuenta como mensaje enviado", async
   if (previo.url) process.env.BUILDERBOT_SEND_URL = previo.url;
   if (previo.tok) process.env.META_WHATSAPP_TOKEN = previo.tok;
   if (previo.pid) process.env.META_WHATSAPP_PHONE_ID = previo.pid;
+});
+
+test("CARRITO-4: el correo de respaldo lleva el link, los productos en dólares y escapa el nombre", async () => {
+  const html = getCartRecoveryEmailHtml({
+    customerName: "Diego <b>Reyes</b>",
+    items: [{ name: "HUMITA", quantity: 2, price: 4.68 }],
+    subtotal: 936,
+    recoveryUrl: linkDeRecuperacion("tok123"),
+  });
+  assert.ok(html.includes(linkDeRecuperacion("tok123")), "sin link el correo no sirve");
+  assert.ok(html.includes("$9.36"), "2 x $4.68 = $9.36: el precio del ítem va en dólares");
+  assert.ok(html.includes("Subtotal") && html.split("$9.36").length === 3, "el subtotal en centavos también debe verse como $9.36");
+  assert.ok(!html.includes("<b>"), "el nombre lo escribe el cliente: no puede meter HTML");
 });
 
 test("PAGO-12: 'pagado' sin una orden creada no consulta nada", async () => {
