@@ -710,6 +710,19 @@ const TURN_WAIT_MS = 25_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * Pausa "humana" antes de contestar: cada respuesta tarda al azar entre BOT_REPLY_DELAY_MIN_MS y
+ * BOT_REPLY_DELAY_MAX_MS (por defecto 3–7 s) contando desde que llegó el mensaje. Si el turno ya tardó eso
+ * (Picker, IA), no se espera más. BOT_REPLY_DELAY_MAX_MS=0 la apaga.
+ */
+function humanDelayMs() {
+  const min = Math.max(0, Number(process.env.BOT_REPLY_DELAY_MIN_MS ?? 3000) || 0);
+  const max = Math.max(0, Number(process.env.BOT_REPLY_DELAY_MAX_MS ?? 7000) || 0);
+  if (max <= 0) return 0;
+  const low = Math.min(min, max);
+  return low + Math.floor(Math.random() * (max - low + 1));
+}
+
+/**
  * Toma el candado del teléfono (y crea la sesión si no existe) de forma atómica. Si otro mensaje del mismo
  * cliente se está procesando, espera a que termine: así dos burbujas seguidas se procesan en orden y ninguna
  * se pierde (antes una fallaba con E11000 o VersionError y el cliente veía "Tuve un problema").
@@ -944,6 +957,10 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
     );
     result.state.lastIntent = result.intent;
     pushHistory("assistant", result.reply);
+    // La pausa va con el candado tomado y ANTES de guardar: un reintento de BuilderBot que llegue mientras tanto
+    // espera el candado y luego se reconoce como duplicado (llegó antes de lastMessageAt).
+    const pending = humanDelayMs() - (Date.now() - arrivedAt);
+    if (pending > 0) await sleep(pending);
     // Guardado con $set (sin versionado): con el candado nadie más escribe esta sesión a la vez.
     await WhatsAppSession.updateOne(
       { phone },
@@ -1088,6 +1105,10 @@ export async function whatsappBotLocation(req: Request, res: Response) {
     const body = { ...req.query, ...req.body };
     if (clean(body.mapsUrl) && !readMessage(body)) body.message = String(body.mapsUrl);
     const result = await runTurn(body, { expectLocation: true, endpoint: "location" });
+    // Sin coordenadas legibles se registra lo que mandó BuilderBot: casi siempre es una variable mal escrita en el nodo.
+    if (result?.decision === "R1:ubicacion_invalida") {
+      console.warn(`[whatsapp-bot] /location sin coordenadas legibles. Content-Type: ${req.headers["content-type"] || "-"} · body: ${JSON.stringify(body).slice(0, 1500)}`);
+    }
     res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "conversar" });
   } catch (error) {
     console.error("[whatsapp-bot] location falló", error);
