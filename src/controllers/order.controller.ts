@@ -1099,6 +1099,15 @@ export async function refundOrder(req: AuthRequest, res: Response) {
   res.json({ message: "Reverso aprobado por PayPhone", order });
 }
 
+/**
+ * Un pedido programado se crea un día y se cocina otro. Filtrar solo por createdAt lo
+ * escondía del tablero justo el día que había que prepararlo (p. ej. creado el 30/09 para
+ * el 01/10: el preset «este mes» ya arrancaba el 01/10 y no lo traía).
+ */
+function createdOrScheduledIn(start: Date, end: Date) {
+  return [{ createdAt: { $gte: start, $lt: end } }, { scheduledFor: { $gte: start, $lt: end } }];
+}
+
 export async function listOrders(req: AuthRequest, res: Response) {
   const { period = "today", date, from, to, status, limit = "100" } = req.query as Record<string, string | undefined>;
   const query: Record<string, unknown> = { ...(req.branchFilter || {}) };
@@ -1107,7 +1116,7 @@ export async function listOrders(req: AuthRequest, res: Response) {
     const start = new Date(`${from}T00:00:00-05:00`);
     const end = new Date(`${to}T00:00:00-05:00`);
     end.setDate(end.getDate() + 1);
-    query.createdAt = { $gte: start, $lt: end };
+    query.$or = createdOrScheduledIn(start, end);
   } else if (period !== "all") {
     const dateParts = new Intl.DateTimeFormat("en", {
       timeZone: "America/Guayaquil",
@@ -1120,7 +1129,7 @@ export async function listOrders(req: AuthRequest, res: Response) {
     const start = new Date(`${dateValue}T00:00:00-05:00`);
     const end = new Date(`${dateValue}T00:00:00-05:00`);
     end.setDate(end.getDate() + 1);
-    query.createdAt = { $gte: start, $lt: end };
+    query.$or = createdOrScheduledIn(start, end);
   }
 
   if (status && status !== "all") query.status = status;
