@@ -2435,6 +2435,13 @@ test("UBICACIÓN: pin o link de Google Maps (maps.app.goo.gl) funcionan igual y 
     assert.match(last.reply, /📍 Recibí tu ubicación ✅\nMírala en el mapa: https:\/\/www\.google\.com\/maps\?q=-2\.15,-79\.9/);
     assert.match(last.reply, /Si no es ahí, mándame otra ubicación/);
   }
+  // Pin ilegible (BuilderBot mandó la variable sin reemplazar): un solo pedido de ubicación, con la guía del link.
+  const ilegible = await chat(fakeDeps().deps, ["una humita", "delivery", { message: "_event_location__x" } as any]);
+  const malo = await handleTurn(ilegible.state, { message: "", locationInvalid: true }, fakeDeps().deps);
+  assert.equal(malo.decision, "R1:ubicacion_invalida");
+  assert.equal(malo.reply.split("Para el delivery necesito tu ubicación").length - 1, 1, "la explicación sale UNA vez");
+  assert.match(malo.reply, /Compartir\* → \*Copiar enlace/);
+  assert.doesNotMatch(malo.reply, /maps\.app\.goo\.gl/, "sin link de ejemplo (WhatsApp muestra 'Invalid Dynamic Link')");
   // El link también sirve al empezar, antes de pedir.
   const primero = await chat(fakeDeps().deps, ["https://maps.app.goo.gl/4DiJ4onj8sdmWAeW9"]);
   assert.equal(primero.last.decision, "R1:ubicacion");
