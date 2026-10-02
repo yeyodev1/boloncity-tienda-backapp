@@ -247,10 +247,18 @@ export const wantsSupport = test(
  * Saludos y cortesías sin pedido: "hola", "buenas tardes", "gracias", "ok", "👍".
  * No son mensajes "no entendidos": no deben sumar para derivar a una persona.
  */
+/** "epdido", "pedio", "peddo", "pedidoo": errores de tipeo de "pedido" (distancia de edición ≤ 2). */
+function fixOrderTypos(text: string) {
+  return text
+    .split(" ")
+    .map((word) => (word.length >= 4 && word.length <= 8 && word !== "pedido" && /^[a-z]+$/.test(word) && editDistance(collapseRepeats(word), "pedido") <= 2 && /^(p|e|d)/.test(word) ? "pedido" : word))
+    .join(" ");
+}
+
 export function isSmallTalk(message: string) {
   const raw = String(message || "").trim();
   if (!raw) return false;
-  const text = bareText(raw);
+  const text = fixOrderTypos(bareText(raw));
   // Solo emojis o signos ("😀😀", "👍", "!!").
   if (!text) return true;
   return /^(?:(?:hola+|holi|ola|buenas|buenos|buen|dias|dia|tardes|noches|que tal|como estan|como esta|como estas|saludos|hey|hi|hello|gracias|muchas gracias|mil gracias|ok|okey|okay|oki|vale|dale|listo|perfecto|genial|excelente|chevere|bacan|super|entendido|de acuerdo|amigo|amiga|amigos|señor|senor|señorita|senorita|ya|bien|muy bien|todo bien|y ustedes|y usted|como va|que mas|por favor|porfa|porfavor|(?:quiero|quisiera|deseo|me gustaria|vengo a|para)? ?(?:hacer|realizar|pedir|ordenar)? ?(?:un )?(?:pedido|orden)|(?:quiero|quisiera|deseo|vengo a) (?:pedir|ordenar|comprar)|me ayudas con (?:un|mi) pedido)\s*)+$/.test(text);

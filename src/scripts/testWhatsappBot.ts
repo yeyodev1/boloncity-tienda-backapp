@@ -1654,7 +1654,7 @@ test("AP-01: el bot NO se disculpa cuando el turno sí aplicó algo (nombre del 
   // El local se elige dentro de finish(): antes el mensaje salía con "No te entendí bien 🙈" y el local YA elegido.
   const elegido = await handleTurn(state, { message: "bla bla urdesa bla" }, deps);
   assert.equal(elegido.state.branchId, "b-urdesa", "sí se entendió el local");
-  assert.doesNotMatch(elegido.reply, /No te entendí bien|Perdón, no te entendí/, elegido.reply);
+  assert.doesNotMatch(elegido.reply, /No te entendí bien|Perdón, no te entendí|no lo capté/, elegido.reply);
 });
 
 test("AP-02: sin aplicar nada, la disculpa sigue saliendo", async () => {
@@ -1662,7 +1662,7 @@ test("AP-02: sin aplicar nada, la disculpa sigue saliendo", async () => {
   const { state } = await chat(deps, ["una humita"]);
   const nada = await handleTurn(state, { message: "asd qwe zxc" }, deps);
   assert.match(nada.decision, /^R1[01]/, nada.decision);
-  assert.match(nada.reply, /No te entendí|no te entendí/, nada.reply);
+  assert.match(nada.reply, /No te entendí|no te entendí|no lo capté/, nada.reply);
 });
 
 test("AP-03: la dirección escrita cuando se pidió el pin se anota y no se pide perdón", async () => {
@@ -1672,7 +1672,7 @@ test("AP-03: la dirección escrita cuando se pidió el pin se anota y no se pide
   const direccion = await handleTurn(state, { message: "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos" }, deps);
   assert.equal(direccion.decision, "R10:direccion_escrita");
   assert.equal(direccion.state.deliveryAddress, "Victor Emilio Estrada 123 y Guayacanes, casa blanca de dos pisos");
-  assert.doesNotMatch(direccion.reply, /No te entendí bien/, direccion.reply);
+  assert.doesNotMatch(direccion.reply, /No te entendí bien|no lo capté/, direccion.reply);
   assert.match(direccion.reply, /pin 📍/);
 });
 
@@ -2456,6 +2456,16 @@ test("'Holaaaa quiero hacer un pedido' es un saludo con ganas de pedir, no un me
   // Con producto, sigue siendo un pedido.
   const { last } = await chat(fakeDeps().deps, ["hola quiero hacer un pedido de 2 humitas"]);
   assert.notEqual(last.decision, "R10:saludo");
+});
+
+test("CONVERSA: saludar o decir 'quiero un pedido' con un pedido a medias recuerda lo que lleva, con calidez", async () => {
+  for (const message of ["Holaaaaa quiero hacer un pedido", "quiero un epdido", "hola quiero un pedido", "hola"]) {
+    const { last } = await chat(fakeDeps().deps, ["2 humitas", "delivery", message]);
+    assert.equal(last.decision, "R10:saludo", `${message} → ${last.decision}`);
+    assert.match(last.reply, /Tu pedido sigue aquí[\s\S]*2 x Humita/, message);
+    assert.match(last.reply, /necesito tu ubicación/, "sigue con el paso");
+    assert.doesNotMatch(last.reply, /No te entendí|no lo capté/, message);
+  }
 });
 
 // ─── Imágenes ────────────────────────────────────────────────────────────────

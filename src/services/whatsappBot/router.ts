@@ -538,7 +538,7 @@ function describeLastOrder(order: LastOrder) {
 // ─── Reglas ──────────────────────────────────────────────────────────────────
 
 /** Las disculpas de "no te entendí": se quitan si el turno sí aplicó algo (ver finish). */
-const APOLOGY = /^(No te entendí bien|Perdón, no te entendí|Perdona, no te cacho|Perdona, sigo sin cacharte)/;
+const APOLOGY = /^(No te entendí bien|Uy, eso no lo capté|Perdón, no te entendí|Perdona, no te cacho|Perdona, sigo sin cacharte)/;
 
 /**
  * Todo lo que un turno puede aplicarle al pedido. Si esta foto cambia durante el turno, el bot entendió algo
@@ -975,7 +975,17 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
 
   // Saludos y cortesías ("hola", "buenas tardes", "gracias", "👍"): se responde con el paso actual.
   // No cuentan como "no entendido" (antes dos saludos seguidos derivaban a soporte).
-  if (isSmallTalk(message)) return finish("R10:saludo");
+  if (isSmallTalk(message)) {
+    // Con un pedido a medias, saludar o decir "quiero un pedido" no es un mensaje vacío: se le recuerda lo que lleva
+    // y en qué va, con calidez (antes solo se repetía la pregunta del paso y parecía que el bot no escuchaba).
+    if (state.cart.length && state.stage !== "idle" && state.stage !== "ordered") {
+      const saluda = isGreeting(message) || /\b(pedido|orden|pedir|ordenar)\b/.test(normalizeText(message));
+      notes.push(
+        `${saluda ? "Hola de nuevo 👋 " : ""}Tu pedido sigue aquí, guardadito 🫓\n${state.cart.map(cartLine).join("\n")}\n\nYa casi lo tenemos 🙌 Si prefieres empezar de cero, escribe *empezar de nuevo*`
+      );
+    }
+    return finish("R10:saludo");
+  }
 
   // R10 · Respuesta corta y directa a la pregunta del paso actual ("1", "efectivo", "Ana Pérez", la cédula).
   if (await applyDirectAnswer(state, message, deps, notes)) return finish("R10:respuesta_al_paso");
@@ -1089,8 +1099,8 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (!answered) {
     // Con el local cerrado no hay nada que entender: se repite solo el aviso de horario.
     // Si ya se dijo algo ("no tenemos X en el menú"), no se apila otra disculpa encima: suena a bot roto.
-    const yaSeDisculpo = notes.some((nota) => /no tenemos|no encontr|no te entend/i.test(nota));
-    notes.push(state.cart.length && state.stage !== "closed" && !yaSeDisculpo ? "No te entendí bien 🙈 ¿Me lo repites?" : "");
+    const yaSeDisculpo = notes.some((nota) => /no tenemos|no encontr|no te entend|no lo capt/i.test(nota));
+    notes.push(state.cart.length && state.stage !== "closed" && !yaSeDisculpo ? "Uy, eso no lo capté 🙈 Escríbemelo con otras palabras y seguimos con tu pedido 👇" : "");
     state.misunderstood = (state.misunderstood || 0) + 1;
     // Varios mensajes sin entender NO derivan a una persona: este bot toma pedidos y sigue intentando.
     // Solo un reclamo explícito pasa a soporte (R2). Al tercero se ofrece ayuda concreta.
