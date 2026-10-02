@@ -3,7 +3,10 @@ import { CatalogProduct, displayCategoryName, findCategory, listCategories, norm
 import { asksForNearest, distinctiveLabel, negatedPhrase, pickChoice } from "./choice";
 import { Extraction, Extractor } from "./extractor";
 import {
+  asksIfBot,
   claimsPaid,
+  isOffTopic,
+  wantsOptOut,
   detectDeliveryType,
   detectPaymentMethod,
   extractDeclaredName,
@@ -28,6 +31,8 @@ import {
   wantsToWait,
   wantsConfirm,
   wantsHuman,
+  wantsInvoice,
+  wantsFinalConsumer,
   wantsMenu,
   wantsPaymentLink,
   wantsReorder,
@@ -172,6 +177,12 @@ export interface BotState {
   lastPaymentLink?: string;
   /** El pago con tarjeta de `lastOrderNumber` ya quedó confirmado (por el navegador o por "pagado"). */
   paymentConfirmed?: boolean;
+  /** Pidió que no le escriban (política de Meta). El bot igual contesta si él vuelve a escribir. */
+  optedOut?: boolean;
+  /** Total de la última orden creada (para el contrato de respuesta: `total`). */
+  lastOrderTotal?: number;
+  /** Ya se presentó como bot en esta conversación (política de Meta: transparencia). */
+  introduced?: boolean;
   /** Ubicación compartida antes de cambiar a retiro: si vuelve a delivery se reusa y se recotiza. */
   savedDeliveryLocation?: { coords: { lat: number; lng: number }; mapsUrl: string };
   /** Última intención enviada a BuilderBot; se reusa si BuilderBot reintenta el mismo mensaje. */
@@ -283,6 +294,8 @@ export interface BotDeps {
   chooseOption?(input: { message: string; question: string; options: Array<{ name: string; price?: number }> }): Promise<number | null>;
   menuUrl: string;
   supportPhone: string;
+  /** Nombre con el que se presenta el bot (BOT_NAME). */
+  botName?: string;
   /** Promo activa del negocio ("20% de descuento"), tal como la configuró el local. Vacío = no hay. */
   activePromo?(): Promise<string>;
 }
@@ -295,6 +308,11 @@ export interface TurnInput {
   locationInvalid?: boolean;
   /** Llegó un audio, imagen o documento (BuilderBot manda "_event_media__…" / "_event_voice_note__…"). */
   unsupportedMedia?: boolean;
+  /**
+   * Imagen que ya leyó la IA en el controller: un comprobante o captura de pago, la foto de un producto (con el
+   * nombre que la IA cree que tiene) u otra cosa. El router decide qué hacer con ella; la IA no decide nada.
+   */
+  image?: { kind: "payment" | "product" | "other" | "unreadable"; query?: string } | null;
 }
 
 /**
@@ -588,11 +606,68 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     return { state, reply, route: resolvedRoute, intent, step: state.stage, decision, ...extra };
   };
 
-  // Un audio, imagen o documento: el bot solo lee texto y ubicaciones.
+  // Imagen leída por la IA: comprobante o captura de pago, foto de un producto, u otra cosa.
+  if (input.image && !input.location) {
+    const image = input.image;
+    // Captura del pago con tarjeta: se verifica con PayPhone igual que "pagado" (la captura sola no prueba nada).
+    if (image.kind === "payment" && state.stage === "ordered" && state.lastOrderNumber && state.paymentMethod !== "cash") {
+      return verifyPayment(state, deps, "R7:pago_captura");
+    }
+    if (image.kind === "payment") {
+      notes.push(
+        state.stage === "ordered" && state.paymentMethod === "cash"
+          ? "Gracias por la foto 🙌 Tu pedido es en efectivo: lo pagas al recibirlo, no hace falta comprobante"
+          : "Gracias por la foto 🙌 Por aquí no recibimos transferencias: pagas con tarjeta por el link que te mando, o en efectivo al recibir"
+      );
+      return finish("R12:comprobante_sin_orden");
+    }
+    if (image.kind === "product" && image.query) {
+      const found = await deps.search(image.query, state.branchId);
+      if (found.kind === "exact") {
+        notes.push(`Se parece a nuestro *${found.product.name}* (${money(found.product.price)}) 😋 Si es ese, dime cuántos quieres y te lo agrego. Si buscabas otro, pídeme el *menú*`);
+        return finish("R12:foto_producto");
+      }
+      const similar = found.kind === "ambiguous" ? found.options : found.suggestions;
+      if (similar.length) {
+        notes.push(`Lo más parecido que tenemos 👇\n${similar.slice(0, 3).map((product) => `• *${product.name}* · ${money(product.price)}`).join("\n")}\n\nDime cuál quieres y te lo agrego`);
+        return finish("R12:foto_parecidos");
+      }
+      notes.push("Eso no lo tengo en el menú 🙈 Si quieres que alguien del equipo te ayude a cotizarlo, escribe *asesor*. O pídeme el *menú* para ver todo");
+      return finish("R12:foto_sin_producto");
+    }
+    if (image.kind === "unreadable") {
+      notes.push("Uy, no pude abrir tu foto 🙈 Mándamela de nuevo o escríbeme qué necesitas y lo armamos");
+      return finish("R12:foto_ilegible");
+    }
+    notes.push("Vi tu foto pero no logro saber qué es 🙈 Escríbeme qué necesitas y lo armamos");
+    return finish("R12:foto_otra");
+  }
+
+  // Un audio, video o documento: el bot solo lee texto, ubicaciones y fotos.
   if (input.unsupportedMedia && !input.location) {
-    notes.push("Uy, por ahora solo puedo leer mensajes de texto y ubicaciones 🙏 Escríbeme por aquí lo que necesitas y seguimos");
+    notes.push("Uy, todavía no puedo escuchar audios ni ver videos 🙏 Escríbeme lo que necesitas o mándame una foto y seguimos");
     return finish("R0:media_no_soportada");
   }
+
+  // ─── Políticas de Meta: van antes que todo lo demás ────────────────────────
+  // Transparencia: "¿eres un bot?" / "¿hablo con una persona?" se contesta que sí es un bot, con la opción de asesor.
+  if (message && asksIfBot(message)) {
+    notes.push(`Sí, soy un bot 🤖 Soy ${deps.botName || "Boloncity Bot"}, el bot de Boloncity y tu agente para lo que necesites. Si prefieres hablar con una persona, escribe *asesor* y te paso`);
+    return finish("R2:soy_bot");
+  }
+  // Opt-out: se respeta y se confirma. El bot nunca escribe primero, así que con eso basta.
+  if (message && wantsOptOut(message, state.stage === "idle" && !state.cart.length && !state.pendingChoice)) {
+    state.optedOut = true;
+    return {
+      state,
+      reply: "Listo, no te vuelvo a escribir 🙏 Si algún día se te antoja algo, solo escríbeme y te atiendo",
+      route: "conversation",
+      intent: "conversar",
+      step: state.stage,
+      decision: "R2:opt_out",
+    };
+  }
+  if (message) state.optedOut = false;
 
   // R7 · "PAGADO": el cliente dice que ya pagó su orden de tarjeta. Va ANTES del seguimiento de la orden
   // (orderFollowUp) y del reinicio a pedido nuevo: si no, "listo pagué" se lo comía uno de esos dos y el
@@ -600,20 +675,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   // El bot NO le cree: consulta el estado real en PayPhone (deps.settlePayment) y recién ahí responde.
   // Un reclamo con pedido de persona ("ya pagué pero quiero hablar con alguien") sigue yendo a R2.
   if (state.stage === "ordered" && state.lastOrderNumber && claimsPaid(message) && !wantsHuman(message)) {
-    const settlement = await deps.settlePayment(state.lastOrderNumber).catch(() => ({ outcome: "error" as const }));
-    const paid = settlement.outcome === "paid_now" || settlement.outcome === "already_paid";
-    if (paid) state.paymentConfirmed = true;
-    return {
-      state,
-      reply: paymentClaimReply(state, settlement, deps),
-      // La orden ya existe y el cobro ya está cerrado o pendiente en PayPhone: no hay nada que cobrar de nuevo.
-      route: "conversation",
-      intent: paid ? "orden_creada" : "conversar",
-      step: state.stage,
-      decision: `R7:pago_${settlement.outcome}`,
-      orderNumber: state.lastOrderNumber,
-      paymentLink: state.lastPaymentLink,
-    };
+    return verifyPayment(state, deps);
   }
 
   // Orden ya creada: "gracias", "👍", "el link no me abre" o "mejor en efectivo" hablan de ESA orden.
@@ -651,6 +713,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
       choiceQueue: [],
       paymentMethod: undefined,
       lastOrderNumber: undefined,
+      lastOrderTotal: undefined,
       lastPaymentLink: undefined,
       paymentConfirmed: undefined,
       notes: undefined,
@@ -703,7 +766,8 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (wantsHuman(message)) {
     return {
       state,
-      reply: `Claro, te paso con una persona del equipo 👋 Escríbele al ${deps.supportPhone} y te ayudan enseguida. Por aquí yo te tomo el pedido cuando quieras`,
+      // El flujo "Asesor humano" de BuilderBot silencia al bot: la persona del equipo contesta en este mismo chat.
+      reply: `Listo, te paso con una persona del equipo 👋 Te escribe por aquí mismo en un ratito. Si es urgente, también puedes llamar o escribir al ${deps.supportPhone}`,
       route: "human",
       intent: "dudas",
       step: state.stage,
@@ -1000,6 +1064,12 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
     }
     notes.push("No vi ningún cambio en tu pedido, te lo dejo igualito 👇");
     return finish("R7:resumen_sin_cambios", "summary");
+  }
+  // Política de Meta: no es un bot de propósito general. Chistes, tareas, código o noticias se redirigen a los pedidos.
+  if (!answered && isOffTopic(message) && !state.pendingChoice) {
+    notes.push("Uy, eso se me escapa 🙈 Yo te ayudo solo con lo de Boloncity: el menú, tu pedido, entregas y pagos. Dime qué se te antoja 🫓");
+    state.misunderstood = 0;
+    return finish("R11:fuera_de_tema");
   }
   // Una PREGUNTA que no es del negocio ("¿tienen wifi?", "¿hacen pedidos para 20 personas?") no se resuelve
   // repitiendo "¿qué te gustaría pedir?": se pasa el contacto del equipo y se sigue tomando el pedido.
@@ -1403,6 +1473,11 @@ async function applyDirectAnswer(state: BotState, message: string, deps: BotDeps
       const method = text === "1" ? "card" : text === "2" ? "cash" : short ? detectPaymentMethod(message) : null;
       if (method !== "card" && method !== "cash") return false;
       state.paymentMethod = method;
+      // "tarjeta y con factura" / "efectivo, consumidor final": la factura viene en el mismo mensaje y no se pierde.
+      if (wantsInvoice(message)) state.billingPreference = "invoice";
+      else if (wantsFinalConsumer(message)) state.billingPreference = "final_consumer";
+      const doc = state.billingPreference === "invoice" ? extractDocNumber(message) : "";
+      if (doc) state.billingDocNumber = doc;
       await requoteForPayment(state, deps, notes);
       return true;
     }
@@ -2066,6 +2141,27 @@ function confirmsPlacedOrder(message: string) {
  *   rejected / mismatch     → se dice claro y se reenvía el link (mismatch además manda a soporte).
  *   error / not_applicable  → se pide reintentar; nada se da por pagado.
  */
+/**
+ * Verifica el pago con PayPhone ("pagado" o la captura del pago) y responde según el estado REAL. Idempotente:
+ * dos "pagado" seguidos consultan dos veces y el segundo dice "ya estaba pagado".
+ */
+async function verifyPayment(state: BotState, deps: BotDeps, decision?: string): Promise<TurnResult> {
+  const settlement = await deps.settlePayment(state.lastOrderNumber!).catch(() => ({ outcome: "error" as const }));
+  const paid = settlement.outcome === "paid_now" || settlement.outcome === "already_paid";
+  if (paid) state.paymentConfirmed = true;
+  return {
+    state,
+    reply: paymentClaimReply(state, settlement, deps),
+    // La orden ya existe y el cobro ya está cerrado o pendiente en PayPhone: no hay nada que cobrar de nuevo.
+    route: "conversation",
+    intent: paid ? "orden_creada" : "conversar",
+    step: state.stage,
+    decision: decision ? `${decision}_${settlement.outcome}` : `R7:pago_${settlement.outcome}`,
+    orderNumber: state.lastOrderNumber,
+    paymentLink: state.lastPaymentLink,
+  };
+}
+
 function paymentClaimReply(state: BotState, settlement: PaymentSettlement, deps: BotDeps): string {
   const order = state.lastOrderNumber!;
   const link = state.lastPaymentLink;
@@ -2373,6 +2469,7 @@ async function confirmOrder(state: BotState, deps: BotDeps): Promise<TurnResult>
   state.stage = "ordered";
   state.lastOrderNumber = result.orderNumber;
   state.lastPaymentLink = result.paymentLink;
+  state.lastOrderTotal = result.total;
   // Un pedido programado NO se está preparando ahora: la cocina lo toma cuando abre el local.
   const scheduled = state.scheduledFor && state.scheduledLabel ? `🗓️ Programado para ${state.scheduledLabel}` : "";
   const reply = scheduled

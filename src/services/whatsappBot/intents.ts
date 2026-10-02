@@ -173,7 +173,60 @@ const asksForPerson = test(
  */
 export function wantsHuman(message: string) {
   if (isComplaint(message)) return true;
+  // "¿hablo con una persona?" PREGUNTA si es un bot: se le contesta que sí lo es (Meta), no se le deriva.
+  if (asksIfBot(message)) return false;
+  if (BARE_PERSON.test(bareText(message))) return true;
   return asksForPerson(message) && !WANTS_TO_BUY.test(normalizeText(message));
+}
+
+/** "asesor", "un humano por favor", "persona": la palabra sola ya es pedir a alguien del equipo. */
+const BARE_PERSON = /^(un |una |el |la )?(asesor|asesora|humano|humana|persona|agente|operador|operadora|encargado|encargada)( (por favor|porfa|porfis))?$/;
+
+/** Pedir que lo atienda alguien, a diferencia de preguntar quién atiende. */
+const WANTS_PERSON_VERB = /\b(quiero|quisiera|necesito|deseo|pasame|pasenme|pasa me|comunicame|comunicarme|me pasas|me pasan|me comunicas|contactar|contactame)\b/;
+
+/**
+ * Política de Meta (transparencia): "¿eres un bot?", "¿hablo con una persona?", "¿me atiende un robot?",
+ * "¿eres real?". Es una PREGUNTA: se contesta "sí, soy un bot" y se ofrece un asesor. "quiero hablar con una
+ * persona" NO entra aquí: eso es pedir un asesor (wantsHuman).
+ */
+export function asksIfBot(message: string) {
+  const text = normalizeText(message).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text || WANTS_PERSON_VERB.test(text)) return false;
+  return (
+    /\b(eres|sos|es|estoy hablando con|hablo con|estoy con|me atiende|me atiendes|me responde|me contesta|me escribe|habla) (un |una |el |la )?(bot|robot|chatbot|maquina|ia|inteligencia artificial|asistente virtual|persona|persona real|humano|humana|alguien real|ser humano)\b/.test(text) ||
+    /\b(eres|es) (real|humano|humana)\b/.test(text) ||
+    /^(bot|robot|eres bot|eres ia)$/.test(text)
+  );
+}
+
+/**
+ * Política de Meta (opt-out): "no me escribas", "deja de escribirme", "no quiero más mensajes", "stop".
+ * "no gracias" solo cuenta si el bot no está esperando una respuesta (`idle`): en medio del pedido responde
+ * otra pregunta ("¿algo más?" → "no gracias").
+ */
+export function wantsOptOut(message: string, idle: boolean) {
+  const text = normalizeText(message).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return false;
+  if (
+    /\bno me (escribas|escriban|vuelvas a escribir|vuelvan a escribir|sigas escribiendo|sigan escribiendo|molestes|molesten|contactes|contacten)\b/.test(text) ||
+    /\bno me (mandes|manden|envies|envien) (mas )?(mensajes|whatsapp|whatsapps|promociones|publicidad)\b/.test(text) ||
+    /\bdej(a|en|ar) de (escribirme|mandarme mensajes|enviarme mensajes|molestarme)\b/.test(text) ||
+    /\bno (quiero|deseo) (recibir )?(mas )?(mensajes|promociones|publicidad)\b/.test(text) ||
+    /\b(dejame en paz|darme de baja|dar de baja|desuscribir\w*|unsubscribe)\b/.test(text) ||
+    /^(stop|baja|basta)$/.test(text)
+  ) return true;
+  return idle && /^(no gracias|no muchas gracias|no gracias por ahora|no por ahora|no por el momento|nada gracias|no quiero nada|no deseo nada)$/.test(text);
+}
+
+/**
+ * Política de Meta (desde el 15-ene-2026 no se permiten bots de propósito general): chistes, tareas, código,
+ * traducciones, noticias, clima, deportes… no son del negocio. Se redirige con amabilidad a los pedidos.
+ * Solo se usa cuando el mensaje NO trajo nada del pedido.
+ */
+export function isOffTopic(message: string) {
+  const text = normalizeText(message);
+  return /\b(chiste|chistes|poema|poesia|cancion|cuento|tarea|deberes|ensayo|monografia|traduc\w*|codigo|programar|programacion|python|javascript|ecuacion|matematica\w*|capital de|presidente|horoscopo|el clima|va a llover|noticias|futbol|partido de|mundial|redact\w*|chatgpt|resuelve|criptomoneda\w*|bitcoin|consejo de amor|eres inteligente)\b/.test(text);
 }
 
 /** @deprecated se mantiene para no romper llamadas viejas; equivale a wantsHuman. */
