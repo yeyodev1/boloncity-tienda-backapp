@@ -2440,6 +2440,17 @@ test("UBICACIÓN: pin o link de Google Maps (maps.app.goo.gl) funcionan igual y 
   assert.equal(primero.last.decision, "R1:ubicacion");
 });
 
+test("'Holaaaa quiero hacer un pedido' es un saludo con ganas de pedir, no un mensaje no entendido", async () => {
+  for (const message of ["Holaaaaa quiero hacer un pedido", "quiero hacer un pedido", "buenas, quisiera pedir", "hola quiero ordenar por favor"]) {
+    const { last } = await chat(fakeDeps().deps, [message]);
+    assert.equal(last.decision, "R10:saludo", message);
+    assert.match(last.reply, /antoja|pedir/i, message);
+  }
+  // Con producto, sigue siendo un pedido.
+  const { last } = await chat(fakeDeps().deps, ["hola quiero hacer un pedido de 2 humitas"]);
+  assert.notEqual(last.decision, "R10:saludo");
+});
+
 // ─── Imágenes ────────────────────────────────────────────────────────────────
 
 test("IMG-1: foto de un producto se cruza con el catálogo; sin parecido ofrece asesor", async () => {
