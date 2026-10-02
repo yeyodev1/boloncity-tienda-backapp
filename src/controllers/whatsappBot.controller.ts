@@ -1044,7 +1044,9 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
     let base = stripOpeningMarks(result.reply);
     if (introduce && result.decision === "R10:saludo") base = base.replace(/^\s*hola[^\n]*\n+/i, "");
     const [voiced] = await Promise.all([
-      rewriteWithVoice(base, recentReplies),
+      // Los mensajes de política de Meta (soy bot, asesor, opt-out) salen EXACTOS: la IA cambiaba su sentido
+      // ("por hoy no te escribo más" en vez de "no te vuelvo a escribir").
+      result.decision.startsWith("R2:") ? Promise.resolve({ text: base, rewritten: false }) : rewriteWithVoice(base, recentReplies),
       sleep(Math.max(0, humanDelayMs() - (Date.now() - arrivedAt))),
     ]);
     const reply = introduce ? `${botIntro()}\n\n${voiced.text}` : voiced.text;
