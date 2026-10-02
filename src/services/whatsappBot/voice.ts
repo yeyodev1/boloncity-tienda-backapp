@@ -57,9 +57,13 @@ export function isSafeRewrite(original: string, rewritten: string) {
   if (GREETING.test(text) && !GREETING.test(original)) return false;
   // Una viñeta con * rompe las negritas de WhatsApp.
   if (/^\s*\*\s/m.test(text)) return false;
+  // Cada renglón de lista o con montos debe seguir siendo un renglón idéntico (ni en negrita ni partido).
+  const lines = new Set(text.split("\n").map((line) => line.trim()));
   for (const line of original.split("\n")) {
-    if (line.trim() && PROTECTED_LINE.test(line) && !text.includes(line.trim())) return false;
+    if (line.trim() && PROTECTED_LINE.test(line) && !lines.has(line.trim())) return false;
   }
+  // Ni negritas nuevas: WhatsApp las usa para lo que el cliente tiene que escribir (*confirmo*, *asesor*).
+  if (count(text, BOLD) !== count(original, BOLD)) return false;
   for (const pattern of [BOLD, URL, EMAIL, CODE]) {
     const remaining = tokens(text, pattern);
     for (const token of tokens(original, pattern)) {
