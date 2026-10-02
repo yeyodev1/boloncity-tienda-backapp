@@ -23,7 +23,7 @@ import { wantsOptOut } from "../services/whatsappBot/intents";
 import { botIntro, isSafeRewrite, stripOpeningMarks } from "../services/whatsappBot/voice";
 import { parseReading } from "../services/whatsappBot/vision";
 import { claimsPaid, classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
-import { botResponseRoute, flowRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
+import { botResponseRoute, flowRoute, statusExplanation, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
 import { candidateClientTxIds, decideFromSale } from "../services/cardPaymentSettlement.service";
 import { esEnvioCreible } from "../services/deliveryQuote.service";
 import { linkDeRecuperacion, mensajeDeRecuperacion } from "../services/abandonedCart.service";
@@ -2168,6 +2168,36 @@ test("con el local cerrado y DOS opciones, 'confirmo' explica que primero hay qu
   assert.equal(created.length, 0, "no se crea la orden con el local cerrado");
 });
 
+test("TARDE: con solo un local abierto se puede pedir YA de ese o PROGRAMAR en el cercano, con tarjeta o efectivo", async () => {
+  // Como en producción después de la 1-2 pm: el local cercano (Urdesa) cerró y solo sigue abierto otro.
+  const offer = await chat(fakeDeps({ closedBranches: ["b-urdesa"] }).deps, ["una humita", "delivery", { location: { lat: -2.15, lng: -79.9 } }]);
+  assert.equal(offer.state.stage, "closed");
+  assert.match(offer.last.reply, /program/i, offer.last.reply);
+  assert.match(offer.last.reply, /Samborondón/, offer.last.reply);
+
+  // a) Programarlo en el cercano, pagando con TARJETA el total.
+  const scheduledCard = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const programado = await chat(scheduledCard.deps, ["una humita", "delivery", { location: { lat: -2.15, lng: -79.9 } }, "prográmalo", "Av. Las Monjas 123", "Ana", "ana@test.com", "tarjeta", "confirmo"]);
+  assert.equal(scheduledCard.created.length, 1, programado.results.map((r) => r.decision).join(" → "));
+  assert.ok(scheduledCard.created[0].scheduledFor, "quedó programado");
+  assert.equal(scheduledCard.created[0].paymentMethod, "card");
+  assert.match(programado.last.reply, /Programado para[\s\S]*Págalo aquí/);
+
+  // b) Programado en efectivo también vale.
+  const scheduledCash = fakeDeps({ closedBranches: ["b-urdesa"] });
+  await chat(scheduledCash.deps, ["una humita", "delivery", { location: { lat: -2.15, lng: -79.9 } }, "prográmalo", "Av. Las Monjas 123", "Ana", "ana@test.com", "efectivo", "confirmo"]);
+  assert.equal(scheduledCash.created.length, 1);
+  assert.ok(scheduledCash.created[0].scheduledFor);
+  assert.equal(scheduledCash.created[0].paymentMethod, "cash");
+
+  // c) Para YA: solo del local que sigue abierto.
+  const now = fakeDeps({ closedBranches: ["b-urdesa"] });
+  const ya = await chat(now.deps, ["una humita", "delivery", { location: { lat: -2.15, lng: -79.9 } }, "que me lo mande samborondón", "Av. Las Monjas 123", "Ana", "ana@test.com", "tarjeta", "confirmo"]);
+  assert.equal(now.created.length, 1, ya.results.map((r) => r.decision).join(" → "));
+  assert.equal(now.created[0].branchId, "b-samborondon");
+  assert.ok(!now.created[0].scheduledFor, "para ya, no programado");
+});
+
 test("retiro con el local cerrado: 'dale' programa cuando es lo único ofrecido", async () => {
   const { deps } = fakeDeps({ closed: true });
   const { state, last } = await chat(deps, ["una humita", "retiro", "1", "dale"]);
@@ -2424,6 +2454,60 @@ test("IMG-3: un comprobante sin pedido con tarjeta explica que no recibimos tran
   const result = await handleTurn(createInitialState("+593987654321"), { message: "", image: { kind: "payment" } }, deps);
   assert.equal(result.decision, "R12:comprobante_sin_orden");
   assert.match(result.reply, /no recibimos transferencias/);
+});
+
+// ─── Estado de la orden: siempre se consulta la orden real ──────────────────
+
+const STATUS_QUESTIONS = [
+  "cómo va mi pedido",
+  "en qué estado está mi orden",
+  "ya está listo mi pedido?",
+  "ya despacharon mi pedido?",
+  "ya salió?",
+  "cuánto falta?",
+  "ya mismo llega?",
+  "dónde está mi pedido",
+  "estado de mi pedido",
+  "y mi comida?",
+  "ya está mi pedido?",
+  "mi pedido ya está en camino?",
+  "a qué hora llega mi pedido",
+  "quiero saber de mi pedido",
+  "ORD-00123",
+  "pedido 123",
+  "ya prepararon mi orden?",
+];
+
+test("ESTADO-1: preguntar por el pedido SIEMPRE consulta la orden real (con pedido recién hecho y en una charla nueva)", async () => {
+  const failures: string[] = [];
+  for (const question of STATUS_QUESTIONS) {
+    // Charla nueva (idle): ya pidió antes, hoy solo pregunta.
+    const fresh = fakeDeps();
+    const idle = await handleTurn(createInitialState("+593987654321"), { message: question }, fresh.deps);
+    if (idle.decision !== "R3:consultar_pedido") failures.push(`idle "${question}" → ${idle.decision}`);
+    // Justo después de crear un pedido con tarjeta.
+    const { deps, state } = await cardOrder();
+    const after = await handleTurn(state, { message: question }, deps);
+    if (after.decision !== "R3:consultar_pedido") failures.push(`ordered "${question}" → ${after.decision}`);
+  }
+  assert.deepEqual(failures, []);
+});
+
+test("ESTADO-2: la respuesta explica en palabras en qué va la orden REAL", async () => {
+  const base = { orderNumber: "ORD-00123", customerEmail: "a@b.com", branch: { name: "Boloncity Urdesa", address: "Av. Estrada 123" }, total: 1000 };
+  const say = (extra: any) => statusExplanation({ ...base, ...extra });
+  assert.match(say({ status: "pending", paymentMethod: "card", deliveryType: "delivery" }), /esperando tu pago[\s\S]*\/pago\/ORD-00123[\s\S]*\*pagado\*/);
+  assert.match(say({ status: "pending", paymentMethod: "cash", deliveryType: "pickup" }), /Lo recibimos[\s\S]*efectivo al retirarlo/);
+  assert.match(say({ status: "pending", paymentMethod: "cash", deliveryType: "delivery", scheduledFor: new Date(Date.now() + 86_400_000) }), /programado para/);
+  assert.match(say({ status: "paid", paymentMethod: "card", deliveryType: "delivery" }), /Pago confirmado/);
+  assert.match(say({ status: "preparing", deliveryType: "delivery" }), /preparando en la cocina de Boloncity Urdesa/);
+  assert.match(say({ status: "awaiting_pickup", deliveryType: "pickup" }), /listo para retirar en Boloncity Urdesa[\s\S]*Av\. Estrada 123/);
+  assert.match(say({ status: "awaiting_pickup", deliveryType: "delivery" }), /esperando al motorizado/);
+  assert.match(say({ status: "ready", deliveryType: "delivery" }), /Va en camino/);
+  assert.match(say({ status: "delivered", deliveryType: "delivery" }), /Entregado/);
+  assert.match(say({ status: "cancelled", deliveryType: "delivery" }), /cancelado/);
+  // Una tarjeta sin pagar NUNCA dice que está en camino ni en cocina.
+  assert.doesNotMatch(say({ status: "pending", paymentMethod: "card", deliveryType: "delivery" }), /en camino|preparando/);
 });
 
 // ─── Simulación: 25 compras en dos pasos (/brain enruta → el flujo procesa) ──
