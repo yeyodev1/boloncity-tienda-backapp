@@ -22,7 +22,7 @@ import { normalizePhone } from "../utils/phone";
 import { isAvailableAt } from "../utils/productAvailability";
 import { loadCatalog, searchCatalog } from "../services/whatsappBot/catalog";
 import { aiChooseOption, aiExtract } from "../services/whatsappBot/extractor";
-import { claimsPaid, classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
+import { claimsPaid, classifyConfirmReply, extractMapsUrl, extractOrderNumber, titleCase } from "../services/whatsappBot/intents";
 import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, LocationQuote, nextStep, OpeningWindow, PaymentSettlement, publicRoute, TurnResult } from "../services/whatsappBot/router";
 import { settleCardPaymentByOrderNumber } from "../services/cardPaymentSettlement.service";
 import { botIntro, botName, rewriteWithVoice, stripOpeningMarks } from "../services/whatsappBot/voice";
@@ -1355,7 +1355,7 @@ async function trackOrderForPhone(phone: string, message: string, requested = ""
   }
   const order: any = await Order.findOne({ customerPhone: { $in: phoneVariants(phone) }, ...(orderNumber ? { orderNumber } : {}) })
     .sort({ createdAt: -1 })
-    .populate("branch", "name");
+    .populate("branch", "name address googleMapsUrl");
   if (!order) {
     return {
       success: false,
@@ -1365,17 +1365,53 @@ async function trackOrderForPhone(phone: string, message: string, requested = ""
     };
   }
   const trackingLink = order.picker?.smrURL || "";
-  const unpaidCard = order.paymentMethod === "card" && order.status === "pending";
   const lines = [
     `*Pedido ${order.orderNumber}*`,
-    `Estado: ${STATUS_LABELS[order.status] || order.status}${order.picker?.statusText ? ` · ${order.picker.statusText}` : ""}`,
-    `${order.deliveryType === "pickup" ? "Retiro en" : "Sucursal"}: ${order.branch?.name || "Por confirmar"}`,
-    order.items.map((item: any) => `${item.quantity} x ${item.name}`).join("\n"),
+    statusExplanation(order),
+    order.picker?.statusText && order.deliveryType === "delivery" && !["delivered", "cancelled"].includes(order.status) ? `Motorizado: ${order.picker.statusText}` : "",
+    "",
+    order.items.map((item: any) => `${item.quantity} x ${titleCase(item.name)}`).join("\n"),
     `Total: $${(order.total / 100).toFixed(2)} · ${order.paymentMethod === "card" ? "Tarjeta" : "Efectivo"}`,
-    unpaidCard ? `Todavía no nos llega el pago 💳 Puedes pagarlo aquí: ${botPaymentLink(order)}` : "",
-    trackingLink ? `Sigue a tu motorizado en vivo aquí 🛵\n${trackingLink}` : "",
-  ].filter(Boolean);
-  return { success: true, message: lines.join("\n"), order, trackingLink };
+    trackingLink && order.status !== "delivered" && order.status !== "cancelled" ? `\nSigue a tu motorizado en vivo aquí 🛵\n${trackingLink}` : "",
+  ].filter((line) => line !== null && line !== undefined && line !== false) as string[];
+  return { success: true, message: lines.join("\n").replace(/\n{3,}/g, "\n\n").trim(), order, trackingLink };
+}
+
+/**
+ * En qué va el pedido, en palabras del cliente. Sale del estado REAL de la orden en Mongo (el que mueve el cajero
+ * y Picker), nunca de lo que recuerda la conversación.
+ */
+export function statusExplanation(order: any): string {
+  const branch = order.branch?.name || "el local";
+  const pickup = order.deliveryType === "pickup";
+  const scheduled = order.scheduledFor ? longScheduledLabel(new Date(order.scheduledFor)) : "";
+  switch (order.status) {
+    case "pending":
+      if (order.paymentMethod === "card") {
+        return `Está esperando tu pago 💳 Apenas pagues${scheduled ? `, queda programado para ${scheduled}` : ", la cocina lo empieza"}.\nPágalo aquí: ${botPaymentLink(order)}\nCuando lo pagues, escríbeme *pagado* y lo verifico ✅`;
+      }
+      return scheduled
+        ? `Está programado para ${scheduled} 🗓️ La cocina lo prepara a esa hora en ${branch}. Pagas en efectivo al ${pickup ? "retirarlo" : "recibirlo"} 💵`
+        : `Lo recibimos ✅ ${branch} lo empieza en un momento. Pagas en efectivo al ${pickup ? "retirarlo" : "recibirlo"} 💵`;
+    case "paid":
+      return scheduled
+        ? `Pago confirmado ✅ Está programado para ${scheduled} 🗓️ La cocina lo prepara a esa hora en ${branch}`
+        : `Pago confirmado ✅ Ya está en la fila de la cocina de ${branch} 🫓`;
+    case "preparing":
+      return `Se está preparando en la cocina de ${branch} 👨‍🍳🔥`;
+    case "awaiting_pickup":
+      return pickup
+        ? `Ya está listo para retirar en ${branch} 🏠${order.branch?.address ? `\n📍 ${order.branch.address}` : ""}`
+        : `Ya está listo y esperando al motorizado 🛵 Sale en un ratito`;
+    case "ready":
+      return pickup ? `Ya está listo para retirar en ${branch} 🏠` : `Va en camino 🛵 Ya mismo llega`;
+    case "delivered":
+      return `Entregado ✅ Que lo disfrutes 🫓`;
+    case "cancelled":
+      return `Este pedido fue cancelado ❌ Si tienes dudas, escribe *asesor* y te ayudan`;
+    default:
+      return `Estado: ${STATUS_LABELS[order.status] || order.status}`;
+  }
 }
 
 /** En "consultar orden" un número suelto ("17", "#17") o el campo orderNumber es el número del pedido. */

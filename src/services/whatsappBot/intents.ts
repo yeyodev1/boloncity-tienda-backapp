@@ -280,7 +280,7 @@ export function isQuestion(message: string) {
 export const wantsPaymentLink = test(/\b(link|enlace|liga|url)\b|\bno (me )?(abre|carga|funciona|deja pagar)\b|\b(como|donde) (pago|pagar|lo pago)\b/);
 
 const trackingPattern =
-  /\b(mi pedido|mi orden|estado (de )?(mi )?(pedido|orden)|rastrear|seguimiento|tracking|donde (va|esta) (mi )?(pedido|orden)|consultar (mi )?(pedido|orden)|ya (salio|viene)|cuanto (falta|se demora)|ord \d+|(orden|pedido|order) (numero |nro |no |n )?\d{1,6}(?! ?[a-z]))\b/;
+  /\b(mi pedido|mi orden|estado (de )?(mi )?(pedido|orden)|rastrear|seguimiento|tracking|donde (va|esta) (mi )?(pedido|orden)|consultar (mi )?(pedido|orden)|ya (salio|viene)|cuanto (falta|se demora)|mi comida|ya mismo (llega|llegan|sale|viene|esta)|cuando (llega|llegan) (mi|el|la)|ord \d+|(orden|pedido|order) (numero |nro |no |n )?\d{1,6}(?! ?[a-z]))\b/;
 /** "agrega un café a mi pedido", "quita la humita de mi orden": editan el carrito, no consultan un pedido. */
 const EDIT_VERBS = /\b(agrega\w*|agrego|anade\w*|anadir|suma\w*|pon|ponle|ponme|quita\w*|saca\w*|elimina\w*|borra\w*|cambia\w*|aumenta\w*|agregar|incluye)\b/;
 export function wantsTracking(message: string) {
