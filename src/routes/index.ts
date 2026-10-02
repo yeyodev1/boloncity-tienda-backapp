@@ -11,6 +11,7 @@ import webhookRouter from "./webhook.routes";
 import healthRouter from "./health.routes";
 import metaRouter from "./meta.routes";
 import cartRouter from "./abandonedCart.routes";
+import botAdminRouter from "./botAdmin.routes";
 
 function routerApi(app: Application) {
   const router = express.Router();
@@ -26,6 +27,7 @@ function routerApi(app: Application) {
   router.use("/health", healthRouter);
   router.use("/meta", metaRouter);
   router.use("/carts", cartRouter);
+  router.use("/bot-admin", botAdminRouter);
   app.use("/api", router);
 }
 
