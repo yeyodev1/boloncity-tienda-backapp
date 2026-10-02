@@ -2426,6 +2426,20 @@ test("IMAGEN: lo que devuelve la IA se valida (enum cerrado, sin precios)", asyn
   assert.deepEqual(parseReading("no es json"), { kind: "other" });
 });
 
+test("UBICACIÓN: pin o link de Google Maps (maps.app.goo.gl) funcionan igual y se confirma con el mapa", async () => {
+  const pedir = await chat(fakeDeps().deps, ["una humita", "delivery"]);
+  assert.match(pedir.last.reply, /clip 📎 → \*Ubicación\*[\s\S]*link de Google Maps/, "explica las dos formas");
+  for (const turn of [{ location: { lat: -2.15, lng: -79.9 } }, "https://maps.app.goo.gl/4DiJ4onj8sdmWAeW9"] as const) {
+    const { last } = await chat(fakeDeps().deps, ["una humita", "delivery", turn as any]);
+    assert.equal(last.decision, "R1:ubicacion", JSON.stringify(turn));
+    assert.match(last.reply, /📍 Recibí tu ubicación ✅\nMírala en el mapa: https:\/\/www\.google\.com\/maps\?q=-2\.15,-79\.9/);
+    assert.match(last.reply, /Si no es ahí, mándame otra ubicación/);
+  }
+  // El link también sirve al empezar, antes de pedir.
+  const primero = await chat(fakeDeps().deps, ["https://maps.app.goo.gl/4DiJ4onj8sdmWAeW9"]);
+  assert.equal(primero.last.decision, "R1:ubicacion");
+});
+
 // ─── Imágenes ────────────────────────────────────────────────────────────────
 
 test("IMG-1: foto de un producto se cruza con el catálogo; sin parecido ofrece asesor", async () => {
