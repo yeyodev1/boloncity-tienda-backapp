@@ -36,6 +36,17 @@ const NUMBER = /\d+(?:[.,:]\d+)*/g;
 const KEPT_WORDS = [/\bbot\b/gi, /\bagente\b/gi, /lo que necesites/gi, /\bsiempre\b/gi];
 /** Renglones de lista, cuentas o resumen: viñeta, número de opción o un monto. Se copian idénticos. */
 const PROTECTED_LINE = /^\s*(?:[•\-–]|\d+[.)]|\d️?⃣)|\$\s?\d/;
+/**
+ * Palabras de ESTADO del pedido, del pago o de la entrega. La IA no puede agregar ni quitar ninguna: en una
+ * prueba cambió "tu pedido ya está registrado" por "ya está en camino" con una tarjeta sin pagar.
+ */
+const STATE_WORDS = [
+  /\bregistrad[oa]s?\b/gi, /\ben camino\b/gi, /\bpagad[oa]s?\b/gi, /\bpendiente\w*/gi, /\bconfirmad[oa]s?\b/gi,
+  /\bcread[oa]s?\b/gi, /\bcancelad[oa]s?\b/gi, /\bentregad[oa]s?\b/gi, /\blist[oa] para\b/gi, /\bprogramad[oa]s?\b/gi,
+  /\bcerrad[oa]s?\b/gi, /\babiert[oa]s?\b/gi, /\bcocina\b/gi, /\bmotorizad[oa]\b/gi, /\befectivo\b/gi, /\btarjeta\b/gi,
+  /\btransferencia\w*/gi, /\bdelivery\b/gi, /\bretir\w*/gi, /\bgratis\b/gi, /\bdescuento\w*/gi, /\bpromo\w*/gi,
+  /\breembols\w*/gi, /\bfactura\w*/gi, /\bno\b/gi, /\btodav[ií]a\b/gi, /\ba[uú]n\b/gi, /\bya\b/gi,
+];
 /** Saludo al inicio del mensaje ("Hola", "¡Hola!", "Holaa", "Buenas"). */
 const GREETING = /^[\s¡¿]*(hola+|buenas|buenos dias|buenas tardes|buenas noches|hey|ey)\b/i;
 /** La IA no puede decir que es una persona. */
@@ -76,7 +87,8 @@ export function isSafeRewrite(original: string, rewritten: string) {
   const before = tokens(original, NUMBER).sort().join("|");
   const after = tokens(text, NUMBER).sort().join("|");
   if (before !== after) return false;
-  return KEPT_WORDS.every((pattern) => count(text, pattern) >= count(original, pattern));
+  if (!KEPT_WORDS.every((pattern) => count(text, pattern) >= count(original, pattern))) return false;
+  return STATE_WORDS.every((pattern) => count(text, pattern) === count(original, pattern));
 }
 
 const VOICE_PROMPT = `Reescribes los mensajes de WhatsApp del bot de Boloncity (comida típica ecuatoriana) para que no suenen repetidos.
