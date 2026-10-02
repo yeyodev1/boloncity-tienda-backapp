@@ -511,8 +511,9 @@ function isAddressQuestion(state: BotState, message: string) {
 }
 
 /** Cómo mandar la ubicación: las DOS formas que funcionan, explicadas paso a paso. */
+// Sin un link de ejemplo: WhatsApp le arma una vista previa ("Firebase · Invalid Dynamic Link") que confunde.
 const LOCATION_REQUEST =
-  "Para el delivery necesito tu ubicación 📍 Tienes 2 formas:\n• Toca el clip 📎 → *Ubicación* → *Enviar mi ubicación actual*\n• O pega aquí el link de Google Maps de tu dirección (por ejemplo https://maps.app.goo.gl/…)";
+  "Para el delivery necesito tu ubicación 📍 Tienes 2 formas:\n• Toca el clip 📎 → *Ubicación* → *Enviar mi ubicación actual*\n• O pega aquí el link de Google Maps de tu dirección";
 
 export function createInitialState(phone: string): BotState {
   return { phone, stage: "idle", cart: [], pendingChoice: null, choiceQueue: [] };
@@ -741,7 +742,8 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (input.location || mapsUrl || input.locationInvalid) {
     const coords = input.location || (mapsUrl ? await deps.resolveMapsUrl(mapsUrl) : null);
     if (!coords) {
-      notes.push(`Mmm, no pude leer esa ubicación 🙈\n\n${LOCATION_REQUEST}`);
+      // La pregunta del paso (LOCATION_REQUEST) la agrega finish: aquí solo se dice qué pasó y la salida más segura.
+      notes.push("Mmm, no pude leer esa ubicación 🙈 Lo más seguro es el link: en Google Maps busca tu dirección, toca *Compartir* → *Copiar enlace* y pégalo aquí");
       return finish("R1:ubicacion_invalida", "location");
     }
     // Con el pedido en RETIRO, la ubicación sirve para saber qué local le queda más cerca: no lo convierte en
