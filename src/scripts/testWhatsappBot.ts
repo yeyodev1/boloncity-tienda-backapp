@@ -2380,7 +2380,7 @@ test("META-5: el bot se presenta como bot y no escribe ¿ ni ¡ al inicio (filtr
 });
 
 test("RUTAS: /brain solo devuelve rutas con flujo creado (conversation, catalog, checkoutCard, human)", async () => {
-  assert.equal(flowRoute("checkout"), "checkoutCard");
+  assert.equal(flowRoute("checkout"), "conversation", "confirmo va a la conversación: no depende de la Rule de checkout");
   assert.equal(flowRoute("search_order"), "conversation", "consultar pedido no tiene flujo: lo resuelve la conversación");
   assert.equal(flowRoute("catalog"), "catalog");
   assert.equal(flowRoute("human"), "human");
@@ -2617,7 +2617,7 @@ async function simulatePurchase(sim: SimCase, index: number) {
         continue;
       }
       const { routed, result } = await turn(simAnswer(state.stage, sim));
-      if (result.decision === "R7:orden_creada") assert.equal(routed, "checkoutCard", "el confirmo va al flujo de checkout");
+      if (result.decision === "R7:orden_creada") assert.equal(routed, "conversation", "el confirmo lo resuelve la conversación");
     }
     assert.equal(created.length, 1, "exactamente una orden");
     assert.equal(created[0].paymentMethod, sim.payment);

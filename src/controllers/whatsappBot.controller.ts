@@ -1127,7 +1127,10 @@ const ROUTE_INTENT: Record<BuilderBotRoute, string> = {
 export type FlowRoute = "conversation" | "catalog" | "checkoutCard" | "human";
 
 export function flowRoute(route: BuilderBotRoute): FlowRoute {
-  if (route === "checkout") return "checkoutCard";
+  // "confirmo" lo resuelve igual la conversación (crea la orden y manda el link). Mandarlo a 💳 Checkout dependía de
+  // una Rule más en BuilderBot: en producción faltó y el cliente se quedó sin respuesta tras "confirmo".
+  // BOT_ROUTE_CHECKOUT=1 vuelve a usar el flujo de checkout cuando esa Rule esté configurada.
+  if (route === "checkout") return process.env.BOT_ROUTE_CHECKOUT === "1" ? "checkoutCard" : "conversation";
   if (route === "catalog" || route === "human") return route;
   return "conversation";
 }
