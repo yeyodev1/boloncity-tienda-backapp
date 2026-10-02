@@ -510,6 +510,10 @@ function isAddressQuestion(state: BotState, message: string) {
   return state.stage === "address" && !state.deliveryAddress && isQuestion(message) && !/\b(mi|el|la) (pedido|orden)\b/.test(normalizeText(message));
 }
 
+/** Cómo mandar la ubicación: las DOS formas que funcionan, explicadas paso a paso. */
+const LOCATION_REQUEST =
+  "Para el delivery necesito tu ubicación 📍 Tienes 2 formas:\n• Toca el clip 📎 → *Ubicación* → *Enviar mi ubicación actual*\n• O pega aquí el link de Google Maps de tu dirección (por ejemplo https://maps.app.goo.gl/…)";
+
 export function createInitialState(phone: string): BotState {
   return { phone, stage: "idle", cart: [], pendingChoice: null, choiceQueue: [] };
 }
@@ -737,7 +741,7 @@ export async function handleTurn(previous: BotState, input: TurnInput, deps: Bot
   if (input.location || mapsUrl || input.locationInvalid) {
     const coords = input.location || (mapsUrl ? await deps.resolveMapsUrl(mapsUrl) : null);
     if (!coords) {
-      notes.push("Mmm, no pude leer esa ubicación 🙈 Mándamela desde el clip 📎 de WhatsApp o pásame un enlace de Google Maps");
+      notes.push(`Mmm, no pude leer esa ubicación 🙈\n\n${LOCATION_REQUEST}`);
       return finish("R1:ubicacion_invalida", "location");
     }
     // Con el pedido en RETIRO, la ubicación sirve para saber qué local le queda más cerca: no lo convierte en
@@ -1579,7 +1583,12 @@ async function applyLocation(
   });
   // Cambiar de sucursal invalida lo programado: cada local tiene su propio horario.
   if (branchChanged) clearSchedule(state);
-  if (!silent) notes.push(`¡Listo! Te atiende la sucursal ${quote.branchName} 🛵 El delivery te cuesta ${money(quote.deliveryFee)}`);
+  // Confirmación clara: el cliente ve en el mapa DÓNDE quedó el pin (por si el link o el GPS lo ubicó mal).
+  if (!silent) {
+    notes.push(
+      `📍 Recibí tu ubicación ✅\nMírala en el mapa: https://www.google.com/maps?q=${coords.lat},${coords.lng}\n\nTe atiende la sucursal ${quote.branchName} 🛵 El delivery te cuesta ${money(quote.deliveryFee)}\nSi no es ahí, mándame otra ubicación o link de Google Maps`
+    );
+  }
   if (branchChanged) await revalidateCartForBranch(state, deps, notes);
   return true;
 }
@@ -2335,7 +2344,7 @@ export async function nextStep(state: BotState, deps: BotDeps): Promise<{ questi
       }
     }
     state.stage = "location";
-    return { question: "Mándame tu ubicación desde el clip 📎 de WhatsApp (Ubicación → Enviar mi ubicación actual) o pásame un enlace de Google Maps 📍", route: "location" };
+    return { question: LOCATION_REQUEST, route: "location" };
   }
 
   if (state.deliveryType === "pickup" && !state.branchId) {
