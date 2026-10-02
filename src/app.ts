@@ -65,7 +65,7 @@ const BOT_FALLBACK = {
   intencion: "conversar",
   telefonoSoporte: "+593 99 315 7333",
   route: "conversation",
-  message: "Tuve un problema procesando tu mensaje. ¿Me lo repites?",
+  message: "Tuve un problema procesando tu mensaje 🙏 Me lo repites?",
   missingData: [],
 };
 

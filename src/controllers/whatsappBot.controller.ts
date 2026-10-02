@@ -1,6 +1,7 @@
 import axios from "axios";
 import crypto from "crypto";
 import { Request, Response } from "express";
+import { BotLog } from "../models/BotLog";
 import { Branch } from "../models/Branch";
 import { Counter } from "../models/Counter";
 import { Order } from "../models/Order";
@@ -24,6 +25,8 @@ import { aiChooseOption, aiExtract } from "../services/whatsappBot/extractor";
 import { claimsPaid, classifyConfirmReply, extractMapsUrl, extractOrderNumber } from "../services/whatsappBot/intents";
 import { BotDeps, BotState, BuilderBotRoute, classifyRoute, createInitialState, handleTurn, LastOrder, LocationQuote, nextStep, OpeningWindow, PaymentSettlement, publicRoute, TurnResult } from "../services/whatsappBot/router";
 import { settleCardPaymentByOrderNumber } from "../services/cardPaymentSettlement.service";
+import { botIntro, botName, rewriteWithVoice, stripOpeningMarks } from "../services/whatsappBot/voice";
+import { readMedia } from "../services/whatsappBot/vision";
 
 /** Las pruebas verifican con esto que ninguna ruta interna se escape hacia BuilderBot. */
 export const botResponseRoute = publicRoute;
@@ -207,6 +210,17 @@ function readEvent(body: any): "location" | "media" | null {
   const match = text.match(/^_event_(\w*?)__/i);
   if (!match) return null;
   return /location|ubicacion/i.test(match[1]) ? "location" : "media";
+}
+
+/** "_event_voice_note__…", "_event_audio__…", "_event_video__…": no se procesan, se pide una foto o texto. */
+function isAudioOrVideoEvent(body: any) {
+  return /^_event_(voice|audio|video|ptt)\w*__/i.test(rawText(body));
+}
+
+/** Archivo temporal que manda BuilderBot con una imagen ({urlTempFile}). */
+function readMediaUrl(body: any) {
+  const url = clean(body?.urlTempFile) || clean(body?.urlTemp) || clean(body?.mediaUrl);
+  return /^https?:\/\//i.test(url) ? url : "";
 }
 
 function toCoordinate(value: unknown) {
@@ -700,6 +714,7 @@ function defaultDeps(): BotDeps {
     chooseOption: aiChooseOption,
     menuUrl: `${getFrontendUrl()}/catalogo`,
     supportPhone: SUPPORT_PHONE,
+    botName: botName(),
   };
 }
 
@@ -747,7 +762,42 @@ async function acquireTurnLock(phone: string): Promise<any | null> {
   }
 }
 
-type TurnOutcome = TurnResult & { duplicated?: boolean };
+type TurnOutcome = TurnResult & { duplicated?: boolean; aiVoice?: boolean };
+
+/** Contexto propio del bot por teléfono: los mensajes de más de 3 días ya no cuentan. */
+const HISTORY_MAX_AGE_MS = 3 * 86_400_000;
+
+/** Respuestas que ya dicen que es un bot (o que no deben llevar saludo): no se les antepone la presentación. */
+const NO_INTRO_DECISIONS = new Set(["R2:soy_bot", "R2:opt_out", "R0:reinicio", "R0:duplicado", "R0:eco_otro_nodo", "R0:ocupado"]);
+
+/**
+ * Bitácora: una línea "[bot]" por mensaje en los logs de Vercel y una fila en Mongo (BotLog, 30 días).
+ * Nunca rompe el turno: si Mongo falla, queda solo la línea.
+ */
+export async function logTurn(input: { phone: string; endpoint?: string; message: string; result?: TurnOutcome | null; startedAt: number; media?: string; routed?: string; error?: string }) {
+  const result = input.result;
+  const ms = Date.now() - input.startedAt;
+  const entry = {
+    phone: input.phone || "",
+    endpoint: input.endpoint || "",
+    message: String(input.message || "").slice(0, 1500),
+    reply: String(result?.reply || "").slice(0, 3000),
+    decision: result?.decision || (input.routed ? "R0:enrutar" : input.error ? "R0:error" : ""),
+    step: result?.step || "",
+    route: result ? publicRoute(result.route) : input.routed || "",
+    routed: input.routed,
+    orderNumber: result?.orderNumber || undefined,
+    aiVoice: result?.aiVoice,
+    media: input.media,
+    ms,
+    error: input.error,
+  };
+  const short = (text: string) => JSON.stringify(text.replace(/\s+/g, " ").slice(0, 120));
+  console.log(
+    `[bot] ${entry.phone} /${entry.endpoint} ${entry.decision}${entry.routed ? ` → ${entry.routed}` : ""} · paso ${entry.step || "-"} · ${ms}ms${entry.aiVoice ? " · voz IA" : ""}${entry.error ? ` · ERROR ${entry.error}` : ""} · ${short(entry.message)} → ${short(entry.reply)}`
+  );
+  await BotLog.create(entry).catch((error: unknown) => console.warn(`[bot] no se pudo guardar la bitácora: ${error instanceof Error ? error.message : error}`));
+}
 
 /**
  * Identidad de la pregunta que el bot tiene abierta: paso + elección pendiente + cola de productos.
@@ -815,8 +865,11 @@ export function turnHash(message: string, location: { lat: number; lng: number }
  * Decisión de duplicado de runTurn, sin Mongo: recibe la sesión tal como está guardada y dice si el mensaje es un
  * reintento del turno anterior (misma respuesta completa, R0:duplicado). La usan runTurn y las pruebas.
  */
-export function isDuplicateTurn(session: any, hash: string, arrivedAt: number, now: number, endpoint?: string) {
+export function isDuplicateTurn(session: any, hash: string, arrivedAt: number, now: number, endpoint?: string, message = "") {
   if (!session || !session.lastReply) return false;
+  // "pagado" SIEMPRE se vuelve a verificar con PayPhone (es idempotente): antes dos "pagado" seguidos devolvían la
+  // respuesta vieja ("todavía no nos llega") aunque el pago ya hubiera entrado.
+  if (message && claimsPaid(message)) return false;
   const lastAt = session.lastMessageAt ? new Date(session.lastMessageAt).getTime() : 0;
   // El otro nodo HTTP del flow: misma burbuja aunque el texto derivado no coincida (ver isOtherHttpNode).
   if (isOtherHttpNode({ endpoint, endpointBefore: session.lastEndpoint, lastAt, now, hash, hashBefore: session.lastMessageHash })) return true;
@@ -893,18 +946,37 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
   const location = readLocation(body, message);
   const locationInvalid = !location && Boolean(options.expectLocation || event === "location") && !extractMapsUrl(message);
 
+  // Imagen ({urlTempFile}): la IA dice si es un comprobante, un producto u otra cosa; el router decide qué hacer.
+  // Audios y videos no se procesan. Se lee ANTES del candado: no toca la sesión y puede tardar unos segundos.
+  const mediaUrl = readMediaUrl(body);
+  let image: { kind: "payment" | "product" | "other" | "unreadable"; query?: string } | null = null;
+  let unsupportedMedia = event === "media";
+  if (isAudioOrVideoEvent(body)) unsupportedMedia = true;
+  else if (mediaUrl && !location && (event === "media" || !message)) {
+    const menuNames = (await loadCatalog().catch(() => [])).map((product) => product.name);
+    const media = await readMedia(mediaUrl, menuNames);
+    if (media.type === "unsupported") unsupportedMedia = true;
+    else {
+      image = media.reading || { kind: "unreadable" };
+      unsupportedMedia = false;
+    }
+  }
+  const mediaLabel = image ? `[imagen:${image.kind}${image.query ? ` ${image.query}` : ""}]` : unsupportedMedia ? "[audio/video]" : "";
+
   if (isResetKeyword(message)) {
     // Reemplaza la sesión entera (carrito, paso, historial, candados) y marca desde cuándo ignorar pedidos viejos.
     await WhatsAppSession.replaceOne({ phone }, { phone, history: [], state: null, resetAt: new Date() }, { upsert: true });
     console.log(`[whatsapp-bot] ${phone} reiniciatodo → sesión borrada`);
     const state = createInitialState(phone);
-    return { state, reply: RESET_REPLY, route: "conversation", intent: "conversar", step: state.stage, decision: "R0:reinicio" };
+    const reset: TurnOutcome = { state, reply: RESET_REPLY, route: "conversation", intent: "conversar", step: state.stage, decision: "R0:reinicio" };
+    await logTurn({ phone, endpoint: options.endpoint, message, result: reset, startedAt: arrivedAt });
+    return reset;
   }
 
   // El nodo que solo manda {history} a veces llega SIN texto legible, y a veces llega ANTES que el nodo que sí
   // trae el mensaje. Si contesta él, el cliente ve una respuesta genérica en lugar de la real (pasó en vivo: el
   // pin de ubicación se quedó sin respuesta). En ese caso se espera la respuesta del otro nodo y se devuelve ESA.
-  if (!message && !location && !event && options.endpoint && TEXT_TWIN_ENDPOINTS.has(options.endpoint)) {
+  if (!message && !location && !event && !mediaUrl && options.endpoint && TEXT_TWIN_ENDPOINTS.has(options.endpoint)) {
     const fresh = await waitForSiblingReply(phone, arrivedAt);
     if (fresh) return fresh;
   }
@@ -921,8 +993,8 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
     // (a) llegó mientras se procesaba ese mismo mensaje, o (b) llegó en menos de 5 s y el turno anterior no
     // cambió la pregunta pendiente. Un "1" que responde OTRA pregunta es una respuesta nueva: "¿cuál tigrillo?" → "1"
     // y luego "¿cuál cola?" → "1" tienen el mismo paso ("choosing") pero distinta pregunta (ver pendingKey).
-    const hash = turnHash(message, location, event);
-    if (isDuplicateTurn(session, hash, arrivedAt, Date.now(), options.endpoint)) {
+    const hash = turnHash(message || mediaUrl, location, event);
+    if (isDuplicateTurn(session, hash, arrivedAt, Date.now(), options.endpoint, message)) {
       if (isOtherHttpNode({ endpoint: options.endpoint, endpointBefore: session.lastEndpoint, lastAt: session.lastMessageAt ? new Date(session.lastMessageAt).getTime() : 0, now: Date.now(), hash, hashBefore: session.lastMessageHash })) {
         console.warn(
           `[whatsapp-bot] ⚠️ el flow tiene DOS nodos HTTP: esta misma burbuja de ${phone} ya la atendió /${session.lastEndpoint} y ahora llegó a /${options.endpoint}. ` +
@@ -931,7 +1003,7 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
       }
       const state = { ...createInitialState(phone), ...(session.state || {}) } as BotState;
       const last: any = session.lastResponse || {};
-      return {
+      const duplicate: TurnOutcome = {
         state,
         reply: session.lastReply,
         route: last.route || "conversation",
@@ -942,25 +1014,44 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
         paymentLink: last.paymentLink || undefined,
         duplicated: true,
       };
+      await logTurn({ phone, endpoint: options.endpoint, message: message || mediaLabel, result: duplicate, startedAt: arrivedAt });
+      return duplicate;
     }
 
     const previous = { ...createInitialState(phone), ...(session.state || {}), phone } as BotState;
-    const history: Array<{ role: "user" | "assistant"; content: string; createdAt: Date }> = [...(session.history || [])];
+    // Contexto propio por teléfono: 30 mensajes y no más viejos que 3 días.
+    const history: Array<{ role: "user" | "assistant"; content: string; createdAt: Date }> = [...(session.history || [])].filter(
+      (item: any) => !item?.createdAt || Date.now() - new Date(item.createdAt).getTime() < HISTORY_MAX_AGE_MS
+    );
     const pushHistory = (role: "user" | "assistant", content: string) => {
       if (content.trim()) history.push({ role, content: content.trim().slice(0, 2000), createdAt: new Date() });
     };
-    pushHistory("user", message || (location ? `[ubicación ${location.lat},${location.lng}]` : event ? `[${event}]` : ""));
-    const result = await handleTurn(
+    pushHistory("user", message || mediaLabel || (location ? `[ubicación ${location.lat},${location.lng}]` : event ? `[${event}]` : ""));
+    const result: TurnOutcome = await handleTurn(
       previous,
-      { message, location, locationInvalid, unsupportedMedia: event === "media", senderName: clean(body?.name) },
+      { message, location, locationInvalid, unsupportedMedia, image, senderName: clean(body?.name) },
       buildDeps()
     );
     result.state.lastIntent = result.intent;
+
+    // Voz: la IA reescribe la respuesta (distinta a las últimas 3) MIENTRAS corre la pausa humana, así no suma
+    // tiempo. La pausa va con el candado tomado y ANTES de guardar: un reintento de BuilderBot que llegue mientras
+    // tanto espera el candado y luego se reconoce como duplicado (llegó antes de lastMessageAt).
+    const recentReplies = history.filter((item) => item.role === "assistant").slice(-3).map((item) => item.content);
+    // Transparencia (Meta): el primer mensaje de la conversación presenta al bot como bot. La presentación ya
+    // saluda, así que el "Hola, qué gusto…" de la plantilla se quita ANTES de la voz (si no, salían dos saludos).
+    const introduce = !previous.introduced && !NO_INTRO_DECISIONS.has(result.decision);
+    let base = stripOpeningMarks(result.reply);
+    if (introduce && result.decision === "R10:saludo") base = base.replace(/^\s*hola[^\n]*\n+/i, "");
+    const [voiced] = await Promise.all([
+      rewriteWithVoice(base, recentReplies),
+      sleep(Math.max(0, humanDelayMs() - (Date.now() - arrivedAt))),
+    ]);
+    const reply = introduce ? `${botIntro()}\n\n${voiced.text}` : voiced.text;
+    result.reply = stripOpeningMarks(reply);
+    result.aiVoice = voiced.rewritten;
+    result.state.introduced = true;
     pushHistory("assistant", result.reply);
-    // La pausa va con el candado tomado y ANTES de guardar: un reintento de BuilderBot que llegue mientras tanto
-    // espera el candado y luego se reconoce como duplicado (llegó antes de lastMessageAt).
-    const pending = humanDelayMs() - (Date.now() - arrivedAt);
-    if (pending > 0) await sleep(pending);
     // Guardado con $set (sin versionado): con el candado nadie más escribe esta sesión a la vez.
     await WhatsAppSession.updateOne(
       { phone },
@@ -973,7 +1064,7 @@ async function runTurn(body: any, options: TurnOptions = {}): Promise<TurnOutcom
       }
     );
     released = true;
-    console.log(`[whatsapp-bot] ${phone} ${result.decision} → paso ${result.step}`);
+    await logTurn({ phone, endpoint: options.endpoint, message: message || mediaLabel, result, startedAt: arrivedAt, media: mediaLabel || undefined });
     return result;
   } finally {
     if (!released) await WhatsAppSession.updateOne({ phone }, { $set: { turnLockUntil: null } }).catch(() => {});
@@ -997,7 +1088,7 @@ function toBotResponse(result: TurnResult | null) {
     // "dudas" = el bot no puede resolverlo y hay que derivar al número de soporte.
     intencion: result.intent,
     telefonoSoporte: SUPPORT_PHONE,
-    route: publicRoute(result.route),
+    route: flowRoute(publicRoute(result.route)),
     // Nunca en blanco: si un turno no produjo texto, igual se le responde algo útil al cliente.
     message: result.reply || FALLBACK_MESSAGE,
     step: result.step,
@@ -1005,6 +1096,8 @@ function toBotResponse(result: TurnResult | null) {
     readyToCheckout: result.step === "confirm",
     orderNumber: result.orderNumber || "",
     paymentLink: result.paymentLink || "",
+    paymentMethod: result.state.paymentMethod || "",
+    total: result.orderNumber ? Number(result.state.lastOrderTotal) || 0 : 0,
     cart: result.state.cart,
     missingData: [],
     targetEndpoint: "/api/orders/whatsapp-bot/brain",
@@ -1024,6 +1117,39 @@ const ROUTE_INTENT: Record<BuilderBotRoute, string> = {
   human: "dudas",
 };
 
+/**
+ * Rutas que devuelve /brain para las Rules del flujo 🧠 Principal. SOLO las que tienen flujo creado en
+ * BuilderBot: conversation, catalog, checkoutCard y human. Consultar un pedido lo resuelve la conversación
+ * (no hay flujo propio) y no hay transferencia (checkoutTransfer) en Boloncity.
+ */
+export type FlowRoute = "conversation" | "catalog" | "checkoutCard" | "human";
+
+export function flowRoute(route: BuilderBotRoute): FlowRoute {
+  if (route === "checkout") return "checkoutCard";
+  if (route === "catalog" || route === "human") return route;
+  return "conversation";
+}
+
+/** Todas las respuestas a BuilderBot salen por aquí: HTTP 200 y el texto sin ¿ ni ¡ (estilo de la marca). */
+function sendBot(res: Response, payload: Record<string, any>) {
+  if (typeof payload.message === "string") payload.message = stripOpeningMarks(payload.message);
+  res.status(200).json(payload);
+}
+
+/** Ruta del mensaje SIN procesarlo: lee la sesión, no la modifica, no llama a la IA. */
+async function decideRoute(body: any) {
+  const phone = readPhone(body);
+  const message = readMessage(body);
+  const session: any = phone ? await WhatsAppSession.findOne({ phone }).lean() : null;
+  const state = session?.state ? ({ ...createInitialState(phone), ...session.state } as BotState) : null;
+  // "reiniciatodo" siempre va a la conversación, que es la que borra la sesión. Una imagen también: la lee ella.
+  const route: BuilderBotRoute =
+    isResetKeyword(message) || readMediaUrl(body)
+      ? "conversation"
+      : classifyRoute(state, message, Boolean(readLocation(body, message)) || readEvent(body) === "location");
+  return { phone, message, state, route };
+}
+
 
 /**
  * Flow "Bienvenida" de BuilderBot: decide a qué flow va el mensaje (campo `route` para las Rules).
@@ -1032,12 +1158,7 @@ const ROUTE_INTENT: Record<BuilderBotRoute, string> = {
 export async function whatsappBotRouter(req: Request, res: Response) {
   try {
     const body = { ...req.query, ...req.body };
-    const phone = readPhone(body);
-    const message = readMessage(body);
-    const session: any = phone ? await WhatsAppSession.findOne({ phone }).lean() : null;
-    const state = session?.state ? ({ ...createInitialState(phone), ...session.state } as BotState) : null;
-    // "reiniciatodo" siempre va a la conversación, que es la que borra la sesión.
-    const route = isResetKeyword(message) ? "conversation" : classifyRoute(state, message, Boolean(readLocation(body, message)) || readEvent(body) === "location");
+    const { phone, state, route } = await decideRoute(body);
     console.log(`[whatsapp-bot] router ${phone} → ${route} (paso ${state?.stage || "nuevo"})`);
     // `message` ya NO va vacío: si el flow lo envía al cliente, este endpoint no debe dejarlo sin respuesta.
     // El flow recomendado (un solo nodo a /brain o /assistant) sigue funcionando igual.
@@ -1056,21 +1177,61 @@ export async function whatsappBotRouter(req: Request, res: Response) {
   }
 }
 
-/** Punto de entrada principal: todos los flujos de BuilderBot pueden llamar aquí. */
+/**
+ * 🧠 Principal (evento GENERAL, "Enviar al cliente" APAGADO): SOLO decide la ruta. Sin IA, en milisegundos, sin
+ * tocar el pedido y con el mensaje vacío. Sus Rules mandan a cada flujo según `route` (conversation, catalog,
+ * checkoutCard, human) y el endpoint de ese flujo procesa el turno completo, así que responde bien aunque la
+ * predicción falle.
+ *
+ * BOT_BRAIN_MODE=turn vuelve al esquema anterior (un solo nodo a /brain que procesa y responde todo).
+ */
 export async function whatsappBotBrain(req: Request, res: Response) {
+  const body = { ...req.query, ...req.body };
+  if (process.env.BOT_BRAIN_MODE === "turn") return whatsappBotTurn(req, res, "brain");
   try {
-    res.status(200).json(toBotResponse(await runTurn({ ...req.query, ...req.body }, { endpoint: "brain" })));
+    const { phone, state, route } = await decideRoute(body);
+    const routed = flowRoute(route);
+    console.log(`[whatsapp-bot] brain ${phone || "sin-teléfono"} → ${routed} (paso ${state?.stage || "nuevo"})`);
+    res.status(200).json({ success: true, route: routed, intencion: ROUTE_INTENT[route], message: "", step: state?.stage || "idle", decision: "R0:enrutar", telefonoSoporte: SUPPORT_PHONE });
   } catch (error) {
     console.error("[whatsapp-bot] brain falló", error);
-    res.status(200).json(errorResponse());
+    // Ante la duda, a la conversación: ahí el cliente siempre recibe una respuesta.
+    res.status(200).json({ success: true, route: "conversation", intencion: "conversar", message: "", step: "idle", decision: "R0:enrutar_error", telefonoSoporte: SUPPORT_PHONE });
   }
+}
+
+/** Procesa el turno completo y responde con el contrato del bot. Lo usan 💬 Conversación, 🙋 Asesor y /brain en modo turn. */
+async function whatsappBotTurn(req: Request, res: Response, endpoint: string) {
+  const startedAt = Date.now();
+  const body = { ...req.query, ...req.body };
+  try {
+    sendBot(res, toBotResponse(await runTurn(body, { endpoint })));
+  } catch (error) {
+    console.error(`[whatsapp-bot] ${endpoint} falló`, error);
+    await logTurn({ phone: readPhone(body), endpoint, message: readMessage(body), startedAt, error: error instanceof Error ? error.message : String(error) });
+    sendBot(res, errorResponse());
+  }
+}
+
+/** 💬 Conversación (ACCIÓN): todo lo que no es menú, checkout ni asesor. */
+export async function whatsappBotConversation(req: Request, res: Response) {
+  return whatsappBotTurn(req, res, "conversation");
+}
+
+/**
+ * 🙋 Asesor humano (ACCIÓN, y después el paso Silenciar en BuilderBot): procesa el turno como siempre (un reclamo o
+ * "asesor" da R2:humano con el aviso de que alguien del equipo escribe por aquí). Si la predicción falló, igual
+ * responde lo correcto.
+ */
+export async function whatsappBotHuman(req: Request, res: Response) {
+  return whatsappBotTurn(req, res, "human");
 }
 
 // BuilderBot espera este sobre en el flujo del asistente.
 export async function whatsappBotAssistant(req: Request, res: Response) {
   try {
     const result = await runTurn({ ...req.query, ...req.body }, { endpoint: "assistant" });
-    res.status(200).json({
+    sendBot(res, {
       success: Boolean(result),
       // Con teléfono pero sin texto (el nodo de {history} a veces llega vacío) se pregunta, no se dice
       // "no logré leer tu número": ese no era el problema y confundía al cliente.
@@ -1082,7 +1243,7 @@ export async function whatsappBotAssistant(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("[whatsapp-bot] assistant falló", error);
-    res.status(200).json({ ...errorResponse(), _intent: "conversar" });
+    sendBot(res, { ...errorResponse(), _intent: "conversar" });
   }
 }
 
@@ -1092,10 +1253,10 @@ export async function whatsappBotCatalog(req: Request, res: Response) {
     const body = { ...req.query, ...req.body };
     if (!readMessage(body)) body.message = "menú";
     const result = await runTurn(body, { endpoint: "catalog" });
-    res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "menu" });
+    sendBot(res, { ...toBotResponse(result), _intent: result?.intent || "menu" });
   } catch (error) {
     console.error("[whatsapp-bot] catalog falló", error);
-    res.status(200).json({ ...errorResponse(), _intent: "conversar" });
+    sendBot(res, { ...errorResponse(), _intent: "conversar" });
   }
 }
 
@@ -1109,10 +1270,10 @@ export async function whatsappBotLocation(req: Request, res: Response) {
     if (result?.decision === "R1:ubicacion_invalida") {
       console.warn(`[whatsapp-bot] /location sin coordenadas legibles. Content-Type: ${req.headers["content-type"] || "-"} · body: ${JSON.stringify(body).slice(0, 1500)}`);
     }
-    res.status(200).json({ ...toBotResponse(result), _intent: result?.intent || "conversar" });
+    sendBot(res, { ...toBotResponse(result), _intent: result?.intent || "conversar" });
   } catch (error) {
     console.error("[whatsapp-bot] location falló", error);
-    res.status(200).json(errorResponse("Mmm, no pude leer esa ubicación 🙈 ¿Me la compartes de nuevo desde el clip 📎?"));
+    sendBot(res, errorResponse("Mmm, no pude leer esa ubicación 🙈 ¿Me la compartes de nuevo desde el clip 📎?"));
   }
 }
 
@@ -1125,15 +1286,15 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
     const body = { ...req.query, ...req.body };
     const phone = readPhone(body);
     const base = { intencion: "conversar", telefonoSoporte: SUPPORT_PHONE };
-    if (!phone) return res.status(200).json({ ...base, success: false, message: NO_PHONE_MESSAGE });
+    if (!phone) return sendBot(res, { ...base, success: false, message: NO_PHONE_MESSAGE });
     const session: any = await WhatsAppSession.findOne({ phone }).lean();
     const state = session?.state as BotState | undefined;
-    if (!session || !state) return res.status(200).json({ ...base, success: false, message: "Todavía no tengo tu pedido 🙂 Dime qué se te antoja y lo armamos" });
+    if (!session || !state) return sendBot(res, { ...base, success: false, message: "Todavía no tengo tu pedido 🙂 Dime qué se te antoja y lo armamos" });
     const claimedPaid = state.stage === "ordered" && Boolean(state.lastOrderNumber) && claimsPaid(readMessage(body));
     // "pagado" por el flow de checkout de BuilderBot: el corto circuito de abajo respondía "ya está
     // registrado" sin verificar nada. Se deja pasar el turno para que R7:pago_* consulte a PayPhone.
     if (state.stage === "ordered" && state.lastOrderNumber && !claimedPaid) {
-      return res.status(200).json({
+      return sendBot(res, {
         ...base,
         intencion: "orden_creada",
         success: true,
@@ -1147,11 +1308,11 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
     }
     if (claimedPaid) {
       const paidTurn = await runTurn({ ...body, phone }, { endpoint: "checkout" });
-      return res.status(200).json({ ...toBotResponse(paidTurn), success: Boolean(paidTurn?.orderNumber) });
+      return sendBot(res, { ...toBotResponse(paidTurn), success: Boolean(paidTurn?.orderNumber) });
     }
     if (state.stage !== "confirm") {
       const next = await nextStep({ ...createInitialState(phone), ...state }, buildDeps());
-      return res.status(200).json({ ...base, success: false, message: next.question, step: state.stage });
+      return sendBot(res, { ...base, success: false, message: next.question, step: state.stage });
     }
     // Con el mensaje del cliente (rawMessage/message) se procesa ESE mensaje: la conversación solo crea la orden si
     // classifyConfirmReply lo da como "confirm" (la misma función que usan /router y R7). "gracias" vuelve a mostrar
@@ -1159,12 +1320,12 @@ export async function whatsappBotCheckout(req: Request, res: Response) {
     // siempre (idempotente).
     const message = readMessage(body);
     const confirming = !message || classifyConfirmReply(message) === "confirm";
-    const result = await runTurn(message ? { ...body, phone } : { phone, message: "confirmo" });
+    const result = await runTurn(message ? { ...body, phone } : { phone, message: "confirmo" }, { endpoint: "checkout" });
     if (!confirming) console.log(`[whatsapp-bot] checkout ${phone}: "${message.slice(0, 60)}" no confirma → ${result?.decision}`);
-    res.status(200).json({ ...toBotResponse(result), success: Boolean(result?.orderNumber) });
+    sendBot(res, { ...toBotResponse(result), success: Boolean(result?.orderNumber) });
   } catch (error) {
     console.error("[whatsapp-bot] checkout falló", error);
-    res.status(200).json(errorResponse("Dame un segundito 🙏 No pude crear tu pedido ahorita. Escribe *confirmo* otra vez en un minuto"));
+    sendBot(res, errorResponse("Dame un segundito 🙏 No pude crear tu pedido ahorita. Escribe *confirmo* otra vez en un minuto"));
   }
 }
 
@@ -1224,10 +1385,10 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
   try {
     const body = { ...req.query, ...req.body };
     const phone = readPhone(body);
-    if (!phone) return res.status(200).json({ success: false, route: "search_order", intencion: "consultar_pedido", message: NO_PHONE_MESSAGE });
+    if (!phone) return sendBot(res, { success: false, route: "search_order", intencion: "consultar_pedido", message: NO_PHONE_MESSAGE });
     const message = readMessage(body);
     const result = await trackOrderForPhone(phone, message, requestedOrderNumber(body, message));
-    res.status(200).json({
+    sendBot(res, {
       success: result.success,
       route: "search_order",
       intencion: "consultar_pedido",
@@ -1238,7 +1399,7 @@ export async function whatsappBotTrackOrder(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("[whatsapp-bot] track falló", axios.isAxiosError(error) ? error.message : error);
-    res.status(200).json({ success: false, route: "search_order", intencion: "consultar_pedido", message: `Dame un segundito 🙏 No pude consultar tu pedido ahorita. Inténtalo en un minuto o escríbenos al ${SUPPORT_PHONE}` });
+    sendBot(res, { success: false, route: "search_order", intencion: "consultar_pedido", message: `Dame un segundito 🙏 No pude consultar tu pedido ahorita. Inténtalo en un minuto o escríbenos al ${SUPPORT_PHONE}` });
   }
 }
 
@@ -1249,7 +1410,7 @@ export async function whatsappBotSearchOrder(req: Request, res: Response) {
     const phone = readPhone(body);
     const message = readMessage(body);
     const result = phone ? await trackOrderForPhone(phone, message, requestedOrderNumber(body, message)) : null;
-    res.status(200).json({
+    sendBot(res, {
       success: Boolean(result?.success),
       message: result?.message || NO_PHONE_MESSAGE,
       intencion: "consultar_pedido",
@@ -1261,7 +1422,7 @@ export async function whatsappBotSearchOrder(req: Request, res: Response) {
     });
   } catch (error) {
     console.error("[whatsapp-bot] search-order falló", error);
-    res.status(200).json({
+    sendBot(res, {
       success: false,
       message: `Dame un segundito 🙏 No pude consultar tu pedido ahorita. Inténtalo en un minuto o escríbenos al ${SUPPORT_PHONE}`,
       intencion: "consultar_pedido",

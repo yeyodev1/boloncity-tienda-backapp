@@ -175,7 +175,10 @@ export interface NotifyResult {
 export async function notificarCarrito(carrito: Carrito): Promise<NotifyResult> {
   const errores: string[] = [];
 
-  if (isSendablePhone(carrito.customerPhone) && whatsappChannel() !== "none") {
+  // Politica de Meta (desde el 1-oct-2026 se cobra cada mensaje sin plantilla fuera de la ventana de 24 h) y
+  // pedido del dueño: el bot nunca escribe primero. El recordatorio sale solo por correo, salvo que se
+  // encienda a proposito con CART_REMINDER_WHATSAPP=1.
+  if (process.env.CART_REMINDER_WHATSAPP === "1" && isSendablePhone(carrito.customerPhone) && whatsappChannel() !== "none") {
     const wa = await sendWhatsapp({
       phone: carrito.customerPhone,
       message: mensajeDeRecuperacion(carrito.customerName, carrito.token),
@@ -189,7 +192,7 @@ export async function notificarCarrito(carrito: Carrito): Promise<NotifyResult> 
     });
     if (wa.sent) return { sent: true, channel: wa.channel };
     errores.push(`WhatsApp: ${wa.error || "no se pudo enviar"}`);
-  } else if (isSendablePhone(carrito.customerPhone)) {
+  } else if (process.env.CART_REMINDER_WHATSAPP === "1" && isSendablePhone(carrito.customerPhone)) {
     errores.push("WhatsApp: sin canal configurado");
   }
 

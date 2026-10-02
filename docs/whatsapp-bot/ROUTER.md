@@ -196,50 +196,50 @@ real quedaría sin cocina, sin Picker y sin correo).
 payphone.transactionId: null }]`, salvo `?includeUnpaid=true`). En cuanto el pago se cierra —por el navegador o por
 "pagado"— la orden queda `paid` con `transactionId` y **aparece sola en el tablero**: no hay que tocar `listOrders`.
 
-## Configuración de BuilderBot (los 5 flows que ya existen)
+## Configuración de BuilderBot (🧠 Principal enruta, cada flujo responde)
 
 Base: `https://api.boloncity.com/api/orders/whatsapp-bot` (en dev: `https://<api-dev>/api/orders/whatsapp-bot`).
-En **todos** los nodos HTTP: método `POST`, header `Content-Type: application/json`, **Body con campos (RAW apagado)**.
-Variables de BuilderBot: `{body}` mensaje, `{from}` teléfono, `{history}` historial, `{name}` nombre.
+En **todos** los nodos HTTP: método `POST`, header `Content-Type: application/json`, **Body con campos (RAW apagado)**:
+`rawMessage` = `{body}` · `phone` = `{from}` · `history` = `{history}` · `urlTempFile` = `{urlTempFile}`.
 
-> Por qué este cambio: el esquema anterior (flow Bienvenida → `/router` con "Enviar al cliente" apagado) necesitaba
-> dos flows más ("agente que obtiene datos" y "Soporte humano"). Con los 5 flows actuales, todo lo que el router
-> clasificaba como `conversation` (saludo, productos, "1", "retiro", nombre, correo, dirección…) **no tenía flow de
-> destino y el cliente no recibía nada**. `/brain` ya resuelve TODO en un solo paso: pedido, menú, consulta de
-> pedido, confirmación y link de pago. Por eso el flow de inicio llama directo a `/brain`.
+**El backend decide; la IA solo ayuda; BuilderBot solo enruta y muestra.** `/brain` SOLO decide la ruta (sin IA, en
+milisegundos, sin tocar el pedido y con `message` vacío). El endpoint de cada flujo procesa el turno completo, así que
+responde bien aunque la predicción falle.
 
-| # | Flow (nombre en el panel) | Evento | Endpoint | Body (campos) | Enviar al cliente | Rules |
-|---|---|---|---|---|---|---|
-| 1 | Flow: Inicio de conversación | GENERAL | `/brain` | `rawMessage` = `{body}` · `phone` = `{from}` · `name` = `{name}` | **ENCENDIDO**, texto `{message}` | Ninguna obligatoria (ver nota de soporte) |
-| 2 | envian ubicacion nativa | UBICACIÓN | `/location` | `phone` = `{from}` · `latitude` · `longitude` (variables de ubicación del **@**) · `rawMessage` = `{body}` | ENCENDIDO, `{message}` | — |
-| 3 | Catálogo Productos | — (solo si otro flow salta aquí) | `/catalog` | `rawMessage` = `{body}` · `phone` = `{from}` | ENCENDIDO, `{message}` | — |
-| 4 | checkout link de pago | — | `/checkout` | `phone` = `{from}` | ENCENDIDO, `{message}` | — |
-| 5 | consultar orden | — | `/search-order` | `rawMessage` = `{body}` · `phone` = `{from}` | ENCENDIDO, `{message}` | — |
+| Flujo | Evento | Endpoint | Enviar al cliente | Rules |
+|---|---|---|---|---|
+| 🧠 Principal | GENERAL | `/brain` | **APAGADO** | `route` Es Igual a `conversation` → 💬 · `catalog` → 📚 · `checkoutCard` → 💳 · `human` → 🙋 |
+| 💬 Conversación | ACCIÓN | `/conversation` | `{message}` | ninguna |
+| 📚 Catálogo | ACCIÓN | `/catalog` | `{message}` | ninguna |
+| 💳 Checkout tarjeta | ACCIÓN | `/checkout` | `{message}` | ninguna |
+| 🙋 Asesor humano | ACCIÓN | `/human` + paso **Silenciar** | `{message}` | ninguna |
+| 📍 Ubicación | UBICACIÓN | `/location` (`phone`, `rawMessage`, `latitude`, `longitude`) | `{message}` | ninguna |
+| 📷 Fotos | IMAGEN O VÍDEO | `/conversation` | `{message}` | ninguna |
 
-Paso a paso en el flow 1 ("Inicio de conversación"):
+- Nunca una Rule hacia el mismo flujo (el 22-sep-2026 eso dejó a BuilderBot en bucle contra producción).
+- `/brain` solo devuelve rutas con flujo creado. Consultar un pedido lo resuelve 💬 Conversación. No hay transferencia
+  (`checkoutTransfer`): Boloncity cobra con tarjeta (PayPhone) y efectivo.
+- Si el 🧠 Principal tiene "Enviar al cliente" encendido, el cliente recibe un mensaje en blanco.
+- `BOT_BRAIN_MODE=turn` en Vercel vuelve al esquema anterior (un solo nodo a `/brain` que procesa y responde todo).
+- Contrato: `{ success, route, intencion, message, step, decision, orderNumber, paymentLink, paymentMethod, total, cart }`.
 
-1. Abrir el nodo HTTP del flow → cambiar la URL de `/router` a `/brain`.
-2. Método `POST`, header `Content-Type: application/json`, **RAW apagado**, campos `rawMessage` `{body}`, `phone` `{from}`, `name` `{name}`.
-3. Encender **Enviar al cliente** con el texto `{message}` (la respuesta del bot siempre viene en `message`, nunca vacía).
-4. Borrar las Rules por `route` de ese flow (ya no hacen falta: `/brain` responde el menú, el estado del pedido y el link de pago).
-5. Guardar y publicar. Probar: "hola" → "¿Qué te gustaría pedir hoy?"; "2 humitas" → "¿delivery o retiro?".
+**Políticas de Meta (2026).** Se presenta como bot en el primer mensaje ("Soy Boloncity Bot, el bot de Boloncity y tu
+agente para lo que necesites"; `BOT_NAME` lo cambia). "¿eres un bot?" / "¿hablo con una persona?" → "Sí, soy un bot 🤖"
++ opción *asesor* (es una pregunta, no un pedido de asesor). "asesor", "quiero hablar con una persona" o un reclamo →
+🙋 Asesor humano. Lo ajeno al negocio (chistes, tareas, código…) → `R11:fuera_de_tema`. "no me escribas" / "stop" (y
+"no gracias" sin pedido en curso) → `R2:opt_out`. El bot nunca escribe primero: los carritos abandonados se recuerdan
+solo por correo (`CART_REMINDER_WHATSAPP=1` reactiva WhatsApp).
 
-Flows 3, 4 y 5 pueden quedarse como están (no molestan); ya no son necesarios porque `/brain` hace lo mismo.
-Si se quieren conservar para otros disparadores, sus endpoints aceptan `phone` o `from`.
+**Voz.** Pausa humana aleatoria de 3–7 s (`BOT_REPLY_DELAY_MIN_MS` / `BOT_REPLY_DELAY_MAX_MS`). Gemini reescribe cada
+respuesta distinta a las últimas 3 (`BOT_AI_VOICE=0` la apaga); si toca listas, montos, números, links, negritas o las
+palabras "bot"/"agente"/"lo que necesites"/"siempre", agrega un saludo, dice que es persona o se alarga más de 30 %, se
+manda la plantilla. Nunca ¿ ni ¡ (filtro final en todas las respuestas).
 
-**Soporte humano.** Cuando el bot no puede resolver algo (pide una persona, reclamo, dos mensajes seguidos sin entender)
-responde `intencion` = `dudas` y el `message` YA trae el número de soporte (`+593 99 315 7333`). No hace falta otro flow.
-Si más adelante se crea un flow "Soporte humano" (texto con wa.me/593993157333 + **Silenciar** 60 min), agregar en el flow 1
-la Rule `intencion` = `dudas` → Soporte humano.
+**Fotos.** La IA dice qué es: comprobante/captura de pago (con pedido de tarjeta se verifica con PayPhone, igual que
+"pagado"), producto (se cruza con el catálogo real) u otra cosa. Audios y videos: se pide texto o foto.
 
-**Ubicación nativa.** Revisar en el panel qué variables expone el evento UBICACIÓN y mapearlas a `latitude` y `longitude`.
-El endpoint también acepta `lat`/`lng`, un campo `location` con `"lat,lng"`, un link de Google Maps o Waze en `mapsUrl`
-o `rawMessage`, y coma decimal (`-2,1577`). Si no llegan coordenadas legibles responde "No pude leer esa ubicación…".
-
-**Alternativa (mantener `/router`).** Si se prefiere conservar el flow de inicio con `/router` y "Enviar al cliente"
-apagado, agregar Rules para TODAS las rutas: `conversation` → Catálogo Productos · `human` → Catálogo Productos ·
-`catalog` → Catálogo Productos · `checkout` → checkout link de pago · `search_order` → consultar orden. (`/catalog` corre
-la misma conversación que `/brain` cuando recibe un mensaje.) Es más lento (dos llamadas por mensaje) y más frágil.
+**Bitácora.** Una línea `[bot]` por mensaje en Vercel y una fila en `BotLog` (30 días):
+`vercel logs --since 1h | grep "\[bot\]"` · `npm run bot:logs -- 593995254965` · `npm run bot:logs -- --errors`.
 
 **Seguridad (opcional, recomendado en producción).** Si se define `WHATSAPP_BOT_SECRET` en Vercel, cada nodo HTTP debe
 mandar el header `X-Bot-Token: <ese valor>`; sin él las rutas del bot no responden datos (la ruta se reconoce sin importar mayúsculas: `/WHATSAPP-BOT/` también exige el token). Sin la variable, no se exige.
@@ -253,10 +253,10 @@ mandar el header `X-Bot-Token: <ese valor>`; sin él las rutas del bot no respon
 - JID `…@lid` (id de privacidad de WhatsApp: el cliente oculta su número): NO es un teléfono. La sesión se guarda como
   `lid:<id>` (siempre la misma), se registra un warning en el log, la orden queda con `customerPhone` vacío y no se
   buscan pedidos anteriores ni se consultan pedidos por ese id (se le pide escribir al soporte).
-- Un reintento se reconoce por mensaje igual + misma pregunta pendiente (paso + elección + cola). "1" a "¿cuál
+- Un reintento se reconoce por mensaje igual + misma pregunta pendiente (paso + elección + cola). "pagado" nunca es reintento: siempre se vuelve a verificar. "1" a "¿cuál
   tigrillo?" y luego "1" a "¿cuál cola?" son dos respuestas distintas, no un reintento.
 - El carrito tiene tope de 50 unidades por producto: el bot dice cuántas agregó de verdad y avisa el tope.
-- Audios, imágenes (`_event_media__…`, `_event_voice_note__…`): "solo puedo leer texto y ubicaciones".
+- Audios y videos (`_event_voice_note__…`): se pide texto o una foto. Imágenes (`{urlTempFile}`): ver **Fotos**.
 - Mensajes seguidos del mismo cliente se procesan en orden (candado por teléfono); un reintento de BuilderBot recibe la
   misma respuesta completa (`orderNumber` y `paymentLink` incluidos) y nunca crea una segunda orden.
 
