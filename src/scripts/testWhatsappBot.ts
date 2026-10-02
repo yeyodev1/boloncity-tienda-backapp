@@ -19,8 +19,11 @@ import { faqTopic } from "../services/whatsappBot/intents";
 import axios from "axios";
 import { env } from "../config/env";
 import { aiExtract, Extractor, heuristicExtract } from "../services/whatsappBot/extractor";
+import { wantsOptOut } from "../services/whatsappBot/intents";
+import { botIntro, isSafeRewrite, stripOpeningMarks } from "../services/whatsappBot/voice";
+import { parseReading } from "../services/whatsappBot/vision";
 import { claimsPaid, classifyConfirmReply, extractDocNumber, extractOrderNumber, isPlainConfirmation, isQuestion, isSmallTalk, splitItemPhrases, titleCaseName, wantsHuman, wantsTracking } from "../services/whatsappBot/intents";
-import { botResponseRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
+import { botResponseRoute, flowRoute, isDuplicateTurn, isOtherHttpNode, isRetry, latestUserMessage, pendingKey, toE164, turnHash, turnRecord } from "../controllers/whatsappBot.controller";
 import { candidateClientTxIds, decideFromSale } from "../services/cardPaymentSettlement.service";
 import { esEnvioCreible } from "../services/deliveryQuote.service";
 import { linkDeRecuperacion, mensajeDeRecuperacion } from "../services/abandonedCart.service";
@@ -881,7 +884,7 @@ test("ubicación ilegible y audios: mensaje claro, sin sumar 'no entendido'", as
   assert.equal(ubicacion.decision, "R1:ubicacion_invalida");
   assert.match(ubicacion.reply, /no pude leer esa ubicación/);
   const audio = await handleTurn(createInitialState("+593987654321"), { message: "", unsupportedMedia: true }, deps);
-  assert.match(audio.reply, /solo puedo leer mensajes de texto/);
+  assert.match(audio.reply, /no puedo escuchar audios ni ver videos/);
   assert.equal(audio.state.misunderstood || 0, 0);
 });
 
@@ -2286,6 +2289,239 @@ test("pago confirmado: en RETIRO dice dónde queda el local; en DELIVERY, el seg
   const sinPicker = await cardOrder({ settlement: { outcome: "paid_now", total: 12.5, deliveryType: "delivery" } });
   const pagoSinPicker = await handleTurn(sinPicker.state, { message: "pagado" }, sinPicker.deps);
   assert.match(pagoSinPicker.reply, /te paso el link para seguirlo/i, pagoSinPicker.reply);
+});
+
+// ─── Políticas de Meta ───────────────────────────────────────────────────────
+
+test("META-1: '¿eres un bot?' y '¿hablo con una persona?' responden que es un bot y ofrecen asesor", async () => {
+  for (const question of ["eres un bot?", "¿hablo con una persona?", "me atiende un robot", "eres real?"]) {
+    const { deps } = fakeDeps();
+    const { last } = await chat(deps, [question]);
+    assert.equal(last.decision, "R2:soy_bot", question);
+    assert.match(last.reply, /Sí, soy un bot 🤖/, question);
+    assert.match(last.reply, /tu agente para lo que necesites/, question);
+    assert.match(last.reply, /\*asesor\*/, question);
+    assert.equal(wantsHuman(question), false, `${question} es una pregunta, no un pedido de asesor`);
+    assert.equal(classifyRoute(null, question), "conversation", question);
+  }
+});
+
+test("META-2: 'asesor', 'quiero hablar con una persona' o un reclamo van al asesor humano", async () => {
+  for (const message of ["asesor", "quiero hablar con una persona", "pásame un humano", "mi pedido llegó frío"]) {
+    const { deps } = fakeDeps();
+    const { last } = await chat(deps, [message]);
+    assert.equal(last.decision, "R2:humano", message);
+    assert.equal(last.route, "human", message);
+    assert.equal(classifyRoute(null, message), "human", message);
+  }
+});
+
+test("META-3: el bot no es de propósito general: lo ajeno al negocio se redirige", async () => {
+  for (const message of ["cuéntame un chiste", "ayúdame con mi tarea de matemáticas", "traduce hello al español", "quién ganó el partido de fútbol"]) {
+    const { deps } = fakeDeps();
+    const { last } = await chat(deps, [message]);
+    assert.equal(last.decision, "R11:fuera_de_tema", `${message} → ${last.decision}`);
+    assert.match(last.reply, /solo con lo de Boloncity/);
+  }
+  // Con un pedido de por medio, el pedido gana.
+  const { deps } = fakeDeps();
+  const { last } = await chat(deps, ["una humita"]);
+  assert.notEqual(last.decision, "R11:fuera_de_tema");
+});
+
+test("META-4: opt-out ('no me escribas') se respeta y se confirma; 'no gracias' a medio pedido NO es opt-out", async () => {
+  for (const message of ["no me escribas más", "deja de escribirme", "no quiero recibir mensajes", "stop"]) {
+    const { deps } = fakeDeps();
+    const { last } = await chat(deps, ["una humita", message]);
+    assert.equal(last.decision, "R2:opt_out", message);
+    assert.match(last.reply, /no te vuelvo a escribir/);
+    assert.equal(last.state.optedOut, true);
+  }
+  const idle = await chat(fakeDeps().deps, ["no gracias"]);
+  assert.equal(idle.last.decision, "R2:opt_out");
+  const midOrder = await chat(fakeDeps().deps, ["una humita", "no gracias"]);
+  assert.notEqual(midOrder.last.decision, "R2:opt_out", "con carrito, 'no gracias' responde la pregunta del bot");
+  assert.equal(wantsOptOut("no me mandes cebolla", false), false);
+});
+
+test("META-5: el bot se presenta como bot y no escribe ¿ ni ¡ al inicio (filtro final)", async () => {
+  assert.equal(stripOpeningMarks("¡Hola! ¿Qué se te antoja?"), "Hola! Qué se te antoja?");
+  assert.match(botIntro("Boloncity Bot"), /Boloncity Bot, el bot de Boloncity y tu agente para lo que necesites/);
+});
+
+test("RUTAS: /brain solo devuelve rutas con flujo creado (conversation, catalog, checkoutCard, human)", async () => {
+  assert.equal(flowRoute("checkout"), "checkoutCard");
+  assert.equal(flowRoute("search_order"), "conversation", "consultar pedido no tiene flujo: lo resuelve la conversación");
+  assert.equal(flowRoute("catalog"), "catalog");
+  assert.equal(flowRoute("human"), "human");
+  assert.equal(flowRoute("conversation"), "conversation");
+});
+
+test("REINTENTOS: dos 'pagado' seguidos SIEMPRE se vuelven a verificar; otro mensaje repetido es duplicado", async () => {
+  const now = Date.now();
+  const session = {
+    lastReply: "Todavía no nos llega el pago",
+    lastMessageAt: new Date(now - 1000),
+    lastMessageHash: turnHash("pagado", null, null),
+    lastStageBefore: pendingKey({ stage: "ordered" }),
+    lastEndpoint: "conversation",
+    state: { stage: "ordered", lastOrderNumber: "ORD-00001" },
+  };
+  assert.equal(isDuplicateTurn(session, turnHash("pagado", null, null), now, now, "conversation", "pagado"), false);
+  const other = { ...session, lastMessageHash: turnHash("hola", null, null) };
+  assert.equal(isDuplicateTurn(other, turnHash("hola", null, null), now, now, "conversation", "hola"), true);
+});
+
+test("VOZ IA: la reescritura no puede tocar listas, montos, links, negritas ni las palabras de transparencia", async () => {
+  const original = "Sí, soy un bot 🤖 Soy Boloncity Bot, tu agente para lo que necesites. Escribe *asesor* si quieres";
+  assert.ok(isSafeRewrite(original, "Sí, soy un bot 🤖 Soy Boloncity Bot, tu agente para lo que necesites. Si quieres a alguien, escribe *asesor*"));
+  assert.ok(!isSafeRewrite(original, "Soy Boloncity Bot, tu asistente. Escribe *asesor* si quieres"), "borró 'bot'/'agente'");
+  assert.ok(!isSafeRewrite(original, "Hola, soy una persona del equipo. Escribe *asesor*"), "no puede decir que es persona");
+  const summary = "Tu pedido 👇\n• 2 x Humita · $5.00\nTotal: $5.00\nPágalo aquí: https://boloncity.com/pago/ORD-00012";
+  assert.ok(!isSafeRewrite(summary, "Tu pedido 👇\n• 2 x Humita · $4.00\nTotal: $5.00\nPágalo aquí: https://boloncity.com/pago/ORD-00012"), "cambió un precio");
+  assert.ok(!isSafeRewrite(summary, "Mira tu pedido 👇\n• 2 x Humita · $5.00\nTotal: $5.00 y además te regalo un café gratis por ser tú, que lo disfrutes mucho\nPágalo: https://boloncity.com/pago/ORD-00012"), "más de 30% más largo");
+  assert.ok(!isSafeRewrite("Elige uno:\n1. *Café*\n2. *Té*", "Elige uno:\n* *Café*\n* *Té*"), "* como viñeta rompe las negritas");
+  assert.ok(!isSafeRewrite("Aún no nos llega el pago de ORD-00012", "Hola! Aún no nos llega el pago de ORD-00012"), "no saluda a mitad de la conversación");
+});
+
+test("IMAGEN: lo que devuelve la IA se valida (enum cerrado, sin precios)", async () => {
+  assert.deepEqual(parseReading('{"kind":"product","query":"Bolón mixto $3.50"}'), { kind: "product", query: "Bolón mixto 3 50" });
+  assert.deepEqual(parseReading('{"kind":"payment"}'), { kind: "payment" });
+  assert.deepEqual(parseReading('{"kind":"hackeo"}'), { kind: "other" });
+  assert.deepEqual(parseReading("no es json"), { kind: "other" });
+});
+
+// ─── Imágenes ────────────────────────────────────────────────────────────────
+
+test("IMG-1: foto de un producto se cruza con el catálogo; sin parecido ofrece asesor", async () => {
+  const { deps } = fakeDeps();
+  const product = await handleTurn(createInitialState("+593987654321"), { message: "", image: { kind: "product", query: "humita" } }, deps);
+  assert.match(product.decision, /^R12:foto_(producto|parecidos)$/, product.decision);
+  assert.match(product.reply, /Humita/i, product.reply);
+  const none = await handleTurn(createInitialState("+593987654321"), { message: "", image: { kind: "product", query: "impresora laser" } }, deps);
+  assert.equal(none.decision, "R12:foto_sin_producto", none.reply);
+  assert.match(none.reply, /\*asesor\*/);
+});
+
+test("IMG-2: la captura del pago con tarjeta se verifica con PayPhone (no se le cree a la foto)", async () => {
+  const { deps, state, settled } = await cardOrder({ settlement: { outcome: "paid_now", total: 12.5, deliveryType: "pickup" } });
+  const result = await handleTurn(state, { message: "", image: { kind: "payment" } }, deps);
+  assert.equal(result.decision, "R7:pago_captura_paid_now");
+  assert.equal(settled.length, 1);
+  const pending = await cardOrder({ settlement: { outcome: "pending" } });
+  const notYet = await handleTurn(pending.state, { message: "", image: { kind: "payment" } }, pending.deps);
+  assert.equal(notYet.decision, "R7:pago_captura_pending");
+  assert.notEqual(notYet.state.paymentConfirmed, true);
+});
+
+test("IMG-3: un comprobante sin pedido con tarjeta explica que no recibimos transferencias", async () => {
+  const { deps } = fakeDeps();
+  const result = await handleTurn(createInitialState("+593987654321"), { message: "", image: { kind: "payment" } }, deps);
+  assert.equal(result.decision, "R12:comprobante_sin_orden");
+  assert.match(result.reply, /no recibimos transferencias/);
+});
+
+// ─── Simulación: 25 compras en dos pasos (/brain enruta → el flujo procesa) ──
+
+interface SimCase {
+  item: string;
+  delivery: boolean;
+  payment: "card" | "cash";
+  invoice?: boolean;
+  /** Algo que el cliente interrumpe a medio pedido (en el paso indicado). No debe perder el pedido. */
+  interrupt?: { atStep: string; input: { message: string; image?: { kind: "payment" | "product" | "other"; query?: string } } };
+  /** Empieza mandando una foto del producto. */
+  photoFirst?: string;
+}
+
+const ALLOWED_ROUTES = new Set(["conversation", "catalog", "checkoutCard", "human"]);
+
+/** Cliente simulado: contesta según el paso en que está el bot, como lo haría una persona. */
+function simAnswer(step: string, sim: SimCase): { message: string; location?: { lat: number; lng: number } } {
+  switch (step) {
+    case "idle": return { message: sim.item };
+    case "choosing": return { message: "1" };
+    case "delivery_type": return { message: sim.delivery ? "delivery" : "retiro" };
+    case "location": return { message: "", location: { lat: -2.15, lng: -79.9 } };
+    case "address": return { message: "Av. Las Monjas 123, casa verde junto al parque" };
+    case "branch": return { message: "1" };
+    case "name": return { message: "Ana Pérez" };
+    case "email": return { message: "ana@test.com" };
+    case "payment": return { message: `${sim.payment === "card" ? "tarjeta" : "efectivo"}${sim.invoice ? " y con factura" : ""}` };
+    case "invoice_doc": return { message: "0926687856" };
+    case "invoice_name": return { message: "Ana Pérez" };
+    case "confirm": return { message: "confirmo" };
+    default: throw new Error(`paso inesperado en la simulación: ${step}`);
+  }
+}
+
+async function simulatePurchase(sim: SimCase, index: number) {
+  const { deps, created, settled } = fakeDeps({ settlement: sim.payment === "cash" ? { outcome: "not_applicable" } : { outcome: "paid_now", total: 12.5, deliveryType: sim.delivery ? "delivery" : "pickup", trackingUrl: "https://picker.test/smr/1", branchName: "Urdesa", branchAddress: "Av. Víctor Emilio Estrada" } });
+  let state = createInitialState(`+59398765${String(4000 + index)}`);
+  const trace: string[] = [];
+  let interrupted = false;
+  const turn = async (input: { message: string; location?: { lat: number; lng: number }; image?: { kind: "payment" | "product" | "other"; query?: string } }) => {
+    // Paso 1: /brain decide la ruta sin tocar el pedido.
+    const routed = flowRoute(classifyRoute(state, input.message, Boolean(input.location)));
+    assert.ok(ALLOWED_ROUTES.has(routed), `ruta sin flujo: ${routed}`);
+    // Paso 2: el flujo destino procesa el turno completo.
+    const result = await handleTurn(state, input, deps);
+    trace.push(`${input.message || (input.location ? "[ubicación]" : "[imagen]")} → ${routed} → ${result.decision} (${result.step})`);
+    assert.ok(result.reply.trim(), `respuesta vacía en ${result.decision}`);
+    state = result.state;
+    return { routed, result };
+  };
+  try {
+    if (sim.photoFirst) {
+      const photo = await turn({ message: "", image: { kind: "product", query: sim.photoFirst } });
+      assert.match(photo.result.decision, /^R12:foto_/);
+    }
+    for (let guard = 0; state.stage !== "ordered"; guard += 1) {
+      assert.ok(guard < 25, "la compra no termina");
+      if (sim.interrupt && !interrupted && state.stage === sim.interrupt.atStep) {
+        interrupted = true;
+        const before = { stage: state.stage, cart: state.cart.length };
+        const { result } = await turn(sim.interrupt.input);
+        assert.equal(result.state.cart.length, before.cart, "la interrupción no puede tocar el carrito");
+        continue;
+      }
+      const { routed, result } = await turn(simAnswer(state.stage, sim));
+      if (result.decision === "R7:orden_creada") assert.equal(routed, "checkoutCard", "el confirmo va al flujo de checkout");
+    }
+    assert.equal(created.length, 1, "exactamente una orden");
+    assert.equal(created[0].paymentMethod, sim.payment);
+    assert.equal(created[0].deliveryType, sim.delivery ? "delivery" : "pickup");
+    if (sim.invoice) assert.equal(created[0].billingDocNumber, "0926687856");
+    // Paso final: "pagado".
+    const paid = await turn({ message: "pagado" });
+    assert.equal(paid.routed, "conversation");
+    if (sim.payment === "card") {
+      assert.equal(paid.result.decision, "R7:pago_paid_now");
+      assert.equal(settled.length, 1, "PayPhone se consulta (simulado)");
+      assert.equal(paid.result.state.paymentConfirmed, true);
+      assert.match(paid.result.reply, /pago|pagado/i);
+    } else {
+      assert.equal(settled.length <= 1, true);
+      assert.match(paid.result.reply, /efectivo/i, paid.result.reply);
+    }
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : error}\n   ${trace.join("\n   ")}`);
+  }
+}
+
+const SIM_ITEMS = ["una humita", "2 bolones mixtos de verde", "un tigrillo", "un café americano y una humita", "3 humitas"];
+const SIM_CASES: SimCase[] = [];
+for (let i = 0; i < 25; i += 1) {
+  const sim: SimCase = { item: SIM_ITEMS[i % SIM_ITEMS.length], delivery: i % 2 === 0, payment: i % 3 === 0 ? "cash" : "card", invoice: i % 4 === 1 };
+  if (i % 5 === 2) sim.interrupt = { atStep: "name", input: { message: "eres un bot?" } };
+  if (i % 7 === 3) sim.interrupt = { atStep: "email", input: { message: "", image: { kind: "other" } } };
+  if (i % 6 === 4) sim.photoFirst = "humita";
+  SIM_CASES.push(sim);
+}
+SIM_CASES.forEach((sim, index) => {
+  test(`SIM-${index + 1}: ${sim.item} · ${sim.delivery ? "delivery" : "retiro"} · ${sim.payment === "card" ? "tarjeta" : "efectivo"}${sim.invoice ? " · factura" : ""}${sim.interrupt ? ` · interrumpe "${sim.interrupt.input.message || "foto"}"` : ""}${sim.photoFirst ? " · empieza con foto" : ""}`, () =>
+    simulatePurchase(sim, index)
+  );
 });
 
 (async () => {
