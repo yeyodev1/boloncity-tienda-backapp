@@ -253,9 +253,13 @@ export function isSmallTalk(message: string) {
   const text = bareText(raw);
   // Solo emojis o signos ("😀😀", "👍", "!!").
   if (!text) return true;
-  return /^(?:(?:hola+|holi|ola|buenas|buenos|buen|dias|dia|tardes|noches|que tal|como estan|como esta|como estas|saludos|hey|hi|hello|gracias|muchas gracias|mil gracias|ok|okey|okay|oki|vale|dale|listo|perfecto|genial|excelente|chevere|bacan|super|entendido|de acuerdo|amigo|amiga|amigos|señor|senor|señorita|senorita|ya|bien|muy bien|todo bien|y ustedes|y usted|como va|que mas)\s*)+$/.test(text);
+  return /^(?:(?:hola+|holi|ola|buenas|buenos|buen|dias|dia|tardes|noches|que tal|como estan|como esta|como estas|saludos|hey|hi|hello|gracias|muchas gracias|mil gracias|ok|okey|okay|oki|vale|dale|listo|perfecto|genial|excelente|chevere|bacan|super|entendido|de acuerdo|amigo|amiga|amigos|señor|senor|señorita|senorita|ya|bien|muy bien|todo bien|y ustedes|y usted|como va|que mas|por favor|porfa|porfavor|(?:quiero|quisiera|deseo|me gustaria|vengo a|para)? ?(?:hacer|realizar|pedir|ordenar)? ?(?:un )?(?:pedido|orden)|(?:quiero|quisiera|deseo|vengo a) (?:pedir|ordenar|comprar)|me ayudas con (?:un|mi) pedido)\s*)+$/.test(text);
 }
 
+/**
+ * "Holaaaa quiero hacer un pedido" también es solo cortesía: todavía no dice QUÉ quiere. Se le pregunta qué se le
+ * antoja (antes caía en R11:no_entendido y sumaba para derivar a una persona).
+ */
 /** Saludo ("hola", "buenas tardes"): se responde saludando, no con "¡gracias a ti!". */
 export function isGreeting(message: string) {
   return isSmallTalk(message) && /\b(hola+|holi|ola|buenas|buenos|buen dia|saludos|hey|hi|hello|que tal)\b/.test(bareText(message)) && !/\bgracias\b/.test(bareText(message));
