@@ -2383,6 +2383,10 @@ test("VOZ IA: la reescritura no puede tocar listas, montos, links, negritas ni l
   assert.ok(!isSafeRewrite("Elige uno:\n1. *Café*\n2. *Té*", "Elige uno:\n* *Café*\n* *Té*"), "* como viñeta rompe las negritas");
   assert.ok(!isSafeRewrite("Aún no nos llega el pago de ORD-00012", "Hola! Aún no nos llega el pago de ORD-00012"), "no saluda a mitad de la conversación");
   assert.ok(!isSafeRewrite("En qué local?\n1. Urdesa · abierto\n2. Centro · abierto", "Dónde lo retiras?\n*1. Urdesa · abierto*\n*2. Centro · abierto*"), "no pone la lista en negrita");
+  // Visto en la simulación de 25 compras: "registrado" pasó a "en camino" con una tarjeta sin pagar.
+  assert.ok(!isSafeRewrite("Tu pedido ORD-00175 ya está registrado y no lo puedo modificar 🙏", "Tu pedido ORD-00175 ya está en camino y no puedo cambiarlo 🙏"), "no cambia el estado del pedido");
+  assert.ok(!isSafeRewrite("Todavía no nos llega el pago", "Ya nos llegó el pago"), "no quita una negación");
+  assert.ok(isSafeRewrite("Tu pedido ORD-00175 ya está registrado y no lo puedo modificar 🙏", "Tu pedido ORD-00175 ya quedó registrado y no lo puedo tocar 🙏"), "sí puede cambiar palabras neutras");
 });
 
 test("IMAGEN: lo que devuelve la IA se valida (enum cerrado, sin precios)", async () => {
