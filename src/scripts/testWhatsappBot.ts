@@ -2382,6 +2382,7 @@ test("VOZ IA: la reescritura no puede tocar listas, montos, links, negritas ni l
   assert.ok(!isSafeRewrite(summary, "Mira tu pedido 👇\n• 2 x Humita · $5.00\nTotal: $5.00 y además te regalo un café gratis por ser tú, que lo disfrutes mucho\nPágalo: https://boloncity.com/pago/ORD-00012"), "más de 30% más largo");
   assert.ok(!isSafeRewrite("Elige uno:\n1. *Café*\n2. *Té*", "Elige uno:\n* *Café*\n* *Té*"), "* como viñeta rompe las negritas");
   assert.ok(!isSafeRewrite("Aún no nos llega el pago de ORD-00012", "Hola! Aún no nos llega el pago de ORD-00012"), "no saluda a mitad de la conversación");
+  assert.ok(!isSafeRewrite("En qué local?\n1. Urdesa · abierto\n2. Centro · abierto", "Dónde lo retiras?\n*1. Urdesa · abierto*\n*2. Centro · abierto*"), "no pone la lista en negrita");
 });
 
 test("IMAGEN: lo que devuelve la IA se valida (enum cerrado, sin precios)", async () => {
