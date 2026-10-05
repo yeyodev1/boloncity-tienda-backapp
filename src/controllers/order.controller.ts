@@ -24,6 +24,7 @@ import { PICKER_STATUS_LABELS } from "./webhook.controller";
 import { sendMetaEvent } from "../services/metaConversions.service";
 import { quoteDelivery } from "../services/deliveryQuote.service";
 import { normalizePhone } from "../utils/phone";
+import { clearPickerBooking } from "../utils/pickerBooking";
 
 function centsToDollars(value: number) {
   return value / 100;
@@ -1372,6 +1373,33 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
   // Retiro en local: la orden la cierra el cajero cuando el cliente se lleva el pedido.
   const manualPickupConfirmation = order.deliveryType === "pickup" && req.body.status === "delivered";
 
+  // Regresar a cocina un delivery que ya pidió motorizado tiene que cancelar ese
+  // motorizado. ORD-00543 se marcó «Lista» por error (era para el día siguiente),
+  // la cajera lo regresó y Picker siguió asignando motorizados que llegaban al
+  // local por un pedido que no existía todavía. Si Picker no deja cancelar (el
+  // motorizado ya salió con el pedido), el pedido NO retrocede: quedaría en
+  // cocina con un motorizado en la calle.
+  const returnsToKitchen = order.deliveryType === "delivery"
+    && Boolean(order.picker?.bookingId)
+    && ["pending", "paid", "preparing"].includes(req.body.status)
+    && !["pending", "paid", "preparing"].includes(order.status);
+  let pickerReleased = false;
+
+  if (returnsToKitchen) {
+    const cancelled = await cancelPickerForOrder(order, note || "El local regresó el pedido a cocina");
+    if (!cancelled) {
+      await order.save();
+      publishOrderUpdate(order);
+      res.status(409).json({
+        code: "PICKER_CANCEL_FAILED",
+        message: "No pudimos cancelar el motorizado en Picker, así que el pedido no se movió. Si el motorizado ya salió con el pedido, Picker no permite cancelarlo. Si no, cancélalo desde el panel de Picker y vuelve a mover el pedido.",
+      });
+      return;
+    }
+    clearPickerBooking(order);
+    pickerReleased = true;
+  }
+
   const previousStatus = order.status;
   order.status = req.body.status;
 
@@ -1409,6 +1437,8 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
       ? `Entrega confirmada manualmente por el cajero (Picker no reportó la entrega por webhook)${note ? `: ${note}` : ""}`
       : manualPickupConfirmation
       ? `Retiro confirmado en el local por ${req.user?.email || "el cajero"}${note ? `: ${note}` : ""}`
+      : pickerReleased
+      ? `Regresado a cocina por ${req.user?.email || "el local"}: se canceló el motorizado en Picker. Al volver a «Listas para recolección» se pide otro.${note ? ` Motivo: ${note}` : ""}`
       : note ? `Cambio de estado manual: ${note}` : `Cambio de estado manual`,
   });
   await order.save();
@@ -1455,6 +1485,7 @@ export async function updateOrderStatus(req: AuthRequest, res: Response) {
   // el dashboard mostraría "cancelado" y el motorizado llegaría igual.
   res.json({
     ...order.toObject(),
+    pickerReleased: pickerReleased || undefined,
     pickerCancelWarning: pickerCancelled
       ? undefined
       : "El pedido quedó cancelado, pero NO pudimos cancelar el delivery en Picker. Cancélalo desde el panel de Picker o el motorizado llegará igual.",

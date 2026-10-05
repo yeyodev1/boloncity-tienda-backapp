@@ -3,6 +3,7 @@ import { Order } from "../models/Order";
 import { sendEmail } from "../services/resend.service";
 import { getOrderDetailUrl, getOrderStatusEmailHtml } from "../services/email-templates";
 import { publishOrderUpdate } from "../services/orderEvents.service";
+import { clearPickerBooking } from "../utils/pickerBooking";
 
 const PICKER_STATUS_ORDER_MAP: Record<string, string> = {
   ON_HOLD: "paid",
@@ -89,7 +90,15 @@ async function handleUpdateBookingStatus(payload: any) {
     FLOW.indexOf(mappedOrderStatus || "") > -1 &&
     FLOW.indexOf(mappedOrderStatus || "") < FLOW.indexOf(order.status);
 
-  if (mappedOrderStatus && isNewDeliveryStatus && !isFinal && !goesBackwards) {
+  // Que el local cancele el MOTORIZADO no es cancelar el PEDIDO. Pasa cuando lo
+  // marcaron «Lista» por error (ORD-00543: era para el día siguiente) y cancelan
+  // la reserva en Picker, o cuando el propio dashboard la cancela al regresar el
+  // pedido a cocina. Antes esto dejaba el pedido cancelado y le mandaba al cliente
+  // un correo de «Pedido cancelado» por un pedido pagado y en curso. Cancelar un
+  // pedido es exclusivo de administración general y se hace desde el dashboard.
+  const deliveryCancelledByBusiness = newStatus === "CANCELLED_BY_BUSINESS" && !isFinal;
+
+  if (mappedOrderStatus && isNewDeliveryStatus && !isFinal && !goesBackwards && !deliveryCancelledByBusiness) {
     order.status = mappedOrderStatus;
   }
 
@@ -102,12 +111,23 @@ async function handleUpdateBookingStatus(payload: any) {
     });
   }
 
+  // La reserva ya no sirve: se suelta para que el pedido pueda pedir otro
+  // motorizado cuando vuelva a estar listo.
+  if (deliveryCancelledByBusiness) {
+    pushAudit(order, {
+      action: "note_added",
+      details: "El local canceló el motorizado en Picker. El pedido sigue en curso: al volver a «Listas para recolección» se pide otro.",
+    });
+    clearPickerBooking(order);
+  }
+
   await order.save();
   publishOrderUpdate(order);
   console.log(`[Picker Webhook] UPDATE_BOOKING_STATUS processed order=${order.orderNumber} status=${newStatus}`);
 
   // El cliente no recibe un correo de "cancelado" por un pedido que ya recibió.
-  const silentUpdate = isFinal && mappedOrderStatus === "cancelled";
+  // Tampoco por un motorizado que el local canceló: el pedido sigue en pie.
+  const silentUpdate = (isFinal && mappedOrderStatus === "cancelled") || deliveryCancelledByBusiness;
   if (isNewDeliveryStatus && !silentUpdate) sendStatusEmail(order, newStatus, newStatusText).catch(() => {});
 }
 
