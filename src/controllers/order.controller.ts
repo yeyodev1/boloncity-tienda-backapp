@@ -1249,6 +1249,58 @@ export async function issuePaymentIntent(req: Request, res: Response) {
   });
 }
 
+// Un pedido entregado o cancelado ya no cambia: no vale la pena mantener el stream.
+const FINAL_ORDER_STATUSES = ["delivered", "cancelled"];
+// Vercel no avisa al servidor cuando un iPhone corta la conexión (pantalla bloqueada,
+// cambio de red): el stream quedaba vivo hasta el timeout de 300 s y cada reconexión
+// sumaba otro, como pasó con ORD-00680. Se cierra antes y el front reconecta.
+const STREAM_MAX_MS = 45000;
+
+function streamOrderUpdates(req: Request, res: Response, order: InstanceType<typeof Order>) {
+  res.status(200);
+  res.set({
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "Content-Type": "text/event-stream",
+  });
+  res.flushHeaders();
+
+  let closed = false;
+  let latestUpdate = order.updatedAt?.getTime() || 0;
+  const sendOrder = (updatedOrder: typeof order) => {
+    if (closed) return;
+    latestUpdate = updatedOrder.updatedAt?.getTime() || Date.now();
+    res.write(`event: order\ndata: ${JSON.stringify(updatedOrder)}\n\n`);
+    if (FINAL_ORDER_STATUSES.includes(updatedOrder.status)) close();
+  };
+
+  const unsubscribe = subscribeToOrder(String(order._id), (updatedOrder) => sendOrder(updatedOrder as typeof order));
+  const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 25000);
+  // Covers webhook and SSE requests handled by different serverless instances.
+  const databaseCheck = setInterval(() => {
+    void Order.findById(order._id).then((updatedOrder) => {
+      if (updatedOrder && (updatedOrder.updatedAt?.getTime() || 0) > latestUpdate) {
+        sendOrder(updatedOrder as typeof order);
+      }
+    });
+  }, 2000);
+  const maxLifetime = setTimeout(() => close(), STREAM_MAX_MS);
+
+  function close() {
+    if (closed) return;
+    closed = true;
+    clearInterval(keepAlive);
+    clearInterval(databaseCheck);
+    clearTimeout(maxLifetime);
+    unsubscribe();
+    if (!res.writableEnded) res.end();
+  }
+
+  req.on("close", close);
+  res.on("close", close);
+  if (FINAL_ORDER_STATUSES.includes(order.status)) sendOrder(order);
+}
+
 export async function streamOrderByNumber(req: Request, res: Response) {
   const email = typeof req.query.email === "string" ? req.query.email.trim().toLowerCase() : "";
   if (!email) {
@@ -1262,34 +1314,7 @@ export async function streamOrderByNumber(req: Request, res: Response) {
     return;
   }
 
-  res.status(200);
-  res.set({
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "Content-Type": "text/event-stream",
-  });
-  res.flushHeaders();
-
-  let latestUpdate = order.updatedAt?.getTime() || 0;
-  const sendOrder = (updatedOrder: typeof order) => {
-    latestUpdate = updatedOrder.updatedAt?.getTime() || Date.now();
-    res.write(`event: order\ndata: ${JSON.stringify(updatedOrder)}\n\n`);
-  };
-  const unsubscribe = subscribeToOrder(String(order._id), (updatedOrder) => sendOrder(updatedOrder as typeof order));
-  const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 25000);
-  const databaseCheck = setInterval(() => {
-    void Order.findById(order._id).then((updatedOrder) => {
-      if (updatedOrder && (updatedOrder.updatedAt?.getTime() || 0) > latestUpdate) {
-        sendOrder(updatedOrder as typeof order);
-      }
-    });
-  }, 2000);
-
-  req.on("close", () => {
-    clearInterval(keepAlive);
-    clearInterval(databaseCheck);
-    unsubscribe();
-  });
+  streamOrderUpdates(req, res, order);
 }
 
 export async function getOrdersByEmail(req: Request, res: Response) {
@@ -1563,38 +1588,7 @@ export async function streamMyOrder(req: AuthRequest, res: Response) {
     return;
   }
 
-  res.status(200);
-  res.set({
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "Content-Type": "text/event-stream",
-  });
-  res.flushHeaders();
-
-  let latestUpdate = order.updatedAt?.getTime() || 0;
-  const sendOrder = (updatedOrder: typeof order) => {
-    latestUpdate = updatedOrder.updatedAt?.getTime() || Date.now();
-    res.write(`event: order\ndata: ${JSON.stringify(updatedOrder)}\n\n`);
-  };
-
-  const unsubscribe = subscribeToOrder(String(order._id), (updatedOrder) => {
-    sendOrder(updatedOrder as typeof order);
-  });
-  const keepAlive = setInterval(() => res.write(": keep-alive\n\n"), 25000);
-  // Covers webhook and SSE requests handled by different serverless instances.
-  const databaseCheck = setInterval(() => {
-    void Order.findById(order._id).then((updatedOrder) => {
-      if (updatedOrder && (updatedOrder.updatedAt?.getTime() || 0) > latestUpdate) {
-        sendOrder(updatedOrder as typeof order);
-      }
-    });
-  }, 2000);
-
-  req.on("close", () => {
-    clearInterval(keepAlive);
-    clearInterval(databaseCheck);
-    unsubscribe();
-  });
+  streamOrderUpdates(req, res, order);
 }
 
 export async function retryPickerBooking(req: AuthRequest, res: Response) {
