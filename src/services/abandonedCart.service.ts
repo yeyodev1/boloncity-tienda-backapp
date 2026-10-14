@@ -51,7 +51,7 @@ export function mensajeDeRecuperacion(nombre: string, token: string) {
 
 interface TrackInput {
   sessionId: string;
-  items: { product?: string; name?: string; price?: number; quantity?: number; image?: string }[];
+  items: { product?: string; name?: string; price?: number; quantity?: number; image?: string; options?: { name?: string; value?: string }[] }[];
   subtotal?: number;
   stage?: "cart" | "checkout" | "contact_ready";
   customerName?: string;
@@ -83,6 +83,10 @@ export async function trackCart(input: TrackInput) {
       price: Math.max(0, Math.round((Number(i.price) || 0) * 100) / 100),
       quantity: Math.max(1, Math.round(Number(i.quantity) || 1)),
       image: i.image || "",
+      options: (Array.isArray(i.options) ? i.options : [])
+        .map((o) => ({ name: String(o?.name || "").slice(0, 60), value: String(o?.value || "").slice(0, 60) }))
+        .filter((o) => o.name && o.value)
+        .slice(0, 5),
     }));
 
   const existente = await AbandonedCart.findOne({ sessionId });

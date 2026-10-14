@@ -22,6 +22,8 @@ import { getFrontendUrl } from "../config/env";
 import { escapeHtml, getOrderDetailUrl, getOrderStatusEmailHtml } from "../services/email-templates";
 import { PICKER_STATUS_LABELS } from "./webhook.controller";
 import { sendMetaEvent } from "../services/metaConversions.service";
+import { sendTikTokEvent } from "../services/tiktokEvents.service";
+import { ChosenOption, formatChosenOptions, resolveChosenOptions } from "../utils/productOptions";
 import { quoteDelivery } from "../services/deliveryQuote.service";
 import { normalizePhone } from "../utils/phone";
 import { clearPickerBooking } from "../utils/pickerBooking";
@@ -109,7 +111,7 @@ async function getDeliveryPricePerKm() {
 
 export async function createOrder(req: Request, res: Response) {
   const { items, customerEmail, customerName, customerPhone, notes, deliveryAddress, deliveryGoogleMapsUrl, deliveryType, paymentMethod = "card", billingDocType, billingName, billingDocNumber, billingEmail, billingAddress, scheduledFor: scheduledForInput } = req.body as {
-    items: Array<{ productId: string; quantity: number }>;
+    items: Array<{ productId: string; quantity: number; options?: Array<{ name: string; value: string }> }>;
     customerEmail: string;
     customerName?: string;
     customerPhone?: string;
@@ -249,6 +251,10 @@ export async function createOrder(req: Request, res: Response) {
   }
 
   const products = await Product.find({ _id: { $in: items.map((item) => item.productId) } });
+  // Producto con una opcion obligatoria (ej. la masa de los combos) que llega sin
+  // elegir: pasa con carritos armados antes de que existiera la opcion. Cocina no
+  // puede adivinar, asi que se frena aqui con el nombre del producto.
+  let missingOption: { product: string; option: string } | null = null;
   const orderItems = items
     .map((item) => {
       const product = products.find((current) => String(current._id) === item.productId);
@@ -256,6 +262,8 @@ export async function createOrder(req: Request, res: Response) {
       const branchPrice = branch
         ? product.branchPrices?.find((price: { branch: any; price: number }) => String(price.branch) === String(branch._id))
         : null;
+      const chosen = resolveChosenOptions(product.options, item.options);
+      if (chosen.missing && !missingOption) missingOption = { product: product.name, option: chosen.missing };
       return {
         product: product._id,
         name: product.name,
@@ -263,9 +271,19 @@ export async function createOrder(req: Request, res: Response) {
         quantity: item.quantity,
         image: product.images[0]?.url || "",
         pointsValue: product.pointsValue || 0,
+        options: chosen.options,
       };
     })
-  .filter(Boolean) as Array<{ product: any; name: string; price: number; quantity: number; image: string; pointsValue: number }>;
+  .filter(Boolean) as Array<{ product: any; name: string; price: number; quantity: number; image: string; pointsValue: number; options: ChosenOption[] }>;
+
+  if (missingOption) {
+    const { product, option } = missingOption as { product: string; option: string };
+    res.status(409).json({
+      code: "PRODUCT_OPTION_REQUIRED",
+      message: `Elige ${option.toLowerCase()} de ${product}: quítalo del carrito y vuelve a agregarlo eligiendo la opción.`,
+    });
+    return;
+  }
 
   // Un producto que ya no existe se descartaba en silencio y la orden se creaba
   // igual con lo que quedara. Con el carrito viejo de un cliente eso significa
@@ -458,25 +476,14 @@ export async function createOrder(req: Request, res: Response) {
  */
 export async function reportPurchaseToMeta(order: InstanceType<typeof Order>) {
   const nameParts = String(order.customerName || "").trim().split(/\s+/);
-
-  await sendMetaEvent({
-    eventName: "Purchase",
+  const purchase = {
+    eventName: "Purchase" as const,
     eventId: `purchase-${order.orderNumber}`,
-    // "system_generated": el evento nace del backend al confirmarse el pago, no de un clic.
-    actionSource: "system_generated",
     eventSourceUrl: `${getFrontendUrl()}/mis-ordenes/${order._id}`,
-    userData: {
-      email: order.customerEmail,
-      phone: order.customerPhone,
-      firstName: nameParts[0],
-      lastName: nameParts.slice(1).join(" "),
-      country: "ec",
-      externalId: order.customerEmail,
-    },
     customData: {
       currency: "USD",
       value: centsToDollars(Math.max(0, order.total - (order.deliveryCost || 0))),
-      content_type: "product",
+      content_type: "product" as const,
       order_id: order.orderNumber,
       num_items: order.items.reduce((sum: number, item: any) => sum + item.quantity, 0),
       content_ids: order.items.map((item: any) => String(item.product)),
@@ -486,7 +493,29 @@ export async function reportPurchaseToMeta(order: InstanceType<typeof Order>) {
         item_price: item.price,
       })),
     },
+  };
+
+  // TikTok recibe la misma venta con el mismo id (CompletePayment). Se espera
+  // abajo: en Vercel una promesa suelta muere con la respuesta.
+  const tiktok = sendTikTokEvent({
+    ...purchase,
+    userData: { email: order.customerEmail, phone: order.customerPhone, externalId: order.customerEmail },
+  });
+
+  await sendMetaEvent({
+    ...purchase,
+    // "system_generated": el evento nace del backend al confirmarse el pago, no de un clic.
+    actionSource: "system_generated",
+    userData: {
+      email: order.customerEmail,
+      phone: order.customerPhone,
+      firstName: nameParts[0],
+      lastName: nameParts.slice(1).join(" "),
+      country: "ec",
+      externalId: order.customerEmail,
+    },
   }).catch(() => undefined);
+  await tiktok;
 }
 
 /**
@@ -632,11 +661,12 @@ export async function sendOrderToRunfood(order: InstanceType<typeof Order>) {
       deliveryType: order.deliveryType,
       paymentMethod: order.paymentMethod === "cash" ? "cash" : "card",
       notes: order.notes || "",
-      items: (order.items || []).map((item: { product: unknown; name: string; price: number; quantity: number }) => {
+      items: (order.items || []).map((item: { product: unknown; name: string; price: number; quantity: number; options?: ChosenOption[] }) => {
         const product = porId.get(String(item.product));
         return {
           sku: product?.code || "",
           name: item.name,
+          notes: formatChosenOptions(item.options),
           quantity: item.quantity,
           priceCents: dollarsToCents(item.price),
           // Los precios del catalogo ya incluyen IVA; el POS espera la base imponible.
@@ -776,7 +806,7 @@ export async function settleApprovedCardOrder(order: any, payphoneResult: any, c
     const itemsRows = order.items
       .map(
         (item: any) =>
-          `<tr style="border-bottom:1px solid #e0e0e0"><td style="padding:10px 0">${escapeHtml(item.name)}</td><td style="padding:10px 0;text-align:center">x${item.quantity}</td><td style="padding:10px 0;text-align:right;font-weight:700">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
+          `<tr style="border-bottom:1px solid #e0e0e0"><td style="padding:10px 0">${escapeHtml(item.name)}${item.options?.length ? `<br><span style="color:#666;font-size:12px">${escapeHtml(formatChosenOptions(item.options))}</span>` : ""}</td><td style="padding:10px 0;text-align:center">x${item.quantity}</td><td style="padding:10px 0;text-align:right;font-weight:700">$${(item.price * item.quantity).toFixed(2)}</td></tr>`
       )
       .join("");
 

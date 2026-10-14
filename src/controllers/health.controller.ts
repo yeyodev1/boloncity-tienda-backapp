@@ -42,6 +42,8 @@ function malformedEnvVars(): string[] {
     GOOGLE_MAPS_API_KEY: env.GOOGLE_MAPS_API_KEY,
     META_PIXEL_ID: env.META_PIXEL_ID,
     META_CAPI_ACCESS_TOKEN: env.META_CAPI_ACCESS_TOKEN,
+    TIKTOK_PIXEL_ID: env.TIKTOK_PIXEL_ID,
+    TIKTOK_ACCESS_TOKEN: env.TIKTOK_ACCESS_TOKEN,
   };
 
   return Object.entries(candidates)

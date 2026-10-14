@@ -44,6 +44,7 @@ export interface IAbandonedCartItem {
   price: number;
   quantity: number;
   image?: string;
+  options?: Array<{ name: string; value: string }>;
 }
 
 const itemSchema = new Schema<IAbandonedCartItem>(
@@ -53,6 +54,10 @@ const itemSchema = new Schema<IAbandonedCartItem>(
     price: { type: Number, default: 0 },
     quantity: { type: Number, default: 1 },
     image: { type: String, default: "" },
+    options: {
+      type: [{ name: { type: String, default: "" }, value: { type: String, default: "" }, _id: false }],
+      default: [],
+    },
   },
   { _id: false }
 );
