@@ -7,6 +7,8 @@ export interface IOrderItem {
   quantity: number;
   image?: string;
   pointsValue: number;
+  /** Lo que el cliente eligio en las opciones del producto (ej. Masa: Verde). */
+  options?: Array<{ name: string; value: string }>;
 }
 
 /** Reverso de PayPhone. Solo total: la API no admite reversos parciales. */
@@ -137,6 +139,10 @@ const orderItemSchema = new Schema<IOrderItem>(
     quantity: { type: Number, required: true },
     image: { type: String, default: "" },
     pointsValue: { type: Number, default: 0 },
+    options: {
+      type: [{ name: { type: String, required: true }, value: { type: String, required: true }, _id: false }],
+      default: [],
+    },
   },
   { _id: false }
 );

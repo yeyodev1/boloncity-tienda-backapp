@@ -48,6 +48,11 @@ export const env = {
   // Se llena solo mientras se usa "Probar eventos" en el Events Manager. En
   // produccion debe quedar vacio, si no los eventos no cuentan como reales.
   META_TEST_EVENT_CODE: optional("META_TEST_EVENT_CODE", ""),
+  // TikTok Pixel + Events API. Mismo trato que Meta: el id es publico, el token no.
+  TIKTOK_PIXEL_ID: optional("TIKTOK_PIXEL_ID", ""),
+  TIKTOK_ACCESS_TOKEN: optional("TIKTOK_ACCESS_TOKEN", ""),
+  // Solo para "Test events" del Events Manager de TikTok. VACIO en produccion.
+  TIKTOK_TEST_EVENT_CODE: optional("TIKTOK_TEST_EVENT_CODE", ""),
   FRONTEND_URLS: {
     local: "http://localhost:5173",
     tunnel: "https://testing-storybrand-frontend.bakano.ec",

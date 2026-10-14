@@ -32,6 +32,8 @@ export interface RunfoodItem {
   priceCents: number;
   /** IVA del producto en porcentaje (15 = 15%). 0 = no grava. */
   ivaRatePercent: number;
+  /** Lo que eligio el cliente (ej. "Masa: Verde"); sale impreso en el renglon. */
+  notes?: string;
 }
 
 export interface RunfoodPushResult {
@@ -168,7 +170,12 @@ export async function pushOrderToRunfood(params: {
   // RunFood solo acepta notas por renglon (`tabs[].items[].notes`); no existe un
   // campo de notas del pedido en el request. La indicacion del cliente (alergias,
   // "sin cebolla") va en el primer renglon para que salga impresa en la comanda.
-  const orderNotes = params.notes?.trim().slice(0, MAX_NOTES) || "";
+  // Las opciones del producto (la masa) van en su propio renglon, delante.
+  const orderNotes = params.notes?.trim() || "";
+  const lineNotes = (item: RunfoodItem, index: number) => {
+    const notes = [item.notes?.trim(), index === 0 ? orderNotes : ""].filter(Boolean).join(" — ").slice(0, MAX_NOTES);
+    return notes ? { notes } : {};
+  };
 
   const payload = {
     external_id: orderNumber,
@@ -182,7 +189,7 @@ export async function pushOrderToRunfood(params: {
           sku: item.sku.trim(),
           quantity: item.quantity,
           unit_price: unitPriceWithoutTax(item.priceCents, item.ivaRatePercent),
-          ...(index === 0 && orderNotes ? { notes: orderNotes } : {}),
+          ...lineNotes(item, index),
         })),
       },
     ],

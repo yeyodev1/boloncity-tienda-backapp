@@ -6,6 +6,7 @@ import { deleteFromCloudinary, isCloudinaryConfigured, uploadToCloudinary } from
 import { slugify } from "../utils/slugify";
 import { isAvailableAt } from "../utils/productAvailability";
 import { getOrCreateSettings } from "../models/Setting";
+import { parseProductOptions } from "../utils/productOptions";
 
 function parseCategoryIds(value: unknown) {
   if (!value) return [];
@@ -142,6 +143,7 @@ export async function createProduct(req: Request, res: Response) {
     sellWithoutStock: parseBoolean(req.body.sellWithoutStock, true),
     stock: parseBoolean(req.body.sellWithoutStock, true) ? 0 : Number(req.body.stock || 0),
     images: imagePayload,
+    options: parseProductOptions(req.body.options),
   });
 
   res.status(201).json(product);
@@ -162,6 +164,10 @@ export async function updateProduct(req: Request, res: Response) {
     sellWithoutStock: parseBoolean(req.body.sellWithoutStock, false),
     stock: parseBoolean(req.body.sellWithoutStock, false) ? 0 : Number(req.body.stock || 0),
   };
+
+  if (req.body.options !== undefined) {
+    updateData.options = parseProductOptions(req.body.options);
+  }
 
   if (req.body.images !== undefined) {
     updateData.images = parseJsonArray<{ url: string; publicId: string }>(req.body.images, []);

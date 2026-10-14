@@ -7,6 +7,7 @@ import {
   metaUserDataFromRequest,
   sendMetaEvent,
 } from "../services/metaConversions.service";
+import { isTikTokConfigured, sendTikTokEvent } from "../services/tiktokEvents.service";
 
 /**
  * Espejo servidor de un evento que el navegador ya envio por el pixel.
@@ -32,6 +33,8 @@ export async function trackMetaEvent(req: Request, res: Response) {
     externalId,
     fbp,
     fbc,
+    ttp,
+    ttclid,
   } = req.body as {
     eventName?: string;
     eventId?: string;
@@ -44,9 +47,11 @@ export async function trackMetaEvent(req: Request, res: Response) {
     externalId?: string;
     fbp?: string;
     fbc?: string;
+    ttp?: string;
+    ttclid?: string;
   };
 
-  if (!isMetaConfigured()) {
+  if (!isMetaConfigured() && !isTikTokConfigured()) {
     // No es un error del cliente: la tienda simplemente no tiene pixel configurado.
     res.json({ tracked: false, reason: "META_NOT_CONFIGURED" });
     return;
@@ -62,23 +67,33 @@ export async function trackMetaEvent(req: Request, res: Response) {
     return;
   }
 
-  const tracked = await sendMetaEvent({
-    eventName: eventName as MetaEventName,
-    eventId,
-    eventSourceUrl,
-    actionSource: "website",
-    customData,
-    userData: {
-      ...metaUserDataFromRequest(req),
-      email,
-      phone,
-      firstName,
-      lastName,
-      externalId,
-      fbp,
-      fbc,
-    },
-  });
+  const userData = {
+    ...metaUserDataFromRequest(req),
+    email,
+    phone,
+    firstName,
+    lastName,
+    externalId,
+  };
 
-  res.json({ tracked });
+  // El mismo evento va a Meta y a TikTok: un solo endpoint, un solo catalogo.
+  const [tracked, tiktok] = await Promise.all([
+    sendMetaEvent({
+      eventName: eventName as MetaEventName,
+      eventId,
+      eventSourceUrl,
+      actionSource: "website",
+      customData,
+      userData: { ...userData, fbp, fbc },
+    }),
+    sendTikTokEvent({
+      eventName: eventName as MetaEventName,
+      eventId,
+      eventSourceUrl,
+      customData,
+      userData: { ...userData, ttp, ttclid },
+    }),
+  ]);
+
+  res.json({ tracked, tiktok });
 }

@@ -6,6 +6,16 @@ export interface IProductImage {
   publicId: string;
 }
 
+/**
+ * Grupo de opciones que el cliente elige antes de agregar al carrito
+ * (ej. "Masa": Pintón / Verde). No cambia el precio: solo le dice a cocina cómo prepararlo.
+ */
+export interface IProductOption {
+  name: string;
+  required: boolean;
+  choices: string[];
+}
+
 export interface IProduct {
   code?: string;
   name: string;
@@ -30,6 +40,7 @@ export interface IProduct {
   sortOrder: number;
   isBestSeller: boolean;
   tags: string[];
+  options: IProductOption[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -69,6 +80,17 @@ const productSchema = new Schema<IProduct>(
     sortOrder: { type: Number, default: 0 },
     isBestSeller: { type: Boolean, default: false },
     tags: [{ type: String }],
+    options: {
+      type: [
+        {
+          name: { type: String, required: true, trim: true },
+          required: { type: Boolean, default: true },
+          choices: [{ type: String, trim: true }],
+        },
+      ],
+      default: [],
+      _id: false,
+    },
   },
   { timestamps: true }
 );
