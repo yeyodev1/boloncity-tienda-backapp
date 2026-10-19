@@ -12,18 +12,19 @@ import { User } from "../models/User";
 import { calculateEarnedPoints, discountCentsToPoints, pointsToDiscountCents } from "../services/points.service";
 import { Branch } from "../models/Branch";
 import { distanceKm } from "../utils/haversine";
-import { parseMapsUrl } from "../utils/parseMapsUrl";
+import { geocodeAddressInEcuador, parseMapsUrl } from "../utils/parseMapsUrl";
 import { AuthRequest } from "../types/AuthRequest";
 import { publishOrderUpdate, subscribeToOrder } from "../services/orderEvents.service";
 import { marcarCarritoRecuperado } from "../services/abandonedCart.service";
 import { getBranchAvailability, getBranchPayphoneStoreId, getPickerStoreApiKey, isBranchOpenAt, pickerEnabledBranchFilter, validateScheduledTime } from "../services/branchOperational.service";
 import { pushOrderToRunfood } from "../services/runfood.service";
-import { getFrontendUrl } from "../config/env";
+import { env, getFrontendUrl } from "../config/env";
 import { escapeHtml, getOrderDetailUrl, getOrderStatusEmailHtml } from "../services/email-templates";
 import { PICKER_STATUS_LABELS } from "./webhook.controller";
 import { sendMetaEvent } from "../services/metaConversions.service";
 import { sendTikTokEvent } from "../services/tiktokEvents.service";
 import { ChosenOption, formatChosenOptions, resolveChosenOptions } from "../utils/productOptions";
+import { isAvailableAt } from "../utils/productAvailability";
 import { quoteDelivery } from "../services/deliveryQuote.service";
 import { normalizePhone } from "../utils/phone";
 import { clearPickerBooking } from "../utils/pickerBooking";
@@ -151,6 +152,41 @@ export async function createOrder(req: Request, res: Response) {
     return;
   }
 
+  // Un pin "cubierto" puede ser igual el pin equivocado: ORD-00758 (cliente de Quito) y
+  // ORD-00785 (La Aurora) entraron con el pin en el centro por defecto del mapa viejo,
+  // a 1.3 km de Urdesa, y se cocinaron en la ciudad equivocada. El mapa nuevo ya no
+  // produce ese pin, pero las PWA cacheadas lo siguen mandando por dias. Dos guardias,
+  // ambas contrastando la direccion ESCRITA con el pin:
+  //  - el texto geocodifica a mas de 50 km del pin → es otra ciudad, se rechaza;
+  //  - el pin cae en el disco del centro retirado y el texto no lo confirma → se pide
+  //    volver a marcar. Si Google no contesta, no se frena la venta.
+  if (isDelivery && deliveryCoords && env.GOOGLE_MAPS_API_KEY) {
+    const RETIRED_MAP_FALLBACK = { lat: -2.1709, lng: -79.9224 };
+    const nearRetiredPin = distanceKm(deliveryCoords, RETIRED_MAP_FALLBACK) <= 0.12;
+    const addressText = String(deliveryAddress || "").trim();
+    if (nearRetiredPin || addressText) {
+      let geocoded: { lat: number; lng: number } | null = null;
+      let geocodeOk = true;
+      try {
+        geocoded = addressText ? await geocodeAddressInEcuador(addressText, env.GOOGLE_MAPS_API_KEY) : null;
+      } catch {
+        geocodeOk = false;
+      }
+      const pinToAddressKm = geocoded ? distanceKm(deliveryCoords, geocoded) : null;
+      const otherCity = pinToAddressKm != null && pinToAddressKm > 50;
+      const defaultPinUnconfirmed = nearRetiredPin && geocodeOk && (pinToAddressKm == null || pinToAddressKm > 1);
+      if (otherCity || defaultPinUnconfirmed) {
+        res.status(422).json({
+          code: "DELIVERY_PIN_MISMATCH",
+          message: otherCity
+            ? "La dirección que escribiste queda muy lejos del pin que marcaste en el mapa. Revisa que el pin esté exactamente en tu puerta y que la dirección escrita sea la de ese punto."
+            : "El pin del mapa quedó en el punto inicial, no en tu dirección. Abre el mapa, acércate hasta tu calle y marca tu puerta antes de pedir.",
+        });
+        return;
+      }
+    }
+  }
+
   // En delivery manda la ubicacion, no la sucursal que el cliente tenga elegida en la tienda.
   const branch = await resolveBranch(
     deliveryCoords
@@ -251,6 +287,24 @@ export async function createOrder(req: Request, res: Response) {
   }
 
   const products = await Product.find({ _id: { $in: items.map((item) => item.productId) } });
+
+  // La sucursal la decide la ubicacion de entrega, no el menu que el cliente navego:
+  // un producto apagado en esa sucursal (unavailableBranches) llegaba igual a su cocina.
+  // Asi entraron pedidos de BANDEJA GUAYACA a Garzota con el producto ya desactivado ahi:
+  // el bot de WhatsApp validaba isAvailableAt y la tienda web no. Se frena con nombre y
+  // sucursal para que el cliente sepa que quitar.
+  const noDisponiblesEnSucursal = products.filter((product) => !isAvailableAt(product, String(branch._id)));
+  if (noDisponiblesEnSucursal.length) {
+    const nombres = noDisponiblesEnSucursal.map((product) => product.name).join(", ");
+    res.status(409).json({
+      code: "PRODUCT_NOT_AT_BRANCH",
+      message: noDisponiblesEnSucursal.length === 1
+        ? `${nombres} no está disponible en ${branch.name}, la sucursal que cubre tu dirección. Quítalo del carrito para continuar.`
+        : `Estos productos no están disponibles en ${branch.name}, la sucursal que cubre tu dirección: ${nombres}. Quítalos del carrito para continuar.`,
+    });
+    return;
+  }
+
   // Producto con una opcion obligatoria (ej. la masa de los combos) que llega sin
   // elegir: pasa con carritos armados antes de que existiera la opcion. Cocina no
   // puede adivinar, asi que se frena aqui con el nombre del producto.
