@@ -6,7 +6,10 @@ export function branchScope(req: AuthRequest, _res: Response, next: NextFunction
   req.activeBranch = Array.isArray(activeBranch) ? activeBranch[0] : activeBranch || null;
 
   if (!req.user) {
-    req.branchFilter = {};
+    // El comprador anonimo tambien manda X-Branch-Id (la sucursal elegida en la tienda).
+    // Ignorarlo mostraba el catalogo completo: productos apagados en esa sucursal se
+    // seguian vendiendo como disponibles.
+    req.branchFilter = req.activeBranch ? { branch: req.activeBranch } : {};
     next();
     return;
   }

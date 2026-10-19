@@ -101,6 +101,32 @@ async function geocode(query: string, apiKey: string, precise: boolean) {
   return null
 }
 
+/**
+ * Geocodifica la direccion ESCRITA por el cliente, acotada a Ecuador, para
+ * contrastarla con el pin del mapa. Sin el acote, "La Rioja" resuelve a España y
+ * el contraste rechazaria pedidos buenos. No exige precision ROOFTOP: para saber
+ * si el texto habla de otra ciudad alcanza con el barrio.
+ */
+export async function geocodeAddressInEcuador(address: string, apiKey: string) {
+  const endpoint = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&components=country:EC&region=ec&key=${encodeURIComponent(apiKey)}`
+  const response = await fetch(endpoint, { signal: AbortSignal.timeout(8000) })
+  const data = await response.json() as { results?: Array<{ types?: string[]; geometry?: { location?: { lat?: number; lng?: number } } }> }
+  const result = data.results?.[0]
+  // Una direccion que Google no entiende devuelve igual status OK con el centroide
+  // del pais o de la provincia ("Ecuador", a 200 km de todo). Ese punto no dice nada
+  // de la direccion: compararlo con el pin rechazaria pedidos buenos con texto vago.
+  // A nivel de ciudad o mas fino si sirve para saber si el texto habla de otra ciudad.
+  const tooCoarse = (result?.types || []).some((type) =>
+    type === 'country' || type === 'administrative_area_level_1' || type === 'administrative_area_level_2'
+  )
+  if (tooCoarse) return null
+  const location = result?.geometry?.location
+  if (typeof location?.lat === 'number' && typeof location.lng === 'number' && isValidCoords(location.lat, location.lng)) {
+    return { lat: location.lat, lng: location.lng }
+  }
+  return null
+}
+
 export async function resolveMapsCoordinates(url?: string, address?: string, apiKey?: string) {
   const direct = parseMapsUrl(url)
   if (direct) return direct
