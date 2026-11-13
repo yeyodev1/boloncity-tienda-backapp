@@ -120,7 +120,8 @@ export async function createPickerStore(
     if (error instanceof Error && error.message === "Picker createStore response did not include a token") {
       throw error;
     }
-    throw new Error("Picker store creation failed");
+    const detail = axios.isAxiosError(error) ? `${error.response?.status} ${JSON.stringify(error.response?.data ?? "").slice(0, 200)}` : "";
+    throw new Error(`Picker store creation failed ${detail}`.trim());
   }
 }
 

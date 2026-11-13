@@ -354,3 +354,48 @@ export async function getNearestBranch(req: Request, res: Response) {
 
   res.json({ ...scored[0], branch: toPublicBranch(scored[0].branch) });
 }
+
+/**
+ * Crea en Picker la tienda de las sucursales marcadas `pickerStore.creationStatus = "pending"`.
+ * Corre en el cron de Vercel con la llave maestra del servidor, para alta de locales sin pasar por el admin.
+ */
+export async function createPendingPickerStores() {
+  if (!env.PICKER_MASTER_KEY.trim()) return [];
+  const keyField = env.PICKER_ENV === "production" ? "productionStoreApiKey" : "storeApiKey";
+  const branches = await Branch.find({ isArchived: { $ne: true }, "pickerStore.creationStatus": "pending" });
+  const results: string[] = [];
+  for (const branch of branches) {
+    const contact = pickerStoreContact(branch.phone || "");
+    const { lat, lng } = branch.coordinates || {};
+    if (!contact || !branch.email?.trim() || !branch.address?.trim() || lat == null || lng == null) {
+      await Branch.updateOne({ _id: branch._id }, { $set: { "pickerStore.creationStatus": "failed: faltan telefono, email, direccion o coordenadas" } });
+      results.push(`${branch.name}: faltan datos`);
+      continue;
+    }
+    try {
+      const store = await createPickerStore({
+        addressReference: branch.address.trim(),
+        email: branch.email.trim(),
+        mobile: contact.mobile,
+        countryCode: contact.countryCode,
+        companyName: branch.name.trim(),
+        longitude: lng,
+        latitude: lat,
+        fullAddress: [branch.address.trim(), branch.city?.trim()].filter(Boolean).join(", "),
+      });
+      await Branch.updateOne({ _id: branch._id }, { $set: {
+        [`pickerStore.${keyField}`]: store.token,
+        ...(store.storeId ? { "pickerStore.storeId": store.storeId } : {}),
+        "pickerStore.createdAt": new Date(),
+        "pickerStore.createdBy": "cron",
+        "pickerStore.creationStatus": "active",
+      } });
+      results.push(`${branch.name}: creada`);
+    } catch (error) {
+      // "failed" saca la sucursal de la cola: sin esto el cron reintentaria cada 15 min.
+      await Branch.updateOne({ _id: branch._id }, { $set: { "pickerStore.creationStatus": `failed: ${error instanceof Error ? error.message : "error"}` } });
+      results.push(`${branch.name}: fallo`);
+    }
+  }
+  return results;
+}
