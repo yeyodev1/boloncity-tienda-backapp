@@ -7,6 +7,7 @@ import {
   metricasDeCarritos,
   trackCart,
 } from "../services/abandonedCart.service";
+import { createPendingPickerStores } from "./branch.controller";
 
 /**
  * POST /api/carts/track — la web avisa como va el carrito.
@@ -114,6 +115,8 @@ export async function runCartReminders(req: Request, res: Response) {
 
   const resumen = await enviarRecordatoriosPendientes();
   console.log("[carritos] recordatorios:", JSON.stringify(resumen));
+  const tiendasPicker = await createPendingPickerStores().catch((error) => [String(error)]);
+  if (tiendasPicker.length) console.log("[picker] tiendas pendientes:", JSON.stringify(tiendasPicker));
   res.json(resumen);
 }
 
